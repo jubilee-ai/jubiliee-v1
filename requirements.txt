@@ -1,0 +1,9 @@
+torch
+transformers
+langchain
+pydantic
+pandas
+chronos-forecasting[extras]>=2.2
+skops
+huggingface_hub
+
