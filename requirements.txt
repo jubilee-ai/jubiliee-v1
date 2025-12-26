@@ -3,6 +3,11 @@ transformers
 langchain
 pydantic
 pandas
+numpy
+scikit-learn
+joblib
+xgboost
+lifelines
 chronos-forecasting[extras]>=2.2
 skops
 huggingface_hub

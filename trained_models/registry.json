@@ -1,0 +1,41 @@
+{
+  "models": {
+    "loan_default_demo": {
+      "model_name": "loan_default_demo",
+      "model_path": "/Users/noahnefsky/jubiliee-v1/trained_models/loan_default_demo.joblib",
+      "model_type": "sklearn_logistic_regression",
+      "description": "Demo model for predicting loan defaults based on applicant profile",
+      "metrics": {
+        "train_accuracy": 1.0,
+        "test_accuracy": 1.0,
+        "test_roc_auc": 1.0
+      },
+      "feature_names": [
+        "num__age",
+        "num__income",
+        "num__debt_ratio",
+        "cat__employed_no",
+        "cat__employed_part-time",
+        "cat__employed_yes"
+      ],
+      "target_column": "default",
+      "hyperparameters": {
+        "C": 1.0,
+        "l1_ratio": 0.0,
+        "solver": "lbfgs",
+        "max_iter": 100,
+        "class_weight": "balanced",
+        "fit_intercept": true,
+        "random_state": 42,
+        "test_size": 0.2
+      },
+      "training_samples": 14,
+      "classes": [
+        "0",
+        "1"
+      ],
+      "created_at": "2025-12-26T04:03:18.388492+00:00",
+      "updated_at": "2025-12-26T04:03:18.388497+00:00"
+    }
+  }
+}
