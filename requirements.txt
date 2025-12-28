@@ -1,6 +1,7 @@
 torch
 transformers
 langchain
+langchain-core
 pydantic
 pandas
 numpy
@@ -11,4 +12,8 @@ lifelines
 chronos-forecasting[extras]>=2.2
 skops
 huggingface_hub
+bm25s
+openai
+python-dotenv
+sqlalchemy
 

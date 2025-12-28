@@ -9,7 +9,7 @@ import sys
 import os
 
 # Add training module to path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "models-tools", "training"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "tools", "models-tools", "training"))
 
 import numpy as np
 import pandas as pd

@@ -1,7 +1,7 @@
 {
   "datasets": [
     {
-      "file": "Financial Distress.csv",
+      "file": "csv/Financial Distress.csv",
       "name": "Financial Distress Dataset",
       "description": "Time-series corporate financial distress prediction dataset. Contains observations for multiple companies over time periods with 83 financial ratio features (x1-x83). The 'Financial Distress' column is the target variable indicating distress level. Useful for predicting corporate bankruptcy or financial health deterioration.",
       "format": "CSV",
@@ -10,19 +10,46 @@
       "use_case": "Corporate financial distress/bankruptcy prediction"
     },
     {
-      "file": "insurance.csv",
+      "file": "sql/financial_distress.sql",
+      "name": "Financial Distress Dataset",
+      "description": "Time-series corporate financial distress prediction dataset. Contains observations for multiple companies over time periods with 83 financial ratio features (x1-x83). The 'Financial Distress' column is the target variable indicating distress level. Useful for predicting corporate bankruptcy or financial health deterioration.",
+      "format": "SQL",
+      "rows": 3673,
+      "columns": ["Company", "Time", "Financial_Distress", "x1-x83 (financial ratios)"],
+      "use_case": "Corporate financial distress/bankruptcy prediction"
+    },
+    {
+      "file": "csv/insurance.csv",
       "name": "Health Insurance Charges Dataset",
       "description": "Medical insurance cost prediction dataset with individual health and demographic factors. Contains policyholder information including age, sex, BMI, number of dependents, smoking status, and US region. The 'charges' column is the target variable representing annual medical insurance costs.",
       "format": "CSV",
-      "rows": 1339,
+      "rows": 1338,
       "columns": ["age", "sex", "bmi", "children", "smoker", "region", "charges"],
       "use_case": "Health insurance premium/cost prediction and underwriting"
     },
     {
-      "file": "Loan_default.csv",
+      "file": "sql/insurance.sql",
+      "name": "Health Insurance Charges Dataset",
+      "description": "Medical insurance cost prediction dataset with individual health and demographic factors. Contains policyholder information including age, sex, BMI, number of dependents, smoking status, and US region. The 'charges' column is the target variable representing annual medical insurance costs.",
+      "format": "SQL",
+      "rows": 1338,
+      "columns": ["age", "sex", "bmi", "children", "smoker", "region", "charges"],
+      "use_case": "Health insurance premium/cost prediction and underwriting"
+    },
+    {
+      "file": "csv/Loan_default.csv",
       "name": "Loan Default Prediction Dataset",
       "description": "Comprehensive loan default risk dataset with borrower demographics, credit history, employment details, and loan characteristics. Contains features like age, income, credit score, months employed, interest rate, DTI ratio, education level, loan purpose, and more. The 'Default' column (0/1) is the binary target variable.",
       "format": "CSV",
+      "rows": 255348,
+      "columns": ["LoanID", "Age", "Income", "LoanAmount", "CreditScore", "MonthsEmployed", "NumCreditLines", "InterestRate", "LoanTerm", "DTIRatio", "Education", "EmploymentType", "MaritalStatus", "HasMortgage", "HasDependents", "LoanPurpose", "HasCoSigner", "Default"],
+      "use_case": "Loan default risk assessment and credit decisioning"
+    },
+    {
+      "file": "sql/loan_default.sql",
+      "name": "Loan Default Prediction Dataset",
+      "description": "Comprehensive loan default risk dataset with borrower demographics, credit history, employment details, and loan characteristics. Contains features like age, income, credit score, months employed, interest rate, DTI ratio, education level, loan purpose, and more. The 'Default' column (0/1) is the binary target variable.",
+      "format": "SQL",
       "rows": 255348,
       "columns": ["LoanID", "Age", "Income", "LoanAmount", "CreditScore", "MonthsEmployed", "NumCreditLines", "InterestRate", "LoanTerm", "DTIRatio", "Education", "EmploymentType", "MaritalStatus", "HasMortgage", "HasDependents", "LoanPurpose", "HasCoSigner", "Default"],
       "use_case": "Loan default risk assessment and credit decisioning"
@@ -37,21 +64,45 @@
       "use_case": "Credit card customer risk classification and profitability assessment"
     },
     {
+      "file": "sql/credit_card_risk.sql",
+      "name": "Credit Card Risk Dataset",
+      "description": "Credit card customer risk classification dataset. Contains customer demographics including age, income, gender, marital status, number of kids/cards, payment frequency, mortgage status, store cards, and outstanding loans. The 'RISK' column classifies customers as 'bad loss', 'bad profit', or 'good risk'.",
+      "format": "SQL",
+      "source": "saifhmb/CreditCardRisk",
+      "columns": ["ID", "AGE", "INCOME", "GENDER", "MARITAL", "NUMKIDS", "NUMCARDS", "HOWPAID", "MORTGAGE", "STORECAR", "LOANS", "RISK"],
+      "use_case": "Credit card customer risk classification and profitability assessment"
+    },
+    {
       "file": "underwriting_datasets_block.py",
       "name": "Underwriting Dataset Blocks (HuggingFace)",
-      "description": "Python script to load insurance underwriting dataset from HuggingFace (JETech/underwriting-dataset-blocks). Used for automated underwriting decision support.",
+      "description": "Python script to load insurance underwriting dataset from HuggingFace (JETech/underwriting-dataset-blocks). Contains document blocks extracted from insurance underwriting documents with text, position, quality, and environment metadata.",
       "format": "Python (HuggingFace loader)",
       "source": "JETech/underwriting-dataset-blocks",
-      "use_case": "Insurance underwriting automation"
+      "columns": ["Package", "Id", "Text", "Page", "Type", "X", "Y", "W", "H", "Environment", "Quality"],
+      "use_case": "Insurance underwriting automation and document processing"
+    },
+    {
+      "file": "sql/underwriting_dataset_blocks.sql",
+      "name": "Underwriting Dataset Blocks",
+      "description": "Insurance underwriting dataset containing document blocks extracted from insurance underwriting documents. Includes text content, position coordinates, quality metrics, and environment metadata. Useful for automated underwriting decision support and document processing.",
+      "format": "SQL",
+      "source": "JETech/underwriting-dataset-blocks",
+      "rows": 49944,
+      "columns": ["Package", "Id", "Text", "Page", "Type", "X", "Y", "W", "H", "Environment", "Quality", "distilabel_metadata", "model_name"],
+      "use_case": "Insurance underwriting automation and document processing"
     }
   ],
   "summary": {
-    "total_datasets": 5,
+    "total_datasets": 10,
+    "formats": {
+      "CSV": ["csv/Financial Distress.csv", "csv/insurance.csv", "csv/Loan_default.csv"],
+      "SQL": ["sql/financial_distress.sql", "sql/insurance.sql", "sql/loan_default.sql", "sql/credit_card_risk.sql", "sql/underwriting_dataset_blocks.sql"],
+      "Python (HuggingFace loader)": ["credit_card_risk_dataset.py", "underwriting_datasets_block.py"]
+    },
     "categories": {
-      "credit_risk": ["Loan_default.csv", "credit_card_risk_dataset.py"],
-      "insurance": ["insurance.csv", "underwriting_datasets_block.py"],
-      "financial_health": ["Financial Distress.csv"]
+      "credit_risk": ["csv/Loan_default.csv", "sql/loan_default.sql", "credit_card_risk_dataset.py", "sql/credit_card_risk.sql"],
+      "insurance": ["csv/insurance.csv", "sql/insurance.sql", "underwriting_datasets_block.py", "sql/underwriting_dataset_blocks.sql"],
+      "financial_health": ["csv/Financial Distress.csv", "sql/financial_distress.sql"]
     }
   }
 }
-

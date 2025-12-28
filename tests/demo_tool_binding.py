@@ -21,8 +21,8 @@ import os
 import sys
 
 # Add modules to path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "models-tools", "training"))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "models-tools", "pretrained"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "tools", "models-tools", "training"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "tools", "models-tools", "pretrained"))
 
 import warnings
 warnings.filterwarnings('ignore')

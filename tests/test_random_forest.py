@@ -7,7 +7,7 @@ import uuid
 import pytest
 
 # Add training module to path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'models-tools', 'training'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'tools', 'models-tools', 'training'))
 
 
 def get_classification_data():
