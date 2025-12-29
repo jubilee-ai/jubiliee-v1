@@ -1,11 +1,13 @@
 """
 Script to convert CSV files and HuggingFace datasets to SQL files.
 """
-import pandas as pd
-import sqlite3
-import os
 import json
+import os
+import sqlite3
+
 import numpy as np
+import pandas as pd
+
 from datasets import load_dataset
 
 
