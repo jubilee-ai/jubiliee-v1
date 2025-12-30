@@ -1,5 +1,5 @@
 """
-Data tools for catalog search, retrieval, data loading, and SQL queries.
+Data tools for catalog search, retrieval, data loading, SQL queries, and transformations.
 """
 
 from .data_loader import (ColumnSchema, DatasetResult, data_loader_tools,
@@ -21,6 +21,44 @@ from .utils import (  # Text utilities; Fuzzy matching; Type conversions; ID and
     get_similar_matches, infer_simple_dtype, list_all_dataset_refs,
     list_catalog_assets, list_registered_datasets, pandas_dtype_to_sql_type,
     register_dataset, tokenize_text, truncate_columns_display, utc_timestamp)
+
+# Transformations
+from .transformations import (
+    # Base types
+    BaseTransform,
+    TransformResult,
+    TransformAudit,
+    TransformWarning,
+    SchemaChange,
+    # Transform classes
+    SelectTransform,
+    DropTransform,
+    RenameTransform,
+    CastTransform,
+    ParseDatetimeTransform,
+    AddColumnTransform,
+    # Factory functions
+    select,
+    drop,
+    rename,
+    cast,
+    parse_datetime,
+    add_column,
+    # Registry
+    TRANSFORM_REGISTRY,
+    TRANSFORM_DOCS,
+    get_transform,
+    list_transforms,
+    get_transform_docs,
+)
+from .transformations.transform_apply import (
+    transform_apply,
+    transform_apply_tool,
+    list_transforms_tool,
+    transform_tools,
+    TransformApplyResult,
+    TransformLineage,
+)
 
 __all__ = [
     # Utils - Text
@@ -90,5 +128,38 @@ __all__ = [
     "join_merge_tools",
     "JoinResult",
     "JoinReport",
+    # Transformations - Base types
+    "BaseTransform",
+    "TransformResult",
+    "TransformAudit",
+    "TransformWarning",
+    "SchemaChange",
+    # Transformations - Transform classes
+    "SelectTransform",
+    "DropTransform",
+    "RenameTransform",
+    "CastTransform",
+    "ParseDatetimeTransform",
+    "AddColumnTransform",
+    # Transformations - Factory functions
+    "select",
+    "drop",
+    "rename",
+    "cast",
+    "parse_datetime",
+    "add_column",
+    # Transformations - Registry
+    "TRANSFORM_REGISTRY",
+    "TRANSFORM_DOCS",
+    "get_transform",
+    "list_transforms",
+    "get_transform_docs",
+    # Transformations - transform_apply
+    "transform_apply",
+    "transform_apply_tool",
+    "list_transforms_tool",
+    "transform_tools",
+    "TransformApplyResult",
+    "TransformLineage",
 ]
 
