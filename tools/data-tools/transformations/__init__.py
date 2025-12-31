@@ -23,11 +23,29 @@ from .row_ops import (
     sample_rows_tool,
     sort_rows_tool,
 )
+from .time_ops import (
+    lag_tool,
+    lead_tool,
+    rank_tool,
+    rolling_max_tool,
+    rolling_mean_tool,
+    rolling_min_tool,
+    rolling_sum_tool,
+    row_number_tool,
+    time_bucket_tool,
+    time_tools,
+)
+from .reshape_ops import (
+    pivot_tool,
+    reshape_tools,
+    union_tool,
+    unpivot_tool,
+)
 from .tool_utils import cleanup_datasets, format_result, resolve_dataset, save_result
 from .utility_tools import cleanup_datasets_tool, list_datasets_tool, utility_tools
 
 # All tools for agent binding
-transform_tools = column_tools + row_tools + utility_tools
+transform_tools = column_tools + row_tools + time_tools + reshape_tools + utility_tools
 
 __all__ = [
     # All tools combined
@@ -49,6 +67,24 @@ __all__ = [
     "dedupe_tool",
     "sample_rows_tool",
     "limit_rows_tool",
+    
+    # Time/window tools
+    "time_tools",
+    "time_bucket_tool",
+    "lag_tool",
+    "lead_tool",
+    "rolling_mean_tool",
+    "rolling_sum_tool",
+    "rolling_min_tool",
+    "rolling_max_tool",
+    "row_number_tool",
+    "rank_tool",
+    
+    # Reshape tools
+    "reshape_tools",
+    "pivot_tool",
+    "unpivot_tool",
+    "union_tool",
     
     # Utility tools
     "utility_tools",
