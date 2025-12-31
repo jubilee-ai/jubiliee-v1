@@ -6,6 +6,16 @@ Usage:
     # Returns list of all LangChain tools for agent binding
 """
 
+from .agg_ops import agg_tools, groupby_agg_tool
+from .clean_ops import (
+    clean_tools,
+    clip_tool,
+    drop_nulls_tool,
+    fill_null_tool,
+    impute_tool,
+    regex_replace_tool,
+    replace_values_tool,
+)
 from .column_ops import (
     add_column_tool,
     cast_tool,
@@ -45,7 +55,7 @@ from .tool_utils import cleanup_datasets, format_result, resolve_dataset, save_r
 from .utility_tools import cleanup_datasets_tool, list_datasets_tool, utility_tools
 
 # All tools for agent binding
-transform_tools = column_tools + row_tools + time_tools + reshape_tools + utility_tools
+transform_tools = column_tools + row_tools + time_tools + reshape_tools + agg_tools + clean_tools + utility_tools
 
 __all__ = [
     # All tools combined
@@ -85,6 +95,19 @@ __all__ = [
     "pivot_tool",
     "unpivot_tool",
     "union_tool",
+    
+    # Aggregation tools
+    "agg_tools",
+    "groupby_agg_tool",
+    
+    # Cleaning tools
+    "clean_tools",
+    "drop_nulls_tool",
+    "fill_null_tool",
+    "impute_tool",
+    "clip_tool",
+    "replace_values_tool",
+    "regex_replace_tool",
     
     # Utility tools
     "utility_tools",
