@@ -395,6 +395,27 @@ def clear_registry() -> None:
     _dataset_registry.clear()
 
 
+def clear_dataset_registry(prefix: str = None) -> int:
+    """
+    Clear registered datasets, optionally filtering by prefix.
+    
+    Args:
+        prefix: If provided, only clear datasets starting with this prefix
+    
+    Returns:
+        Number of datasets cleared
+    """
+    if prefix is None:
+        count = len(_dataset_registry)
+        _dataset_registry.clear()
+        return count
+    
+    to_remove = [k for k in _dataset_registry if k.startswith(prefix)]
+    for k in to_remove:
+        del _dataset_registry[k]
+    return len(to_remove)
+
+
 def get_registered_dataset_info(ref: str) -> Optional[dict]:
     """
     Get info about a registered dataset.

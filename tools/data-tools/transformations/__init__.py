@@ -1,97 +1,63 @@
 """
-Transformations module.
+Transformation tools for AI agents.
 
-For AI agents, use:
-    from transformations import transform_agent_tools
-    
-For internal automation, use:
-    from transformations import transform_apply, select, drop, rename, cast, ...
+Usage:
+    from transformations import transform_tools
+    # Returns list of all LangChain tools for agent binding
 """
 
-import sys
-from pathlib import Path
-from typing import Type
+from .column_ops import (
+    add_column_tool,
+    cast_tool,
+    column_tools,
+    drop_columns_tool,
+    parse_datetime_tool,
+    rename_columns_tool,
+    select_columns_tool,
+)
+from .row_ops import (
+    dedupe_tool,
+    filter_rows_tool,
+    limit_rows_tool,
+    row_tools,
+    sample_rows_tool,
+    sort_rows_tool,
+)
+from .tool_utils import cleanup_datasets, format_result, resolve_dataset, save_result
+from .utility_tools import cleanup_datasets_tool, list_datasets_tool, utility_tools
 
-# Add jtypes to path
-_root = Path(__file__).parent.parent.parent.parent
-if str(_root) not in sys.path:
-    sys.path.insert(0, str(_root))
-
-# Types from central location
-from jtypes.transformations import (BaseTransform, DatasetInput, SchemaChange,
-                                    TransformApplyResult, TransformAudit,
-                                    TransformLineage, TransformResult,
-                                    TransformWarning)
-
-# Internal transforms (not agent-facing)
-from .add_column import SAFE_FUNCS, AddColumnTransform, add_column
-# Agent-facing tools (this is what agents should use)
-from .agent_tools import transform_agent_tools, transform_dataset
-from .base import get_dtype_string, validate_columns_exist
-from .cast import DTYPE_MAP, CastTransform, cast
-from .drop import DropTransform, drop
-from .parse_datetime import ParseDatetimeTransform, parse_datetime
-# Recipes
-from .recipes import RECIPES, get_recipe, list_recipes
-from .rename import RenameTransform, rename
-from .select import SelectTransform, select
-# Internal orchestrator
-from .transform_apply import transform_apply
-
-# Registry (internal)
-TRANSFORM_REGISTRY: dict[str, Type[BaseTransform]] = {
-    "select": SelectTransform,
-    "drop": DropTransform,
-    "rename": RenameTransform,
-    "cast": CastTransform,
-    "parse_datetime": ParseDatetimeTransform,
-    "add_column": AddColumnTransform,
-}
-
-
-def get_transform(op_def: dict) -> BaseTransform:
-    """Create transform from op definition dict. Internal use."""
-    if not isinstance(op_def, dict) or "op" not in op_def:
-        raise ValueError("Op definition must be dict with 'op' key")
-    
-    op_name = op_def["op"]
-    if op_name not in TRANSFORM_REGISTRY:
-        raise ValueError(f"Unknown op: '{op_name}'. Available: {list(TRANSFORM_REGISTRY.keys())}")
-    
-    params = {k: v for k, v in op_def.items() if k != "op"}
-    try:
-        return TRANSFORM_REGISTRY[op_name](**params)
-    except TypeError as e:
-        raise ValueError(f"Invalid params for '{op_name}': {e}")
-
-
-def list_transforms() -> list[str]:
-    """List available transforms. Internal use."""
-    return list(TRANSFORM_REGISTRY.keys())
-
+# All tools for agent binding
+transform_tools = column_tools + row_tools + utility_tools
 
 __all__ = [
-    # === AGENT-FACING (use these with LangChain agents) ===
-    "transform_dataset",
-    "transform_agent_tools",
+    # All tools combined
+    "transform_tools",
     
-    # === TYPES ===
-    "BaseTransform", "DatasetInput", "TransformResult", "TransformAudit",
-    "TransformWarning", "SchemaChange", "TransformApplyResult", "TransformLineage",
+    # Column tools
+    "column_tools",
+    "select_columns_tool",
+    "drop_columns_tool",
+    "rename_columns_tool",
+    "cast_tool",
+    "parse_datetime_tool",
+    "add_column_tool",
     
-    # === INTERNAL: Orchestrator ===
-    "transform_apply",
+    # Row tools
+    "row_tools",
+    "filter_rows_tool",
+    "sort_rows_tool",
+    "dedupe_tool",
+    "sample_rows_tool",
+    "limit_rows_tool",
     
-    # === INTERNAL: Individual transforms ===
-    "SelectTransform", "DropTransform", "RenameTransform", "CastTransform",
-    "ParseDatetimeTransform", "AddColumnTransform",
-    "select", "drop", "rename", "cast", "parse_datetime", "add_column",
+    # Utility tools
+    "utility_tools",
+    "cleanup_datasets_tool",
+    "list_datasets_tool",
     
-    # === INTERNAL: Utilities ===
-    "get_dtype_string", "validate_columns_exist",
-    "TRANSFORM_REGISTRY", "get_transform", "list_transforms",
-    "DTYPE_MAP", "SAFE_FUNCS",
-    
-    # === INTERNAL: Recipes ===
-    "RECIPES", "get_recipe", "list_recipes",
+    # Internal utilities
+    "resolve_dataset",
+    "save_result",
+    "format_result",
+    "cleanup_datasets",
 ]
