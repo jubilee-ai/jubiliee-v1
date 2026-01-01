@@ -25,6 +25,12 @@ from .column_ops import (
     rename_columns_tool,
     select_columns_tool,
 )
+from .feature_ops import (
+    agg_feature_tool,
+    bin_column_tool,
+    extract_datetime_tool,
+    feature_tools,
+)
 from .row_ops import (
     dedupe_tool,
     filter_rows_tool,
@@ -55,7 +61,7 @@ from .tool_utils import cleanup_datasets, format_result, resolve_dataset, save_r
 from .utility_tools import cleanup_datasets_tool, list_datasets_tool, utility_tools
 
 # All tools for agent binding
-transform_tools = column_tools + row_tools + time_tools + reshape_tools + agg_tools + clean_tools + utility_tools
+transform_tools = column_tools + row_tools + time_tools + reshape_tools + agg_tools + clean_tools + feature_tools + utility_tools
 
 __all__ = [
     # All tools combined
@@ -108,6 +114,12 @@ __all__ = [
     "clip_tool",
     "replace_values_tool",
     "regex_replace_tool",
+    
+    # Feature engineering tools
+    "feature_tools",
+    "bin_column_tool",
+    "agg_feature_tool",
+    "extract_datetime_tool",
     
     # Utility tools
     "utility_tools",
