@@ -6,9 +6,56 @@ Each function returns a formatted prompt string ready for LLM invocation.
 
 import json
 
-# TODO: better prompt
-# - more like a data scientist
-# - have the iteration focus on hitting important parts
+
+def plan_analysis_prompt(query: str, user_data: dict | None) -> str:
+    """Prompt for creating an analysis execution plan."""
+    data_summary = ""
+    if user_data:
+        data_summary = f"""
+Available data provided by user:
+{json.dumps(user_data, indent=2)}
+"""
+    else:
+        data_summary = "\nNo data provided by user - will need to retrieve from data sources."
+
+    return f"""You are a senior data scientist planning an analysis project.
+
+USER REQUEST:
+{query}
+{data_summary}
+
+Your task: Create an execution plan by breaking this into independent analysis tasks.
+
+GUIDELINES:
+- Each task should be a self-contained analysis that can run independently
+- Simple requests need only 1 task (e.g., "assess credit risk" → 1 task)
+- Complex requests may need multiple tasks when they require:
+  * Different types of models (e.g., risk scoring AND sentiment analysis)
+  * Analysis of different data sources or subjects
+  * Comparisons across different scenarios
+- Do NOT create separate tasks for steps within a single analysis (data prep, modeling, interpretation are ONE task)
+- Be pragmatic: fewer well-defined tasks are better than many fragmented ones
+
+EXAMPLES:
+- "Assess credit risk for this applicant" → 1 task
+- "Assess credit risk AND forecast next quarter revenue" → 2 tasks (different model types)
+- "Compare credit risk across 3 applicants" → 1 task (same analysis, multiple subjects)
+- "Analyze loan default risk, predict claim likelihood, and assess market sentiment" → 3 tasks
+
+Respond with JSON:
+{{
+    "reasoning": "Brief explanation of how you broke down the request",
+    "tasks": [
+        {{
+            "goal": "Clear, actionable goal for this analysis task",
+            "type": "risk_assessment | forecasting | sentiment_analysis | classification | clustering | other",
+            "priority": 1-3 (1 = highest)
+        }}
+    ]
+}}
+
+Return ONLY the JSON, no other text."""
+
 
 def decompose_query_prompt(query: str, user_data: dict | None) -> str:
     """Prompt for breaking a query into subtasks."""
@@ -159,20 +206,60 @@ Respond with JSON:
 Return ONLY the JSON, no other text."""
 
 
-def generate_report_prompt(query: str, reflections: list[dict]) -> str:
-    """Prompt for generating the final analysis report."""
-    return f"""Generate a comprehensive analysis report.
+def subagent_synthesize_prompt(
+    query: str,
+    goal: str,
+    model: str | None,
+    data: dict | None,
+    result: str | None,
+    reflection: dict | None,
+) -> str:
+    """Prompt for a subagent to synthesize its own subtask results."""
+    return f"""You are a data science agent that just completed an analysis task. Synthesize your findings.
 
-Original query: {query}
+ORIGINAL USER QUERY: {query}
 
-Analysis results:
-{json.dumps(reflections, indent=2)}
+YOUR ASSIGNED TASK: {goal}
 
-Create a report with:
-1. Executive Summary - Key findings and recommendations
-2. Methodology - Models used, data sources
-3. Results - Detailed findings from each analysis step
-4. Limitations - Caveats and confidence levels
+YOUR WORK:
+- Model used: {model or "None"}
+- Data analyzed: {json.dumps(data) if data else "None"}
+- Raw result: {result or "None"}
+- Reflection: {json.dumps(reflection) if reflection else "None"}
 
-Format as clean markdown."""
+Create a synthesis of your findings that can be combined with other agents' work.
+
+Respond with JSON:
+{{
+    "task_goal": "{goal}",
+    "status": "complete" | "partial" | "failed",
+    "model_used": "model name or null",
+    "key_findings": "Main findings in 2-3 sentences",
+    "metrics": {{"metric_name": "value"}} (any quantitative results),
+    "confidence": "high" | "medium" | "low",
+    "limitations": ["limitation 1", "limitation 2"],
+    "recommendation": "Actionable recommendation based on findings"
+}}
+
+Return ONLY the JSON, no other text."""
+
+
+def generate_report_prompt(query: str, syntheses: list[dict]) -> str:
+    """Prompt for generating the final analysis report from all subagent syntheses."""
+    return f"""Generate a comprehensive analysis report combining results from multiple analysis agents.
+
+ORIGINAL USER QUERY: {query}
+
+AGENT SYNTHESES:
+{json.dumps(syntheses, indent=2)}
+
+Create a unified report that:
+1. Executive Summary - Key findings and recommendations from ALL agents
+2. Methodology - Models used by each agent, data sources
+3. Results - Detailed findings organized by analysis task
+4. Cross-Analysis Insights - Connections between different analyses (if applicable)
+5. Limitations - Combined caveats and confidence levels
+6. Final Recommendations - Unified actionable recommendations
+
+Format as clean markdown. Integrate the agents' findings cohesively, not just as separate sections."""
 
