@@ -79,6 +79,7 @@ class AgentState(TypedDict):
 # TODO: Add in the model training agent
 # - If we retrieve models ask the LLM:
 # --> Do we have the right models or do we need to train a new one?
+# --> Should be very based on if a model matches our schema or not and matches our goal
 
 
 def make_subtask(goal: str) -> Subtask:
