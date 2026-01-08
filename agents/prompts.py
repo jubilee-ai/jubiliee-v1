@@ -263,3 +263,120 @@ Create a unified report that:
 
 Format as clean markdown. Integrate the agents' findings cohesively, not just as separate sections."""
 
+
+def decide_next_step_prompt(
+    query: str, 
+    syntheses: list[dict],
+    iteration_count: int = 0,
+    max_iterations: int = 3,
+) -> str:
+    """
+    Prompt for reflecting on completed work and deciding whether to finalize or iterate.
+    """
+    # Extract completed task names for clear visibility
+    completed_tasks = [s.get("task_goal", "Unknown task") for s in syntheses]
+    completed_tasks_list = "\n".join(f"  - {task}" for task in completed_tasks)
+    
+    iteration_context = ""
+    if iteration_count > 0:
+        remaining = max_iterations - iteration_count
+        iteration_context = f"""
+## ITERATION STATUS
+This is iteration {iteration_count + 1} of {max_iterations} maximum.
+{"⚠️ FINAL ITERATION - You MUST choose 'finalize'." if remaining == 0 else ""}
+"""
+
+    return f"""## USER'S REQUEST
+{query}
+{iteration_context}
+## TASKS ALREADY COMPLETED (DO NOT REPEAT)
+{completed_tasks_list}
+
+## FULL TASK DETAILS
+{json.dumps(syntheses, indent=2)}
+
+## DECISION RULES
+
+1. Look at the tasks already completed above.
+2. Did they answer the user's request? If YES → finalize.
+3. Is there something MISSING that requires a DIFFERENT task? If YES → iterate.
+
+⚠️ CRITICAL: You CANNOT run these tasks again or any similar variation:
+{completed_tasks_list}
+
+If the only work you can think of is similar to the tasks above, choose "finalize".
+Only choose "iterate" if there is a genuinely DIFFERENT task needed.
+
+## RESPONSE FORMAT
+{{
+    "reflection": "If iterating: describe what DIFFERENT task is needed. If finalizing: leave empty.",
+    "decision": "finalize" | "iterate"
+}}
+
+Return ONLY valid JSON."""
+
+
+def plan_analysis_with_reflection_prompt(
+    query: str, 
+    user_data: dict | None, 
+    reflection: dict,
+    completed_tasks: list[str],
+) -> str:
+    """
+    Prompt for re-planning analysis based on prior work and reflection.
+    
+    Used when iterating after the decide_next_step determines more work is needed.
+    """
+    data_summary = ""
+    if user_data:
+        data_summary = f"""
+Available data provided by user:
+{json.dumps(user_data, indent=2)}
+"""
+    else:
+        data_summary = "\nNo data provided by user - will need to retrieve from data sources."
+
+    # Get the reflection text
+    reflection_text = reflection.get("reflection", "No reflection available")
+    
+    # Format completed tasks list
+    completed_tasks_list = "\n".join(f"  - {task}" for task in completed_tasks)
+
+    return f"""## USER'S REQUEST
+{query}
+{data_summary}
+
+## TASKS ALREADY COMPLETED (DO NOT REPEAT OR CREATE SIMILAR)
+{completed_tasks_list}
+
+## WHY WE'RE ITERATING
+{reflection_text}
+
+## YOUR TASK
+Create tasks for ONLY genuinely DIFFERENT work.
+
+⚠️ CRITICAL RULES:
+- You CANNOT create any task similar to the ones listed above
+- If you can't think of a genuinely DIFFERENT task, return empty tasks array
+- Only add tasks that address the specific gap mentioned in "WHY WE'RE ITERATING"
+
+Respond with JSON:
+{{
+    "reasoning": "What DIFFERENT task are you adding? Confirm it's not similar to completed tasks.",
+    "tasks": [
+        {{
+            "goal": "Goal for a genuinely DIFFERENT task",
+            "type": "risk_assessment | forecasting | sentiment_analysis | classification | clustering | other",
+            "priority": 1-3
+        }}
+    ]
+}}
+
+If no genuinely different work is needed:
+{{
+    "reasoning": "All necessary work has been completed",
+    "tasks": []
+}}
+
+Return ONLY valid JSON."""
+

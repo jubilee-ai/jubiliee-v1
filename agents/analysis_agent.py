@@ -7,9 +7,10 @@ Uses LangGraph for state management with Send API for parallel subagent executio
 import json
 import operator
 from pathlib import Path
-from typing import Annotated, TypedDict
+from typing import Annotated, Literal, TypedDict
 
 from dotenv import load_dotenv
+from pydantic import BaseModel, Field
 
 # Load environment variables from .env
 load_dotenv(Path(__file__).parent.parent / ".env")
@@ -18,14 +19,32 @@ from langchain_openai import ChatOpenAI
 from langgraph.constants import Send
 from langgraph.graph import END, StateGraph
 
-from .prompts import generate_report_prompt, plan_analysis_prompt
+from .prompts import (decide_next_step_prompt, generate_report_prompt,
+                      plan_analysis_prompt,
+                      plan_analysis_with_reflection_prompt)
 from .subagent import SubagentState, build_subagent_graph
 
 # =============================================================================
 # LLM Setup
 # =============================================================================
 
-llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+llm = ChatOpenAI(model="gpt-5-mini", temperature=0)
+
+
+# =============================================================================
+# Structured Output Models
+# =============================================================================
+
+
+class ReflectionOutput(BaseModel):
+    """Reflection on completed analysis work and decision on next steps."""
+    reflection: str = Field(
+        description="Detailed reflection covering: what models were run, what topics were analyzed, "
+        "key findings, what was addressed vs missing, and if iterating - what new work is needed"
+    )
+    decision: Literal["finalize", "iterate"] = Field(
+        description="Whether to finalize the report or iterate for more analysis"
+    )
 
 
 # =============================================================================
@@ -47,6 +66,11 @@ class AgentState(TypedDict):
     subtasks: list[Subtask]
     # Use reducer to collect syntheses from parallel branches
     all_syntheses: Annotated[list[dict], operator.add]
+    # Reflection from decide_next_step (used when iterating)
+    reflection: dict | None
+    # Iteration tracking to prevent infinite loops
+    iteration_count: int
+    max_iterations: int
     final_report: str | None
 
 
@@ -70,10 +94,32 @@ def parse_json_response(content: str) -> dict:
 # Graph Nodes
 # =============================================================================
 
-
+# TODO: Add a guardrail to prevent repeating tasks
 def plan_analysis(state: AgentState) -> dict:
-    """Create an execution plan by breaking query into subtasks."""
-    prompt = plan_analysis_prompt(state["query"], state.get("user_data"))
+    """Create an execution plan by breaking query into subtasks.
+    
+    If a reflection exists (from a previous iteration), uses it to create
+    a focused plan addressing only the gaps identified.
+    """
+    reflection = state.get("reflection")
+    
+    if reflection and reflection.get("decision") == "iterate":
+        # Extract completed task names from syntheses
+        completed_tasks = [
+            s.get("task_goal", "Unknown task") 
+            for s in state.get("all_syntheses", [])
+        ]
+        # Re-planning based on reflection - focus on gaps
+        prompt = plan_analysis_with_reflection_prompt(
+            state["query"], 
+            state.get("user_data"),
+            reflection,
+            completed_tasks,
+        )
+    else:
+        # Initial planning
+        prompt = plan_analysis_prompt(state["query"], state.get("user_data"))
+    
     response = llm.invoke(prompt)
     plan = parse_json_response(response.content)
     
@@ -145,6 +191,38 @@ def generate_report(state: AgentState) -> dict:
     response = llm.invoke(prompt)
     return {"final_report": response.content}
 
+def decide_next_step(state: AgentState) -> dict:
+    """
+    Reflect on the synthesized results and decide whether to finalize or iterate.
+    
+    Uses LangChain structured output to return a validated ReflectionOutput containing:
+    - Summary of work completed
+    - Gap analysis (what's missing)
+    - Decision (finalize or iterate)
+    - Guidance for iteration if needed
+    """
+    structured_llm = llm.with_structured_output(ReflectionOutput)
+    iteration = state.get("iteration_count", 0)
+    max_iter = state.get("max_iterations", 3)
+    prompt = decide_next_step_prompt(
+        state["query"], 
+        state["all_syntheses"],
+        iteration_count=iteration,
+        max_iterations=max_iter,
+    )
+    reflection: ReflectionOutput = structured_llm.invoke(prompt)
+    # Increment iteration count
+    return {
+        "reflection": reflection.model_dump(),
+        "iteration_count": iteration + 1,
+    }
+
+
+def route_after_reflection(state: AgentState) -> str:
+    """Route based on reflection decision. Forces finalization at max iterations."""
+    if state.get("iteration_count", 0) >= state.get("max_iterations", 3):
+        return "generate_report"
+    return "plan" if state.get("reflection", {}).get("decision") == "iterate" else "generate_report"
 
 # =============================================================================
 # Graph Construction
@@ -156,14 +234,18 @@ def build_analysis_graph() -> StateGraph:
     Build the main analysis graph with parallel subagent execution.
     
     Flow:
-        plan → [fan_out] → run_subagent (parallel) → generate_report → END
-                              ↑ (one per subtask)
+        plan → [fan_out] → run_subagent (parallel) → reflect → [decision]
+                              ↑ (one per subtask)                    ↓
+                              ← ← ← ← ← ← ← ← ← ← ← ← ← ← ← ← (iterate)
+                                                                     ↓
+                                                        generate_report → END
     """
     graph = StateGraph(AgentState)
 
     # Add nodes
     graph.add_node("plan", plan_analysis)
     graph.add_node("run_subagent", run_subagent_node)
+    graph.add_node("reflect", decide_next_step)
     graph.add_node("generate_report", generate_report)
 
     # Set entry point
@@ -172,8 +254,16 @@ def build_analysis_graph() -> StateGraph:
     # After plan, fan out to parallel subagents using Send
     graph.add_conditional_edges("plan", fan_out_subtasks, ["run_subagent"])
     
-    # After all subagents complete, generate report
-    graph.add_edge("run_subagent", "generate_report")
+    # After all subagents complete, reflect on results
+    graph.add_edge("run_subagent", "reflect")
+    
+    # After reflection, either finalize or iterate
+    graph.add_conditional_edges(
+        "reflect",
+        route_after_reflection,
+        {"plan": "plan", "generate_report": "generate_report"}
+    )
+    
     graph.add_edge("generate_report", END)
 
     return graph
@@ -203,28 +293,11 @@ def run_analysis(query: str, user_data: dict | None = None) -> str:
         "user_data": user_data,
         "subtasks": [],
         "all_syntheses": [],
+        "reflection": None,
+        "iteration_count": 0,
+        "max_iterations": 3,
         "final_report": None,
     }
 
     final_state = app.invoke(initial_state)
     return final_state.get("final_report") or "Analysis could not be completed."
-
-
-# Example usage
-if __name__ == "__main__":
-    result = run_analysis(
-        query="Assess credit risk for a 35-year-old married male with $75,000 income",
-        user_data={
-            "gender": "m",
-            "marital": "married",
-            "howpaid": "monthly",
-            "mortgage": "n",
-            "age": 35,
-            "income": 75000,
-            "numkids": 2,
-            "numcards": 3,
-            "storecar": 1,
-            "loans": 1,
-        },
-    )
-    print(result)

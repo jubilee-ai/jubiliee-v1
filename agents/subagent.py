@@ -30,7 +30,7 @@ from .prompts import (prepare_data_prompt, reflect_prompt, select_model_prompt,
 # LLM Setup
 # =============================================================================
 
-llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+llm = ChatOpenAI(model="gpt-5-mini", temperature=0)
 
 
 # =============================================================================
@@ -69,14 +69,47 @@ class SubagentState(TypedDict):
 
 
 def parse_json_response(content: str) -> dict:
-    """Parse JSON from LLM response, handling markdown code blocks."""
+    """Parse JSON from LLM response, handling markdown code blocks and common issues."""
+    import re
+    
     content = content.strip()
+    
+    # Handle markdown code blocks
     if content.startswith("```"):
         content = content.split("```")[1]
         if content.startswith("json"):
             content = content[4:]
         content = content.strip()
-    return json.loads(content)
+    
+    # Try parsing as-is first
+    try:
+        return json.loads(content)
+    except json.JSONDecodeError:
+        pass
+    
+    # Try to extract JSON object from the content
+    json_match = re.search(r'\{[\s\S]*\}', content)
+    if json_match:
+        try:
+            return json.loads(json_match.group())
+        except json.JSONDecodeError:
+            pass
+    
+    # Try fixing common issues: unescaped quotes in strings
+    # Replace problematic characters
+    try:
+        # Remove control characters that break JSON
+        cleaned = re.sub(r'[\x00-\x1f\x7f-\x9f]', ' ', content)
+        return json.loads(cleaned)
+    except json.JSONDecodeError:
+        pass
+    
+    # Last resort: return a failure dict
+    return {
+        "data_ready": False,
+        "missing_fields": ["JSON parsing failed"],
+        "notes": f"Could not parse LLM response: {content[:200]}..."
+    }
 
 
 def execute_model_impl(model_name: str, data: dict) -> str:
@@ -195,6 +228,8 @@ def prepare_data(state: SubagentState) -> dict:
 
 def execute_model(state: SubagentState) -> dict:
     """Execute the selected model on prepared data."""
+    # TODO: Add a guardrail to see if we've use the same model and data already
+
     if state["status"] == "failed":
         return {}
     
