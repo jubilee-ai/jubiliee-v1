@@ -329,9 +329,9 @@ class DatasetGetInput(BaseModel):
                     "Example: {'Age': {'$gte': 30}, 'Default': 1}"
     )
     limit: int = Field(
-        default=50,
-        description="Maximum number of rows to return. Use -1 for all rows (caution: large datasets). "
-                    "Default is 50 rows which is suitable for initial exploration."
+        default=5,
+        description="Maximum number of rows to return. Default is 5 for quick preview. "
+                    "Use -1 for all rows (caution: large datasets)."
     )
     sample_strategy: Literal["head", "tail", "random"] = Field(
         default="head",
@@ -345,26 +345,24 @@ def dataset_get_tool(
     asset_id: str,
     columns: Optional[list[str]] = None,
     filters: Optional[dict] = None,
-    limit: int = 50,
+    limit: int = 5,
     sample_strategy: Literal["head", "tail", "random"] = "head",
 ) -> str:
     """
-    Retrieve data from a dataset in the catalog.
+    Retrieve a sample of data from a catalog dataset.
     
-    Use this tool after catalog_search_tool to load actual data from a discovered dataset.
-    Returns the data along with schema information and statistics.
+    Returns schema info and a data preview (default 5 rows, max 10).
+    Use this to inspect dataset structure and sample values.
+    For full data queries, use sql_query_tool on SQL tables.
     
-    Workflow:
-    1. First use catalog_search_tool to find relevant datasets
-    2. Use the asset_id from search results with this tool to load the data
-    3. Optionally filter and select specific columns
-    
-    The response includes:
-    - Schema: column names, types, and sample values
-    - Data: the actual rows (as a list of records)
-    - Stats: row counts, numeric summaries
-    - Provenance: source tracking and filter history
+    Args:
+        asset_id: Dataset ID from catalog_search_tool (e.g., "csv/insurance.csv")
+        columns: Optional list of columns to return
+        filters: Optional dict of {column: value} filters
+        limit: Number of rows to return (default 5, max 10)
+        sample_strategy: "head", "tail", or "random"
     """
+    limit = min(limit, 10)  # Cap at 10 rows
     try:
         result = dataset_get(
             asset_id=asset_id,
@@ -407,31 +405,14 @@ def dataset_get_tool(
             output_lines.append(col_info)
         output_lines.append("")
         
-        # Data preview (first few rows in a readable format)
+        # Data preview (show all returned rows, already capped at 10)
         data = result_dict['data']
         if data:
             output_lines.append("### Data Preview")
             output_lines.append("```json")
-            # Show first 5 rows
-            preview_data = data[:5] if len(data) > 5 else data
-            output_lines.append(json.dumps(preview_data, indent=2, default=str))
+            output_lines.append(json.dumps(data, indent=2, default=str))
             output_lines.append("```")
-            if len(data) > 5:
-                output_lines.append(f"*... {len(data) - 5} more rows not shown*")
         output_lines.append("")
-        
-        # Numeric summary if available
-        if stats.get('numeric_summary'):
-            output_lines.append("### Numeric Column Statistics")
-            for col_name, col_stats in stats['numeric_summary'].items():
-                output_lines.append(f"- **{col_name}**: mean={col_stats['mean']}, std={col_stats['std']}, range=[{col_stats['min']}, {col_stats['max']}]")
-            output_lines.append("")
-        
-        # Full data as JSON for programmatic use
-        output_lines.append("### Full Data (JSON)")
-        output_lines.append("<data>")
-        output_lines.append(json.dumps(data, default=str))
-        output_lines.append("</data>")
         
         return "\n".join(output_lines)
         

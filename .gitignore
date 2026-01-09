@@ -87,6 +87,9 @@ dmypy.json
 *.onnx
 *.h5
 
+# Derived datasets (created during agent runs)
+datasets/derived/
+
 # OS files
 .DS_Store
 Thumbs.db
@@ -94,3 +97,4 @@ Thumbs.db
 
 
 
+datasets/warehouse.db

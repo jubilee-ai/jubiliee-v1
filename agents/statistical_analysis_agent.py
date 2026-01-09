@@ -25,6 +25,8 @@ from analysis import analysis_tools
 # System Prompt
 # =============================================================================
 
+# TODO: Might need to give transformation tools to help it clean the data when there are issues.
+
 SYSTEM_PROMPT = """You are a statistical analysis agent. Your job is to analyze a dataset
 to accomplish a specific analysis goal.
 

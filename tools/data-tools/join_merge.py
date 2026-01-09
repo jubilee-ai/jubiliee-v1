@@ -126,26 +126,51 @@ def _resolve_dataset(ref: str) -> pd.DataFrame:
     # Check registry first (for chained operations)
     if (df := get_registered_dataset(ref)) is not None:
         return df.copy()
-    
-    # Try SQL warehouse
+
+    # Try SQL warehouse (exact match and lowercase)
     try:
         from .sql_query import get_warehouse
-        if (table := get_warehouse().get_table_info(ref)):
-            df, _ = get_warehouse().execute_query(f"SELECT * FROM {table.name}")
+        warehouse = get_warehouse()
+        # Try exact match
+        table = warehouse.get_table_info(ref)
+        if table is None:
+            # Try lowercase
+            table = warehouse.get_table_info(ref.lower())
+        if table is not None:
+            df, _ = warehouse.execute_query(f"SELECT * FROM {table.name}")
             return df
     except Exception:
         pass
-    
-    # Try catalog
+
+    # Try catalog (various formats)
     try:
         from .data_loader import dataset_get
-        return pd.DataFrame(dataset_get(asset_id=ref, limit=-1).data)
+
+        # Try as-is first
+        try:
+            return pd.DataFrame(dataset_get(asset_id=ref, limit=-1).data)
+        except Exception:
+            pass
+        # Try with csv/ prefix
+        if not ref.startswith("csv/") and not ref.startswith("sql/"):
+            try:
+                return pd.DataFrame(dataset_get(asset_id=f"csv/{ref}.csv", limit=-1).data)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    # Not found - provide helpful error
+    available = list_all_dataset_refs()
+    # Filter to just the clean names for suggestions
+    sql_tables = []
+    try:
+        from .sql_query import list_tables
+        sql_tables = list_tables()
     except Exception:
         pass
     
-    # Not found
-    available = list_all_dataset_refs()
-    hint = fuzzy_suggest(ref, available) if available else "No datasets loaded. Use sql_query_tool or dataset_get_tool first."
+    hint = fuzzy_suggest(ref, sql_tables or available) if available else "No datasets loaded."
     raise ValueError(f"Dataset '{ref}' not found. {hint}")
 
 
@@ -326,8 +351,8 @@ class JoinMergeInput(BaseModel):
     join_type: Literal["inner", "left", "right", "outer"] = Field(
         default="inner", description="Join type: inner, left, right, or outer"
     )
-    suffixes: Optional[tuple[str, str]] = Field(
-        default=("_left", "_right"), description="Suffixes for overlapping column names"
+    suffixes: Optional[list[str]] = Field(
+        default=["_left", "_right"], description="Suffixes for overlapping column names (2-element list)"
     )
     dedupe_strategy: Optional[Literal["first", "last"]] = Field(
         default=None, description="Dedupe by key before join: 'first' or 'last'"
@@ -343,7 +368,7 @@ def join_merge_tool(
     right_ref: str,
     keys: Union[str, list[str], dict[str, str]],
     join_type: Literal["inner", "left", "right", "outer"] = "inner",
-    suffixes: Optional[tuple[str, str]] = ("_left", "_right"),
+    suffixes: Optional[list[str]] = None,
     dedupe_strategy: Optional[Literal["first", "last"]] = None,
     cardinality: Optional[Literal["one_to_one", "one_to_many", "many_to_one", "many_to_many"]] = None,
 ) -> str:
@@ -352,6 +377,7 @@ def join_merge_tool(
     
     First load data with sql_query_tool or dataset_get_tool, then join.
     The returned dataset_ref can be used in subsequent operations.
+    Column names are case-sensitive—call get_sql_schema_tool on both tables first to get exact column names.
     
     Examples:
     - join_merge_tool('customers', 'orders', 'customer_id')
@@ -364,7 +390,7 @@ def join_merge_tool(
             right_ref=right_ref,
             keys=keys,
             join_type=join_type,
-            suffixes=tuple(suffixes) if isinstance(suffixes, list) else suffixes or ("_left", "_right"),
+            suffixes=tuple(suffixes) if suffixes else ("_left", "_right"),
             dedupe_strategy=dedupe_strategy,
             validate=cardinality,
         )
@@ -415,24 +441,17 @@ def _format_result(result: JoinResult, left_ref: str, right_ref: str, join_type:
         lines.append(f"- *...+{len(r['schema']) - 10} more*")
     lines.append("")
     
-    # Data preview
+    # Data preview (3 rows only)
     if r["data"]:
+        preview_rows = r["data"][:3]
         lines.extend([
-            "### Preview",
+            "### Preview (3 rows)",
             "```json",
-            json.dumps(r["data"][:5], indent=2, default=str),
+            json.dumps(preview_rows, indent=2, default=str),
             "```",
         ])
-        if len(r["data"]) > 5:
-            lines.append(f"*...{len(r['data']) - 5} more rows*")
-        lines.append("")
-    
-    # Full data
-    lines.extend([
-        "<data>",
-        json.dumps(r["data"], default=str),
-        "</data>",
-    ])
+        if len(r["data"]) > 3:
+            lines.append(f"*...{len(r['data']) - 3} more rows available via get_dataset(\"{r['dataset_ref']}\")*")
     
     return "\n".join(lines)
 

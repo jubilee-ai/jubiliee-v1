@@ -36,6 +36,10 @@ DATA_TOOLS_DIR = Path(__file__).parent
 DATASETS_DIR = DATA_TOOLS_DIR.parent.parent / "datasets"
 CATALOG_PATH = DATASETS_DIR / "catalog.json"
 SQL_DIR = DATASETS_DIR / "sql"
+DERIVED_DATASETS_DIR = DATASETS_DIR / "derived"  # For newly created/joined datasets
+
+# Ensure derived datasets directory exists
+DERIVED_DATASETS_DIR.mkdir(parents=True, exist_ok=True)
 
 
 # =============================================================================
@@ -344,32 +348,153 @@ def truncate_columns_display(columns: list[str], max_cols: int = 10) -> list[str
 
 
 # =============================================================================
-# IN-MEMORY DATASET REGISTRY
+# DATASET REGISTRY (In-Memory + File Persistence)
 # =============================================================================
 
 # Global registry for storing DataFrames from operations (joins, queries, etc.)
 # This allows chaining operations by referencing previous results
+# Datasets are also persisted to DERIVED_DATASETS_DIR for durability
 _dataset_registry: dict = {}
 
 
-def register_dataset(ref: str, df) -> str:
+def _sanitize_ref_for_filename(ref: str) -> str:
+    """Convert a dataset ref to a safe filename."""
+    # Replace problematic characters with underscores
+    safe = re.sub(r'[^\w\-.]', '_', ref)
+    return safe
+
+
+def _sanitize_ref_for_sql(ref: str) -> str:
+    """Convert a dataset ref to a valid SQL table name."""
+    # SQL table names: start with letter/underscore, alphanumeric + underscore only
+    safe = re.sub(r'[^\w]', '_', ref)
+    if safe and safe[0].isdigit():
+        safe = '_' + safe
+    return safe.lower()
+
+
+def _get_derived_path(ref: str) -> Path:
+    """Get the file path for a derived dataset."""
+    safe_name = _sanitize_ref_for_filename(ref)
+    return DERIVED_DATASETS_DIR / f"{safe_name}.parquet"
+
+
+# Track which tables we've added to the warehouse (for cleanup)
+_derived_sql_tables: set = set()
+
+
+def register_dataset(ref: str, df, persist: bool = True, register_sql: bool = True) -> str:
     """
-    Register a DataFrame in the in-memory registry.
+    Register a DataFrame in the registry, persist to disk, and add to SQL warehouse.
+    
+    Derived datasets are:
+    1. Stored in memory for fast access
+    2. Saved to datasets/derived/ as parquet files for durability
+    3. Added to the SQL warehouse as tables for SQL querying
     
     Args:
         ref: Unique reference ID for this dataset
         df: Pandas DataFrame to store
+        persist: If True, save to disk as parquet (default True)
+        register_sql: If True, add to SQL warehouse for SQL queries (default True)
     
     Returns:
         The reference ID
     """
+    import pandas as pd
+    
     _dataset_registry[ref] = df
+    
+    # Persist to disk if requested
+    if persist and isinstance(df, pd.DataFrame):
+        try:
+            file_path = _get_derived_path(ref)
+            df.to_parquet(file_path, index=False)
+        except Exception as e:
+            # Log but don't fail - in-memory is still available
+            print(f"Warning: Failed to persist dataset '{ref}' to disk: {e}")
+    
+    # Register in SQL warehouse for SQL queries
+    if register_sql and isinstance(df, pd.DataFrame):
+        try:
+            _register_in_sql_warehouse(ref, df)
+        except Exception as e:
+            # Log but don't fail - other access methods still work
+            print(f"Warning: Failed to register '{ref}' in SQL warehouse: {e}")
+    
     return ref
+
+
+def _dedupe_column_names(df) -> "pd.DataFrame":
+    """
+    Deduplicate column names for SQL compatibility.
+    SQLite is case-insensitive, so 'Age' and 'age' are duplicates.
+    """
+    import pandas as pd
+    
+    cols = list(df.columns)
+    seen_lower = {}
+    new_cols = []
+    
+    for col in cols:
+        col_lower = col.lower()
+        if col_lower in seen_lower:
+            # Duplicate found - add suffix
+            count = seen_lower[col_lower]
+            seen_lower[col_lower] = count + 1
+            new_col = f"{col}_{count}"
+            new_cols.append(new_col)
+        else:
+            seen_lower[col_lower] = 1
+            new_cols.append(col)
+    
+    if new_cols != cols:
+        df = df.copy()
+        df.columns = new_cols
+    
+    return df
+
+
+def _register_in_sql_warehouse(ref: str, df) -> None:
+    """Register a DataFrame as a table in the SQL warehouse."""
+    from sqlalchemy import text
+    
+    # Import here to avoid circular imports
+    from .sql_query import get_warehouse
+    
+    warehouse = get_warehouse()
+    table_name = _sanitize_ref_for_sql(ref)
+    
+    # Dedupe column names for SQL (SQLite is case-insensitive)
+    df = _dedupe_column_names(df)
+    
+    # Write DataFrame to SQL - replace if exists
+    df.to_sql(table_name, warehouse.engine, if_exists='replace', index=False)
+    
+    # Update warehouse's table cache
+    from sqlalchemy import inspect
+    inspector = inspect(warehouse.engine)
+    columns = [
+        {"name": c["name"], "type": str(c["type"]), "nullable": c.get("nullable", True)}
+        for c in inspector.get_columns(table_name)
+    ]
+    
+    from .sql_query import TableInfo
+    warehouse.tables[table_name] = TableInfo(
+        name=table_name,
+        columns=columns,
+        row_count=len(df)
+    )
+    
+    # Track for cleanup
+    _derived_sql_tables.add(table_name)
 
 
 def get_registered_dataset(ref: str):
     """
-    Retrieve a DataFrame from the registry.
+    Retrieve a DataFrame from the registry or disk.
+    
+    Checks in-memory registry first, then falls back to disk.
     
     Args:
         ref: Reference ID of the dataset
@@ -377,43 +502,168 @@ def get_registered_dataset(ref: str):
     Returns:
         The DataFrame or None if not found
     """
-    return _dataset_registry.get(ref)
+    import pandas as pd
+    
+    # Check in-memory first
+    if ref in _dataset_registry:
+        return _dataset_registry[ref]
+    
+    # Check disk (derived datasets)
+    file_path = _get_derived_path(ref)
+    if file_path.exists():
+        try:
+            df = pd.read_parquet(file_path)
+            # Cache in memory for faster subsequent access
+            _dataset_registry[ref] = df
+            return df
+        except Exception:
+            pass
+    
+    return None
 
 
 def list_registered_datasets() -> list[str]:
     """
-    List all registered dataset references.
+    List all registered dataset references (in-memory and on disk).
     
     Returns:
         List of reference IDs
     """
-    return list(_dataset_registry.keys())
+    # Get in-memory refs
+    refs = set(_dataset_registry.keys())
+    
+    # Add refs from disk
+    if DERIVED_DATASETS_DIR.exists():
+        for f in DERIVED_DATASETS_DIR.glob("*.parquet"):
+            refs.add(f.stem)
+    
+    return sorted(refs)
 
 
-def clear_registry() -> None:
-    """Clear all registered datasets from memory."""
+def clear_registry(clear_disk: bool = False, clear_sql: bool = True) -> None:
+    """
+    Clear all registered datasets from memory, disk, and SQL warehouse.
+    
+    Args:
+        clear_disk: If True, also delete files from datasets/derived/
+        clear_sql: If True, also drop derived tables from SQL warehouse (default True)
+    """
+    global _derived_sql_tables
+    
     _dataset_registry.clear()
+    
+    # Clear SQL tables
+    if clear_sql and _derived_sql_tables:
+        try:
+            from sqlalchemy import text
+            from .sql_query import get_warehouse
+            warehouse = get_warehouse()
+            with warehouse.engine.connect() as conn:
+                for table_name in list(_derived_sql_tables):
+                    try:
+                        conn.execute(text(f"DROP TABLE IF EXISTS {table_name}"))
+                        if table_name in warehouse.tables:
+                            del warehouse.tables[table_name]
+                    except Exception:
+                        pass
+                conn.commit()
+            _derived_sql_tables.clear()
+        except Exception:
+            pass
+    
+    # Clear disk files
+    if clear_disk and DERIVED_DATASETS_DIR.exists():
+        for f in DERIVED_DATASETS_DIR.glob("*.parquet"):
+            try:
+                f.unlink()
+            except Exception:
+                pass
 
 
-def clear_dataset_registry(prefix: str = None) -> int:
+def clear_dataset_registry(prefix: str = None, clear_disk: bool = False, clear_sql: bool = True) -> int:
     """
     Clear registered datasets, optionally filtering by prefix.
     
     Args:
         prefix: If provided, only clear datasets starting with this prefix
+        clear_disk: If True, also delete files from datasets/derived/
+        clear_sql: If True, also drop derived tables from SQL warehouse
     
     Returns:
         Number of datasets cleared
     """
+    global _derived_sql_tables
+    
     if prefix is None:
         count = len(_dataset_registry)
         _dataset_registry.clear()
+        
+        # Clear all SQL tables
+        if clear_sql and _derived_sql_tables:
+            try:
+                from sqlalchemy import text
+                from .sql_query import get_warehouse
+                warehouse = get_warehouse()
+                with warehouse.engine.connect() as conn:
+                    for table_name in list(_derived_sql_tables):
+                        try:
+                            conn.execute(text(f"DROP TABLE IF EXISTS {table_name}"))
+                            if table_name in warehouse.tables:
+                                del warehouse.tables[table_name]
+                            count += 1
+                        except Exception:
+                            pass
+                    conn.commit()
+                _derived_sql_tables.clear()
+            except Exception:
+                pass
+        
+        if clear_disk and DERIVED_DATASETS_DIR.exists():
+            for f in DERIVED_DATASETS_DIR.glob("*.parquet"):
+                try:
+                    f.unlink()
+                    count += 1
+                except Exception:
+                    pass
         return count
     
+    count = 0
     to_remove = [k for k in _dataset_registry if k.startswith(prefix)]
     for k in to_remove:
         del _dataset_registry[k]
-    return len(to_remove)
+        count += 1
+    
+    # Clear matching SQL tables
+    if clear_sql:
+        try:
+            from sqlalchemy import text
+            from .sql_query import get_warehouse
+            warehouse = get_warehouse()
+            safe_prefix = _sanitize_ref_for_sql(prefix)
+            with warehouse.engine.connect() as conn:
+                for table_name in list(_derived_sql_tables):
+                    if table_name.startswith(safe_prefix):
+                        try:
+                            conn.execute(text(f"DROP TABLE IF EXISTS {table_name}"))
+                            if table_name in warehouse.tables:
+                                del warehouse.tables[table_name]
+                            _derived_sql_tables.discard(table_name)
+                            count += 1
+                        except Exception:
+                            pass
+                conn.commit()
+        except Exception:
+            pass
+    
+    if clear_disk and DERIVED_DATASETS_DIR.exists():
+        for f in DERIVED_DATASETS_DIR.glob(f"{prefix}*.parquet"):
+            try:
+                f.unlink()
+                count += 1
+            except Exception:
+                pass
+    
+    return count
 
 
 def get_registered_dataset_info(ref: str) -> Optional[dict]:
@@ -424,12 +674,37 @@ def get_registered_dataset_info(ref: str) -> Optional[dict]:
         ref: Reference ID of the dataset
     
     Returns:
-        Dict with 'rows' and 'columns' count, or None if not found
+        Dict with 'rows', 'columns', and 'persisted' status, or None if not found
     """
-    df = _dataset_registry.get(ref)
+    df = get_registered_dataset(ref)
     if df is not None:
-        return {"rows": len(df), "columns": len(df.columns)}
+        file_path = _get_derived_path(ref)
+        return {
+            "rows": len(df),
+            "columns": len(df.columns),
+            "column_names": list(df.columns),
+            "persisted": file_path.exists(),
+            "file_path": str(file_path) if file_path.exists() else None,
+        }
     return None
+
+
+def list_derived_datasets() -> list[dict]:
+    """
+    List all derived datasets stored on disk.
+    
+    Returns:
+        List of dicts with ref, file_path, and size_mb
+    """
+    datasets = []
+    if DERIVED_DATASETS_DIR.exists():
+        for f in DERIVED_DATASETS_DIR.glob("*.parquet"):
+            datasets.append({
+                "ref": f.stem,
+                "file_path": str(f),
+                "size_mb": round(f.stat().st_size / (1024 * 1024), 2),
+            })
+    return datasets
 
 
 # =============================================================================
