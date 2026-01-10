@@ -16,10 +16,16 @@ import pandas as pd
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 
-from .utils import (build_schema_from_dataframe, fuzzy_suggest,
-                    generate_unique_id, get_registered_dataset,
-                    get_similar_matches, list_all_dataset_refs,
-                    register_dataset, utc_timestamp)
+try:
+    from .utils import (build_schema_from_dataframe, fuzzy_suggest,
+                        generate_unique_id, get_registered_dataset,
+                        get_similar_matches, list_all_dataset_refs,
+                        register_dataset, utc_timestamp)
+except ImportError:
+    from utils import (build_schema_from_dataframe, fuzzy_suggest,
+                       generate_unique_id, get_registered_dataset,
+                       get_similar_matches, list_all_dataset_refs,
+                       register_dataset, utc_timestamp)
 
 # =============================================================================
 # CONFIGURATION

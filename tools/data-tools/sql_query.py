@@ -21,9 +21,14 @@ from pydantic import BaseModel, Field
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.exc import SQLAlchemyError
 
-from .utils import (SQL_DIR, build_schema_from_dataframe, fuzzy_suggest,
-                    generate_unique_id, get_similar_matches, register_dataset,
-                    truncate_columns_display, utc_timestamp)
+try:
+    from .utils import (SQL_DIR, build_schema_from_dataframe, fuzzy_suggest,
+                        generate_unique_id, get_similar_matches, register_dataset,
+                        truncate_columns_display, utc_timestamp)
+except ImportError:
+    from utils import (SQL_DIR, build_schema_from_dataframe, fuzzy_suggest,
+                       generate_unique_id, get_similar_matches, register_dataset,
+                       truncate_columns_display, utc_timestamp)
 
 # =============================================================================
 # CONFIGURATION

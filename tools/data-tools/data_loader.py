@@ -18,8 +18,12 @@ from typing import Any, Literal, Optional
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 
-from .utils import (DATASETS_DIR, get_dataset_info, infer_simple_dtype,
-                    utc_timestamp)
+try:
+    from .utils import (DATASETS_DIR, get_dataset_info, infer_simple_dtype,
+                        utc_timestamp)
+except ImportError:
+    from utils import (DATASETS_DIR, get_dataset_info, infer_simple_dtype,
+                       utc_timestamp)
 
 
 @dataclass

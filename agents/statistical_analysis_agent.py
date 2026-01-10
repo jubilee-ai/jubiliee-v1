@@ -1,8 +1,8 @@
 """
-Statistical Analysis Agent - Multi-turn agent for comprehensive data analysis.
+Statistical Analysis Agent - Multi-turn agent for data retrieval and analysis.
 
-Uses LangChain create_agent with analysis tools to perform data validation,
-EDA, and feature diagnostics based on a given goal.
+Uses LangChain create_agent with data retrieval and analysis tools to find data,
+perform validation, EDA, and feature diagnostics based on a given goal.
 """
 
 from pathlib import Path
@@ -15,31 +15,50 @@ from pydantic import BaseModel, Field
 # Load environment variables
 load_dotenv(Path(__file__).parent.parent / ".env")
 
-# Import analysis tools
+# Import tools
 import sys
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "tools" / "data-tools"))
 from analysis import analysis_tools
+from data_loader import dataset_get_tool
+from join_merge import join_merge_tool
+from retrieval import catalog_search_tool, list_datasets_tool
+from sql_query import get_sql_schema_tool, sql_query_tool
+
+# Combine data retrieval and analysis tools
+DATA_RETRIEVAL_TOOLS = [
+    catalog_search_tool,
+    list_datasets_tool,
+    dataset_get_tool,
+    get_sql_schema_tool,
+    sql_query_tool,
+    join_merge_tool,
+]
+
+ALL_TOOLS = DATA_RETRIEVAL_TOOLS + analysis_tools
 
 # =============================================================================
 # System Prompt
 # =============================================================================
 
-# TODO: Might need to give transformation tools to help it clean the data when there are issues.
+SYSTEM_PROMPT = """You are a data analysis agent. You can find, retrieve, and analyze datasets to answer questions.
 
-SYSTEM_PROMPT = """You are a statistical analysis agent. Your job is to analyze a dataset
-to accomplish a specific analysis goal.
+## Capabilities
 
-RULES:
-- Always use the provided dataset_ref for all tool calls
-- Do NOT repeat the same tool call with identical parameters
-- Focus on findings relevant to the analysis goal
-- Stop when you have sufficient information to answer the goal
+**Data Retrieval**: Search the catalog, list datasets, load data, run SQL queries, join datasets.
 
-When done, provide a final summary with:
+**Statistical Analysis**: Profile data, validate quality, find correlations, analyze distributions, identify patterns.
+
+## Approach
+
+Use whatever tools make sense to accomplish the goal. If you need data, find and load it. If you need analysis, run it. Iterate as needed.
+
+## Output
+
+Provide a clear summary with:
 - Key findings relevant to the goal
-- Data quality issues found (if any)
-- Recommendations for next steps
+- Data/evidence supporting your conclusions  
+- Recommendations for next steps (if applicable)
 """
 
 
@@ -47,17 +66,16 @@ When done, provide a final summary with:
 # Agent Creation
 # =============================================================================
 
-# TODO: Optimize the context. Create agent is bad. --> maybe claude sdk instead of manual
 def create_statistical_analysis_agent():
     """
-    Create the statistical analysis agent with bound tools.
+    Create the statistical analysis agent with data retrieval and analysis tools.
     
     Returns:
         Compiled agent graph ready for invocation
     """
     agent = create_agent(
-        model="openai:gpt-5-mini",
-        tools=analysis_tools,
+        model="openai:gpt-5.1",
+        tools=ALL_TOOLS,
         system_prompt=SYSTEM_PROMPT,
     )
     return agent
@@ -67,28 +85,32 @@ def create_statistical_analysis_agent():
 # Main Entry Point
 # =============================================================================
 
-def run_statistical_analysis(goal: str, dataset_ref: str) -> str:
+def run_statistical_analysis(goal: str, dataset_ref: str | None = None) -> str:
     """
-    Run statistical analysis on a dataset to accomplish a goal.
+    Run statistical analysis to accomplish a goal.
     
     Args:
-        goal: The analysis goal to accomplish (e.g., "Identify data quality issues",
-              "Find features most predictive of default", "Profile the dataset")
-        dataset_ref: Reference to the dataset (table name or path)
+        goal: The analysis goal to accomplish (e.g., "Analyze smoking impact on insurance costs",
+              "Find features most predictive of default", "Profile the loan dataset")
+        dataset_ref: Optional reference to the dataset. If not provided, the agent will
+                     search for and load appropriate data.
     
     Returns:
         Analysis results as a string
     """
     agent = create_statistical_analysis_agent()
     
-    # Construct the user message with goal and dataset context
-    user_message = f"""Dataset reference: {dataset_ref}
+    # Construct the user message
+    if dataset_ref:
+        user_message = f"""Dataset: {dataset_ref}
 
-Analysis goal: {goal}
+Goal: {goal}
 
-Analyze this dataset to accomplish the goal. Call each tool at most once with the same parameters.
-Do not repeat tool calls you have already made.
-Once you have gathered enough information, stop calling tools and provide your final answer."""
+Analyze this dataset to accomplish the goal."""
+    else:
+        user_message = f"""Goal: {goal}
+
+Find the appropriate data and analyze it to accomplish this goal."""
 
     result = agent.invoke({"messages": [{"role": "user", "content": user_message}]})
     
@@ -109,47 +131,39 @@ Once you have gathered enough information, stop calling tools and provide your f
 
 class StatisticalAnalysisInput(BaseModel):
     """Input schema for statistical_analysis_tool."""
-    dataset_ref: str = Field(
-        description="Reference to the dataset to analyze. Use the dataset name, table name, "
-        "or path from a previous data loading/transformation step."
-    )
     goal: str = Field(
-        description="The specific analysis goal. Examples: "
-        "'Profile this dataset and identify data quality issues', "
-        "'Find which features are most predictive of the target column X', "
-        "'Check for class imbalance and recommend handling strategies', "
-        "'Identify redundant or leaky features before model training', "
-        "'Summarize distributions and correlations for numeric columns'"
+        description="The analysis goal. Examples: "
+        "'Analyze insurance costs by smoking status', "
+        "'Find which features predict loan default', "
+        "'Profile the credit risk dataset and check for quality issues', "
+        "'Compare charges across regions in the insurance data'"
+    )
+    dataset_ref: str | None = Field(
+        default=None,
+        description="Optional dataset reference if already known. If not provided, "
+        "the agent will search for and load appropriate data."
     )
 
-# TODO: Add more statistical analysis tools to this tool/agent.
 @tool(args_schema=StatisticalAnalysisInput)
 def statistical_analysis_tool(
-    dataset_ref: str,
     goal: str,
+    dataset_ref: str | None = None,
 ) -> str:
     """
-    Run comprehensive statistical analysis on a dataset to answer a specific goal.
+    Find data and run statistical analysis to answer a specific goal.
     
     USE THIS TOOL WHEN YOU NEED TO:
+    - Analyze patterns in data (e.g., "How does smoking affect insurance costs?")
     - Profile a dataset (shape, types, distributions, correlations)
     - Validate data quality (nulls, invalid ranges, type mismatches)
-    - Analyze target variable (class imbalance, distribution)
-    - Find feature-target relationships (correlations, AUC)
-    - Identify problematic features (high cardinality, leakage, redundancy)
+    - Find feature-target relationships and key drivers
     - Compare metrics across groups/segments
-    - Analyze time trends, growth rates, seasonality
-    - Get actionable recommendations before model training
+    - Get actionable insights from data
     
-    DO NOT USE THIS TOOL IF:
-    - You haven't loaded or referenced a dataset yet
-    - You need to transform data (use transformation tools instead)
-    - You need to train a model (use model tools instead)
+    This tool can find and load data automatically if you don't have a dataset_ref.
+    Just describe what you want to analyze in the goal.
     
-    This tool runs a multi-turn analysis agent that selects and runs appropriate tools
-    based on the goal, then synthesizes findings into actionable insights.
-    
-    RETURNS: A comprehensive analysis report with key findings, alerts, and recommendations.
+    RETURNS: Analysis findings with supporting data and recommendations.
     """
     try:
         return run_statistical_analysis(goal=goal, dataset_ref=dataset_ref)

@@ -36,47 +36,37 @@ from utils import get_registered_dataset
 # Configuration
 # =============================================================================
 
-SYSTEM_PROMPT = """You are a data retrieval agent. Your job is to find and prepare datasets based on user requests.
+SYSTEM_PROMPT = """You are a data retrieval agent. Find and prepare datasets based on user requests.
 
-## Available Tools
+## Tools Available
 
-1. **catalog_search_tool**: Search the data catalog to discover relevant datasets by name, description, columns, or use case.
-2. **list_datasets_tool**: List all available datasets (SQL tables, registered datasets from previous operations).
-3. **dataset_get_tool**: Load data from a catalog dataset by asset_id. Supports filtering and column selection.
-4. **get_sql_schema_tool**: Get schema of SQL tables. CALL THIS before writing SQL queries.
-5. **sql_query_tool**: Execute SQL SELECT queries against the data warehouse.
-6. **join_merge_tool**: Join two datasets on key columns with diagnostics.
+- **catalog_search_tool**: Search datasets by name, description, columns, or use case
+- **list_datasets_tool**: List all available datasets
+- **dataset_get_tool**: Load data from catalog by asset_id
+- **get_sql_schema_tool**: Get SQL table schemas
+- **sql_query_tool**: Execute SQL SELECT queries
+- **join_merge_tool**: Join datasets on key columns
 
-## Workflow
+Use whatever approach makes sense for the request. You can search, query, join, or combine tools as needed.
 
-1. **Discover**: Use catalog_search_tool or list_datasets_tool to find relevant data.
-2. **Inspect**: Use get_sql_schema_tool or dataset_get_tool (with small limit) to understand structure.
-3. **Retrieve**: Load the data using dataset_get_tool or sql_query_tool.
-4. **Transform** (if needed): Use join_merge_tool to combine datasets or sql_query_tool for complex filtering.
+## Output Format
 
-## CRITICAL: Output Format
-
-You MUST end your response with a JSON block in this exact format:
+End your response with a JSON block:
 
 ```json
 {
-  "dataset_ref": "<the dataset reference ID>",
-  "description": "<brief description of what the data contains>",
-  "rows": <number of rows>,
+  "dataset_ref": "<asset_id, table name, or join reference>",
+  "description": "<what the data contains>",
+  "rows": <row count>,
   "columns": ["col1", "col2", ...],
-  "source": "<asset_id, SQL table name, or join reference>"
+  "source": "<where it came from>"
 }
 ```
 
-The dataset_ref is how downstream agents will access this data. Use:
-- For catalog datasets: the asset_id (e.g., "csv/insurance.csv")
-- For SQL tables: the table name (e.g., "loan_default")
-- For joins: the join reference returned by join_merge_tool (e.g., "join_abc123")
-
 ## Important Notes
 
-- Always start by searching or listing available data before attempting to load.
-- Use filters and limits appropriately to avoid loading excessive data.
+- Search or list available data before attempting to load unfamiliar datasets.
+- Use filters and limits to avoid loading excessive data.
 - For joins, verify key columns exist in both datasets first.
 - The dataset_ref you provide will be used by other agents to access the data.
 """
@@ -91,6 +81,7 @@ llm = ChatOpenAI(model="gpt-4.1", temperature=0)
 # Tools
 # =============================================================================
 
+# TODO: Semantic retrieval
 DATA_RETRIEVAL_TOOLS = [
     catalog_search_tool,
     list_datasets_tool,
