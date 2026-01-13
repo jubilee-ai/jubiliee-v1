@@ -2,6 +2,8 @@ torch
 transformers
 langchain
 langchain-core
+langchain-openai
+langgraph
 pydantic
 pandas
 numpy

@@ -9,7 +9,10 @@ import json
 from pathlib import Path
 from typing import Optional
 
-from .utils import get_openai_client
+try:
+    from .utils import get_openai_client
+except ImportError:
+    from utils import get_openai_client
 
 
 class OpenAIEmbedder:

@@ -6,6 +6,9 @@ __pycache__/
 # C extensions
 *.so
 
+# Sql files
+*.sql
+
 # Distribution / packaging
 .Python
 build/
@@ -84,9 +87,14 @@ dmypy.json
 *.onnx
 *.h5
 
+# Derived datasets (created during agent runs)
+datasets/derived/
+
 # OS files
 .DS_Store
 Thumbs.db
 
 
 
+
+datasets/warehouse.db

@@ -21,9 +21,14 @@ from pydantic import BaseModel, Field
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.exc import SQLAlchemyError
 
-from .utils import (SQL_DIR, build_schema_from_dataframe, fuzzy_suggest,
-                    generate_unique_id, get_similar_matches,
-                    truncate_columns_display, utc_timestamp)
+try:
+    from .utils import (SQL_DIR, build_schema_from_dataframe, fuzzy_suggest,
+                        generate_unique_id, get_similar_matches, register_dataset,
+                        truncate_columns_display, utc_timestamp)
+except ImportError:
+    from utils import (SQL_DIR, build_schema_from_dataframe, fuzzy_suggest,
+                       generate_unique_id, get_similar_matches, register_dataset,
+                       truncate_columns_display, utc_timestamp)
 
 # =============================================================================
 # CONFIGURATION
@@ -97,30 +102,61 @@ class QueryValidation:
 # WAREHOUSE CLASS (SQLAlchemy + Pandas)
 # =============================================================================
 
+# File-based SQLite database path (persists across module reloads)
+_SQLITE_DB_PATH = SQL_DIR.parent / "warehouse.db"
+
+
 class SQLWarehouse:
     """SQL warehouse using SQLAlchemy for connections and Pandas for queries."""
     
-    def __init__(self, sql_dir: Path = SQL_DIR):
-        self.engine = create_engine("sqlite:///:memory:", echo=False)
-        self.tables: dict[str, TableInfo] = {}
+    def __init__(self, sql_dir: Path = SQL_DIR, use_file_db: bool = True):
+        self.sql_dir = sql_dir
         
-        # Load all SQL files
-        for sql_file in sql_dir.glob("*.sql"):
+        # Use file-based SQLite to persist across module loading issues
+        if use_file_db:
+            self.engine = create_engine(f"sqlite:///{_SQLITE_DB_PATH}", echo=False)
+            self._is_file_db = True
+        else:
+            self.engine = create_engine("sqlite:///:memory:", echo=False)
+            self._is_file_db = False
+            
+        self.tables: dict[str, TableInfo] = {}
+        self._sql_file_mtimes: dict[str, float] = {}  # Track file modification times
+        self._load_errors: list[str] = []  # Track loading errors
+        
+        self._load_sql_files()
+    
+    def _load_sql_files(self):
+        """Load all SQL files from the sql directory."""
+        self._load_errors = []
+        
+        for sql_file in self.sql_dir.glob("*.sql"):
+            self._sql_file_mtimes[sql_file.name] = sql_file.stat().st_mtime
             try:
                 sql_content = sql_file.read_text()
+                error_count = 0
                 with self.engine.connect() as conn:
                     conn.execute(text("BEGIN"))
                     for stmt in sql_content.split(';'):
                         if stmt.strip():
                             try:
                                 conn.execute(text(stmt))
-                            except SQLAlchemyError:
-                                pass
+                            except SQLAlchemyError as e:
+                                error_count += 1
+                                if error_count <= 3:
+                                    self._load_errors.append(f"{sql_file.name}: {str(e)[:100]}")
                     conn.execute(text("COMMIT"))
+                if error_count > 0:
+                    self._load_errors.append(f"{sql_file.name}: {error_count} statement errors")
             except Exception as e:
-                print(f"Warning: Failed to load {sql_file.name}: {e}")
+                self._load_errors.append(f"{sql_file.name}: {e}")
         
-        # Cache schema using SQLAlchemy inspect
+        # Cache schema from ACTUAL SQLite tables
+        self._refresh_table_cache()
+    
+    def _refresh_table_cache(self):
+        """Refresh the tables dict from actual SQLite state."""
+        self.tables.clear()
         inspector = inspect(self.engine)
         for table_name in inspector.get_table_names():
             columns = [
@@ -132,6 +168,34 @@ class SQLWarehouse:
             except:
                 row_count = None
             self.tables[table_name.lower()] = TableInfo(name=table_name, columns=columns, row_count=row_count)
+    
+    def _needs_reload(self) -> bool:
+        """Check if warehouse needs to be reloaded."""
+        # Check 1: New or removed files
+        current_files = set(f.name for f in self.sql_dir.glob("*.sql"))
+        loaded_files = set(self._sql_file_mtimes.keys())
+        if current_files != loaded_files:
+            return True
+        
+        # Check 2: Modified files
+        for sql_file in self.sql_dir.glob("*.sql"):
+            if sql_file.name in self._sql_file_mtimes:
+                if sql_file.stat().st_mtime > self._sql_file_mtimes[sql_file.name]:
+                    return True
+        
+        # Check 3: Tables dict out of sync with SQLite
+        inspector = inspect(self.engine)
+        actual_tables = set(t.lower() for t in inspector.get_table_names())
+        cached_tables = set(self.tables.keys())
+        # Only check if cached tables are missing from SQLite (not extra derived tables)
+        if not cached_tables.issubset(actual_tables | set(self.tables.keys())):
+            return True
+        
+        return False
+    
+    def _check_for_new_files(self) -> bool:
+        """Check if new SQL files have been added since initialization."""
+        return self._needs_reload()
     
     def get_table_info(self, table_name: str) -> Optional[TableInfo]:
         return self.tables.get(table_name.lower())
@@ -216,15 +280,50 @@ def get_table_sample(warehouse: SQLWarehouse, table_name: str, n: int = 3) -> li
 # MAIN QUERY FUNCTION
 # =============================================================================
 
-_warehouse: Optional[SQLWarehouse] = None
+class _WarehouseHolder:
+    """Singleton holder that works across different import mechanisms."""
+    instance: Optional[SQLWarehouse] = None
+
+_holder = _WarehouseHolder()
 
 
 def get_warehouse() -> SQLWarehouse:
-    """Get or create global warehouse instance."""
-    global _warehouse
-    if _warehouse is None:
-        _warehouse = SQLWarehouse()
-    return _warehouse
+    """Get or create global warehouse instance. Auto-reloads if SQL files changed."""
+    if _holder.instance is None:
+        _holder.instance = SQLWarehouse()
+    elif _holder.instance._needs_reload():
+        # SQL files changed - reload
+        _holder.instance = SQLWarehouse()
+    return _holder.instance
+
+
+def reset_warehouse() -> SQLWarehouse:
+    """Reset and reload the SQL warehouse. Use after adding new SQL files."""
+    _holder.instance = None
+    return get_warehouse()
+
+
+# For backwards compatibility
+_warehouse = None  # Deprecated, use _holder.instance
+
+
+def verify_warehouse_tables() -> dict:
+    """Verify that cached tables actually exist in SQLite. Returns status dict."""
+    warehouse = get_warehouse()
+    inspector = inspect(warehouse.engine)
+    actual_tables = set(t.lower() for t in inspector.get_table_names())
+    cached_tables = set(warehouse.tables.keys())
+    
+    missing = cached_tables - actual_tables
+    extra = actual_tables - cached_tables
+    
+    return {
+        "ok": len(missing) == 0,
+        "cached": list(cached_tables),
+        "actual": list(actual_tables),
+        "missing_from_sqlite": list(missing),
+        "not_in_cache": list(extra),
+    }
 
 
 def sql_query(
@@ -273,7 +372,15 @@ def sql_query(
         if "no such table" in error_str:
             match = re.search(r"no such table: (\w+)", error_str)
             if match:
-                suggestion = fuzzy_suggest(match.group(1), list(warehouse.tables.keys()))
+                table_name = match.group(1)
+                # Get ACTUAL tables from SQLite, not cached dict
+                inspector = inspect(warehouse.engine)
+                actual_tables = inspector.get_table_names()
+                
+                if not actual_tables:
+                    suggestion = "No tables loaded. SQL files may have failed to load. Try reset_warehouse()."
+                else:
+                    suggestion = fuzzy_suggest(table_name, actual_tables)
         elif "no such column" in error_str:
             match = re.search(r"no such column: (\w+)", error_str)
             if match:
@@ -364,20 +471,33 @@ def sql_query_tool(query: str, params: Optional[dict] = None, max_rows: int = 10
     - Parameterized queries with :param_name syntax
     - Fuzzy matching suggests correct names on typos
     - Automatic row limits
+    - Results are registered and can be retrieved via dataset_ref
     
-    Returns JSON with: columns, data, rows_returned, execution_time_ms, truncated
+    Returns JSON with: dataset_ref, columns, data, rows_returned, execution_time_ms, truncated
     """
     try:
         result = sql_query(query=query, params=params, max_rows=max_rows)
         
-        # Return clean, parseable JSON
+        # Create DataFrame from results and register it
+        df = pd.DataFrame(result.data)
+        dataset_ref = f"query_{result.query_id}"
+        
+        # Register so it can be retrieved later (but don't persist to disk for simple queries)
+        # TODO: Confirm this works within a larger agent around it
+        register_dataset(dataset_ref, df, persist=False, register_sql=False)
+        
+        # Return compact JSON with 3-row preview (full data via get_dataset)
         import json
+        columns = [c["name"] for c in result.schema]
+        preview = result.data[:3]
+        total_rows = result.stats["rows_returned"]
+        
         return json.dumps({
-            "columns": [c["name"] for c in result.schema],
-            "data": result.data,
-            "rows_returned": result.stats["rows_returned"],
-            "execution_time_ms": result.stats["execution_time_ms"],
-            "truncated": result.stats["truncated"],
+            "dataset_ref": dataset_ref,
+            "columns": columns,
+            "rows_returned": total_rows,
+            "preview": preview,
+            "note": f"Showing 3/{total_rows} rows. Use get_dataset('{dataset_ref}') for full data." if total_rows > 3 else None,
         }, default=str)
     except ValueError as e:
         return f'{{"error": "{e}"}}'

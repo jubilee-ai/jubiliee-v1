@@ -17,9 +17,14 @@ from typing import Optional
 
 import bm25s
 
-from .embedder import OpenAIEmbedder
-from .utils import (CATALOG_PATH, cosine_similarity,
-                    get_all_available_datasets, get_catalog, tokenize_text)
+try:
+    from .embedder import OpenAIEmbedder
+    from .utils import (CATALOG_PATH, cosine_similarity,
+                        get_all_available_datasets, get_catalog, tokenize_text)
+except ImportError:
+    from embedder import OpenAIEmbedder
+    from utils import (CATALOG_PATH, cosine_similarity,
+                       get_all_available_datasets, get_catalog, tokenize_text)
 
 
 @dataclass

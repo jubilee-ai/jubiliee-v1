@@ -25,6 +25,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "tools", "model
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "tools", "models-tools", "pretrained"))
 
 import warnings
+
 warnings.filterwarnings('ignore')
 
 
@@ -72,12 +73,10 @@ def load_tools():
         print(f"   ⚠️ Could not load survival_analysis: {e}")
     
     try:
-        from model_storage import (
-            list_trained_models_tool,
-            predict_with_model_tool,
-            get_model_info_tool,
-            delete_trained_model_tool,
-        )
+        from model_storage import (delete_trained_model_tool,
+                                   get_model_info_tool,
+                                   list_trained_models_tool,
+                                   predict_with_model_tool)
         tools.extend([
             list_trained_models_tool,
             predict_with_model_tool,
@@ -173,7 +172,7 @@ def run_tool_binding_demo(api_key: str):
     
     # Initialize model
     model = init_chat_model(
-        model="gpt-4o-mini",
+        model="gpt-5-mini",
         temperature=0,
     )
     
