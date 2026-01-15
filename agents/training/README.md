@@ -35,6 +35,8 @@ Output:
     iii. Apply transformations
     iv. Iterate back to i.
 
+TODO: DECIDE WHETHER SUPERVISED OR NOT (3.5 IS BASED ON THIS)
+
 3.5. Label + Split Definition (One-time, Human-driven) --> SKIPPER IF NOT RELEVANT
 - Agent presents the dataset schema and asks user to define:
     1. Target column: "Which column is the prediction target?"

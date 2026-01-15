@@ -9,6 +9,7 @@ from langgraph.graph import END, StateGraph
 
 from .cleaning_simple import run_cleaning_simple
 from .data_collection import data_collection
+from .label_and_split import run_label_split_definition
 # Import node implementations
 from .select_model import select_model
 
@@ -114,10 +115,9 @@ def cleaning_node(state: TrainingAgentState) -> TrainingAgentState:
 
 def label_split_definition(state: TrainingAgentState) -> TrainingAgentState:
     """
-    Step 3.5: Label + Split Definition (One-time, Human-driven)
-    - SKIP IF NOT RELEVANT
+    Step 3.5: Label + Split Definition
     
-    Agent presents dataset schema and asks user to define:
+    Uses LLM to infer the 6 key parameters for supervised learning:
     1. Target column
     2. Prediction horizon
     3. Grain (what does one row represent?)
@@ -125,13 +125,32 @@ def label_split_definition(state: TrainingAgentState) -> TrainingAgentState:
     5. Split strategy (random / time-based / entity-based)
     6. Forbidden columns (not available at prediction time)
     
-    User can choose:
-    - Manual mode: Answer each question directly
-    - Auto-fill mode: Agent infers, user reviews and confirms
+    If label_definition is already set in state, uses those values.
+    Otherwise, LLM infers based on goal, model, and schema context.
     
     Locked definitions passed to downstream steps (4, 5, 7)
     """
-    raise NotImplementedError("label_split_definition not implemented")
+    # Extract any pre-provided label definition values
+    existing = state.get("label_definition") or {}
+    
+    result = run_label_split_definition(
+        dataset_ref=state["cleaned_dataset_ref"],
+        goal=state["goal"],
+        selected_model=state.get("selected_model"),
+        model_explanation=state.get("model_explanation"),
+        target_column=existing.get("target_column"),
+        prediction_horizon=existing.get("prediction_horizon"),
+        grain=existing.get("grain"),
+        as_of_cutoff=existing.get("as_of_cutoff"),
+        split_strategy=existing.get("split_strategy"),
+        forbidden_columns=existing.get("forbidden_columns"),
+    )
+    
+    return {
+        **state,
+        "label_definition": result,
+        "current_step": "feature_selection_specification",
+    }
 
 
 def feature_selection_specification(state: TrainingAgentState) -> TrainingAgentState:

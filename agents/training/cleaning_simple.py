@@ -38,6 +38,7 @@ from utils import generate_unique_id, get_registered_dataset, register_dataset
 # TODO: Optimize it so that we have a single apply_transformations tool which takes the transformations as inputs.
 # then we apply them in a loop, getting the new dataset_ref and running each next one on those
 # --> Put this into the tools folder
+# --> Currently we have it but needs improvement
 class RunCleanTestsInput(BaseModel):
     """Input for running EDA + validation tests."""
     dataset_ref: str = Field(description="Reference to the dataset to analyze")
@@ -151,6 +152,8 @@ def mark_cleaning_complete(dataset_ref: str, reasoning: str) -> str:
     
     return f"✅ CLEANING COMPLETE\nCleaned dataset: `{cleaned_ref}`\nRows: {len(df):,}\nColumns: {len(df.columns)}\nReason: {reasoning}"
 
+# TODO: something more like this
+# CLEANING_TOOLS = [apply_transformations_tool, run_clean_tests, mark_cleaning_complete]
 
 # All tools for the cleaning agent
 CLEANING_TOOLS = [
