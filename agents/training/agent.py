@@ -9,6 +9,7 @@ from langgraph.graph import END, StateGraph
 
 from .cleaning_simple import run_cleaning_simple
 from .data_collection import data_collection
+from .feature_engineering_simple import run_feature_engineering_simple
 from .label_and_split import run_label_split_definition
 # Import node implementations
 from .select_model import select_model
@@ -155,22 +156,78 @@ def label_split_definition(state: TrainingAgentState) -> TrainingAgentState:
 
 def feature_selection_specification(state: TrainingAgentState) -> TrainingAgentState:
     """
-    Step 4: Iterative Feature Selection & Specification Agent
-    Tools: concentration_analysis + correlation_matrix + data_validation + 
-           distribution_analysis + eda_report + feature_diagnostics + 
-           group_summary + trend_analysis
+    Step 4: Feature Selection & Specification
     
-    Inputs from 3.5: target column, as-of cutoff, forbidden columns list
+    Uses the simple approach: run all analysis tools upfront, then one LLM call.
     
-    - Choose which features to use AND specify how to build them
-    - Excludes forbidden columns (future-leaking features)
-    - Access to all analysis tools for statistical analysis
-    - Iterates until confident, outputs feature_spec
-    - Human in the loop to verify or comment on features chosen
+    Inputs from state:
+    - cleaned_dataset_ref: The cleaned dataset from step 3
+    - goal: The ML goal
+    - label_definition: Contains target_column, grain, as_of_cutoff, forbidden_columns
     
     Output: feature_spec (structured contract for step 5)
     """
-    raise NotImplementedError("feature_selection_specification not implemented")
+    # Get inputs from state
+    dataset_ref = state.get("cleaned_dataset_ref")
+    goal = state.get("goal", "")
+    label_def = state.get("label_definition") or {}
+    
+    target_column = label_def.get("target_column", "")
+    grain = label_def.get("grain", "")
+    as_of_cutoff = label_def.get("as_of_cutoff")
+    forbidden_columns = label_def.get("forbidden_columns", [])
+    prediction_horizon = label_def.get("prediction_horizon")
+    
+    # Infer task type from goal or model selection
+    # Default to classification, could be enhanced to detect from goal text
+    selected_model = state.get("selected_model", "").lower()
+    if any(word in selected_model for word in ["regress", "continuous", "numeric"]):
+        task_type = "regression"
+    elif any(word in goal.lower() for word in ["regress", "predict value", "forecast amount"]):
+        task_type = "regression"
+    else:
+        task_type = "classification"
+    
+    # Validate we have required inputs
+    if not dataset_ref:
+        raise ValueError("No cleaned_dataset_ref in state - step 3 must complete first")
+    if not target_column:
+        raise ValueError("No target_column in label_definition - step 3.5 must complete first")
+    
+    # Run feature engineering
+    result = run_feature_engineering_simple(
+        dataset_ref=dataset_ref,
+        goal=goal,
+        target_column=target_column,
+        grain=grain,
+        task_type=task_type,
+        forbidden_columns=forbidden_columns,
+        as_of_cutoff=as_of_cutoff,
+        prediction_horizon=prediction_horizon,
+    )
+    
+    # Extract feature_spec
+    feature_spec = result.get("feature_spec")
+    validation = result.get("validation", {})
+    analysis_results = result.get("analysis_results", {})
+    
+    # Check validation
+    if validation and not validation.get("valid", True):
+        errors = validation.get("errors", [])
+        print(f"[WARNING] Feature spec validation issues: {errors}")
+    
+    # Update state
+    return {
+        **state,
+        "feature_spec": feature_spec,
+        "analysis_trace": [
+            {
+                "step": "feature_selection_specification",
+                "analysis_results": analysis_results,
+                "validation": validation,
+            }
+        ],
+    }
 
 
 def feature_engineering_executor(state: TrainingAgentState) -> TrainingAgentState:

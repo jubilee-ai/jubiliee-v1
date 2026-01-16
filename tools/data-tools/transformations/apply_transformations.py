@@ -8,11 +8,10 @@ parses the output to extract the new dataset_ref, and chains them.
 import re
 from typing import Any
 
-from langchain_core.tools import tool, BaseTool
+from langchain_core.tools import BaseTool, tool
 from pydantic import BaseModel, Field
 
-from .tool_utils import save_result, resolve_dataset
-
+from .tool_utils import resolve_dataset, save_result
 
 # =============================================================================
 # TOOL REGISTRY - Dynamically populated from submodules
@@ -23,13 +22,13 @@ _TOOL_REGISTRY: dict[str, BaseTool] = {}
 
 def _populate_tool_registry():
     """Dynamically populate registry with all tools from submodules."""
+    from .agg_ops import agg_tools
     from .clean_ops import clean_tools
     from .column_ops import column_tools
-    from .row_ops import row_tools
     from .feature_ops import feature_tools
-    from .time_ops import time_tools
-    from .agg_ops import agg_tools
     from .reshape_ops import reshape_tools
+    from .row_ops import row_tools
+    from .time_ops import time_tools
     
     all_tools = clean_tools + column_tools + row_tools + feature_tools + time_tools + agg_tools + reshape_tools
     
