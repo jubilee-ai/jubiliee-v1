@@ -53,7 +53,7 @@ TODO: DECIDE WHETHER SUPERVISED OR NOT (3.5 IS BASED ON THIS)
 - Locked definitions are passed to all downstream steps (4, 5, 7)
 - This prevents data leakage in feature selection and engineering
 
-4. Iterative Feature Selection & Specification Agent (dataset_summary/profile, goal, label_definition) --> feature_spec
+4. Feature Selection & Specification Agent (dataset_summary/profile, goal, label_definition) --> feature_spec
 - **Inputs from 3.5**: target column, as-of cutoff, forbidden columns list
 **Tools:** concentration_analysis + correlation_matrix + data_validation + distribution_analysis + eda_report + feature_diagnostics + group_summary + trend_analysis
 - The goal here is to choose which features to use AND specify how to build them
@@ -61,6 +61,7 @@ TODO: DECIDE WHETHER SUPERVISED OR NOT (3.5 IS BASED ON THIS)
 - We have access to all analysis tools in tools/data-tools/analysis for stat analysis to decide
 - Binded to the different tools and iterates until it feels it knows and outputs the feature_spec
 --> Human in the loop here to see the trace, stats, analysis and verify or comment on the features chosen
+--> ACTUALLY USING WHERE WE RUN ALL TOOLS AND OUTPUT (could get worse once too many tools) --> prob good tho
 
 - **Output: feature_spec** (structured contract for step 5):
     ```json
