@@ -8,12 +8,18 @@ import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+# Add data-tools to path for registry access
+_DATA_TOOLS_DIR = Path(__file__).parent.parent.parent / "tools" / "data-tools"
+if str(_DATA_TOOLS_DIR) not in sys.path:
+    sys.path.insert(0, str(_DATA_TOOLS_DIR))
+
 # Import data retrieval agent
 _DATA_RETRIEVAL_DIR = Path(__file__).parent.parent / "data-retrieval"
 if str(_DATA_RETRIEVAL_DIR) not in sys.path:
     sys.path.insert(0, str(_DATA_RETRIEVAL_DIR))
 
 from agent import DataRetrievalResult, retrieve_data
+from utils import get_registered_dataset
 
 if TYPE_CHECKING:
     from .agent import TrainingAgentState
@@ -26,6 +32,10 @@ def data_collection(state: "TrainingAgentState") -> "TrainingAgentState":
     - Reuse data-retrieval agent from ./data-retrieval
     - Finds the right data and puts together a dataset
     - Uses the datasets provided if available
+    
+    Priority:
+    1. If linked_datasets contains a reference that exists in the registry, use it directly
+    2. Otherwise, call the data retrieval agent to find/prepare data
     """
     goal = state.get("goal", "")
     linked_datasets = state.get("linked_datasets")
@@ -45,8 +55,46 @@ def data_collection(state: "TrainingAgentState") -> "TrainingAgentState":
             "error": "No goal provided",
         }
     
+    # -------------------------------------------------------------------------
+    # PRIORITY 1: Check if linked_datasets reference existing registered datasets
+    # -------------------------------------------------------------------------
+    if linked_datasets:
+        for ref in linked_datasets:
+            df = get_registered_dataset(ref)
+            if df is not None:
+                # Found a pre-registered dataset - use it directly
+                audit_trace = list(state.get("audit_trace", []))
+                explanations = list(state.get("explanations", []))
+                
+                explanation = (
+                    f"Data collection complete. Using pre-registered dataset '{ref}' "
+                    f"with {len(df):,} rows and {len(df.columns)} columns. "
+                    f"Columns: {list(df.columns)[:10]}{'...' if len(df.columns) > 10 else ''}"
+                )
+                explanations.append(explanation)
+                audit_trace.append({
+                    "step": "data_collection",
+                    "action": "used_linked_dataset",
+                    "dataset_ref": ref,
+                    "rows": len(df),
+                    "columns": list(df.columns),
+                    "source": "pre-registered",
+                })
+                
+                return {
+                    **state,
+                    "collected_dataset_ref": ref,
+                    "audit_trace": audit_trace,
+                    "explanations": explanations,
+                    "current_step": "data_collection",
+                    "error": None,
+                }
+    
+    # -------------------------------------------------------------------------
+    # PRIORITY 2: Call data retrieval agent to find/prepare data
+    # -------------------------------------------------------------------------
+    
     # Build a clear, actionable request for the data retrieval agent
-    # TODO: Improve --> maybe use LLM to call the data retrieval agent
     model_type = selected_model or "machine learning"
     request_parts = [
         f"I need to train a {model_type} model for the following goal:",

@@ -151,12 +151,6 @@ MODEL_SELECTION_PROMPT = """You are an ML model selection expert. Based on the u
 2. Select the most appropriate model from the available options
 3. Explain your reasoning
 4. List any alternative models that could also work
-
-Consider:
-- Is this classification or regression?
-- Is there a time-to-event component?
-- How important is interpretability vs accuracy?
-- What's the likely data structure?
 """
 
 

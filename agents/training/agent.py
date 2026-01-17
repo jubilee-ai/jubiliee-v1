@@ -103,9 +103,21 @@ def cleaning_node(state: TrainingAgentState) -> TrainingAgentState:
     Calls run_cleaning_simple which handles its own iteration loop internally.
     Returns updated state with cleaned dataset reference.
     """
+    # Dynamically set max iterations based on dataset complexity
+    # More columns = more potential cleaning operations needed
+    try:
+        from utils import get_registered_dataset
+        df = get_registered_dataset(state["collected_dataset_ref"])
+        num_columns = len(df.columns) if df is not None else 20
+        # Base of 15 iterations + 0.5 per column, capped at 50
+        max_iters = min(50, max(15, 15 + int(num_columns * 0.5)))
+    except Exception:
+        max_iters = 30
+    
     result = run_cleaning_simple(
         dataset_ref=state["collected_dataset_ref"],
         goal=state["goal"],
+        max_iterations=max_iters,
     )
     
     return {
