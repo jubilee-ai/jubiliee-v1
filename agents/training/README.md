@@ -90,6 +90,8 @@ TODO: DECIDE WHETHER SUPERVISED OR NOT (3.5 IS BASED ON THIS)
     ```
 - Each feature includes: name, formula/logic, source tables, windows, grain, as-of constraints, encoding strategy
 - This spec is reviewable by humans before execution
+TODO: Look into multi agent
+- Can we spin up subagents to assess what are trying to evaluate and eahc subagent tries to select 1 feature to select it
 
 5. Feature Engineering Executor (feature_spec, dataset, label_definition) --> Transformed dataset
 - **Inputs**: feature_spec from step 4, as-of cutoff, grain, split indices from 3.5
@@ -122,6 +124,48 @@ ii. Training:
         --> Go back to i (HUMAN IN THE LOOP)
         --> Complete (HUMAN IN THE LOOP)
 iii. Complete and output the weights file + audit trace, explanations of what happened...
+--> TODO: Down the line we want to think of it as being able to spin up multiple 'training' agents in parallel
+--> Essentially running x experiments at the same time and then testing them against each other (e.g. different parameters, types of models, learning rates...). Where each also will reflect on what went wrong and try to course correct.
 
 8. Generate a report on everything to accompany the weigths file
+
+
+
+NEXT STEP IMPROVEMENT IDEAS:
+- All todos above (e.g. taking multiple approaches in parallel)
+
+- Few shot prompts for each tool
+
+- data retrieval on the internet to build datasets
+--> Kaggle MCP
+--> Google datasets MCP
+
+- Testing agents which try to test one part of decisions and fix it
+--> mock in more depth how people do it
+
+- optimize context engineering
+--> make sure all the importanr context makes it in at each turn
+
+- ADD MORE TOOLS
+--> we're missing a ton of important ones for certain use cases
+--> text to sql helps this but can get better
+
+- unsupervised learning and models and optimize process for it
+--> keep the system dynamic and still one core system
+
+
+- neural nets and deep learning
+
+- computer vision
+
+- generating knowledge graphs of what has led to best models
+--> This approach worked best for this task...
+--> COULD BE HUGE for accuracy and efficient
+
+- SFT
+
+- RL apis
+
+- NLP...
+
 

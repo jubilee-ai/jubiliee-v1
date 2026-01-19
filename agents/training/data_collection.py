@@ -24,7 +24,7 @@ from utils import get_registered_dataset
 if TYPE_CHECKING:
     from .agent import TrainingAgentState
 
-
+# TODO: Potentially turn this into a subagent --> for example when merging datastes
 def data_collection(state: "TrainingAgentState") -> "TrainingAgentState":
     """
     Step 2: Data Collection Agent
