@@ -267,18 +267,12 @@ def train_random_forest(
 
     pipeline = Pipeline([("preprocessor", preprocessor), ("model", model)])
 
-    # Train/test split
-    stratify = y if input_data.task_type == "classification" else None
-    X_train, X_test, y_train, y_test = train_test_split(
-        X,
-        y,
-        test_size=input_data.test_size,
-        random_state=input_data.random_state,
-        stratify=stratify,
-    )
+    # NOTE: No internal train_test_split - data is already split by the pipeline
+    # The training agent passes pre-split training data here
+    # Validation/test evaluation happens via evaluate_model tool
 
-    # Fit pipeline
-    pipeline.fit(X_train, y_train)
+    # Fit pipeline on ALL provided data (it's already the training set)
+    pipeline.fit(X, y)
 
     # Get transformed feature names
     try:
@@ -286,14 +280,14 @@ def train_random_forest(
     except AttributeError:
         feature_names_out = feature_cols
 
-    # Predictions and metrics
-    y_train_pred = pipeline.predict(X_train)
-    y_test_pred = pipeline.predict(X_test)
+    # Predictions on training data (for sanity check metrics)
+    y_pred = pipeline.predict(X)
 
     # Extract the fitted model for feature importances and OOB score
     fitted_model = pipeline.named_steps["model"]
 
     # Calculate metrics based on task type
+    # NOTE: These are TRAINING metrics only - use evaluate_model for val/test metrics
     additional_metrics = {}
     classification_report_str = None
     conf_matrix = None
@@ -301,40 +295,38 @@ def train_random_forest(
     class_dist = None
 
     if input_data.task_type == "classification":
-        train_score = accuracy_score(y_train, y_train_pred)
-        test_score = accuracy_score(y_test, y_test_pred)
+        train_score = accuracy_score(y, y_pred)
 
         # Additional classification metrics
         classes = fitted_model.classes_
         n_classes = len(classes)
 
         try:
-            y_test_proba = pipeline.predict_proba(X_test)
+            y_proba = pipeline.predict_proba(X)
             if n_classes == 2:
-                roc_auc = roc_auc_score(y_test, y_test_proba[:, 1])
+                roc_auc = roc_auc_score(y, y_proba[:, 1])
             else:
                 roc_auc = roc_auc_score(
-                    y_test, y_test_proba, multi_class="ovr", average="weighted"
+                    y, y_proba, multi_class="ovr", average="weighted"
                 )
             additional_metrics["roc_auc"] = roc_auc
         except ValueError:
             additional_metrics["roc_auc"] = None
 
-        classification_report_str = classification_report(y_test, y_test_pred)
-        conf_matrix = confusion_matrix(y_test, y_test_pred).tolist()
+        classification_report_str = classification_report(y, y_pred)
+        conf_matrix = confusion_matrix(y, y_pred).tolist()
 
         # Class distribution
         class_dist = y.value_counts().to_dict()
         class_dist = {str(k): int(v) for k, v in class_dist.items()}
 
     else:  # regression
-        train_score = r2_score(y_train, y_train_pred)
-        test_score = r2_score(y_test, y_test_pred)
+        train_score = r2_score(y, y_pred)
 
         # Additional regression metrics
-        additional_metrics["mae"] = mean_absolute_error(y_test, y_test_pred)
-        additional_metrics["rmse"] = np.sqrt(mean_squared_error(y_test, y_test_pred))
-        additional_metrics["mse"] = mean_squared_error(y_test, y_test_pred)
+        additional_metrics["mae"] = mean_absolute_error(y, y_pred)
+        additional_metrics["rmse"] = np.sqrt(mean_squared_error(y, y_pred))
+        additional_metrics["mse"] = mean_squared_error(y, y_pred)
 
     # Feature importances
     importances = fitted_model.feature_importances_
@@ -352,9 +344,9 @@ def train_random_forest(
     joblib.dump(pipeline, save_path)
 
     # Prepare metrics and hyperparameters for registry
+    # NOTE: These are TRAINING metrics only - use evaluate_model for val/test metrics
     metrics = {
         "train_score": train_score,
-        "test_score": test_score,
         **additional_metrics,
     }
 
@@ -369,7 +361,6 @@ def train_random_forest(
         "class_weight": input_data.class_weight,
         "random_state": input_data.random_state,
         "n_jobs": input_data.n_jobs,
-        "test_size": input_data.test_size,
     }
 
     # Register model in the registry
@@ -401,7 +392,7 @@ def train_random_forest(
         n_classes=n_classes,
         class_distribution=class_dist,
         train_score=train_score,
-        test_score=test_score,
+        test_score=train_score,  # Same as train (no internal split anymore)
         additional_metrics=additional_metrics,
         classification_report=classification_report_str,
         confusion_matrix=conf_matrix,
@@ -429,12 +420,13 @@ class SklearnRandomForestToolInput(BaseModel):
     description: str = Field(
         default="", description="Human-readable description of the model's purpose."
     )
-    data: list[dict] = Field(
-        description="Training data as list of row dicts. Each dict must have the same keys. "
-        "Example: [{'age': 25, 'income': 50000, 'fraud': 0}, {'age': 35, 'income': 80000, 'fraud': 1}]"
+    train_dataset_ref: str = Field(
+        description="Reference name of the registered training dataset. "
+        "The dataset must be registered via register_dataset(). "
+        "Example: 'basic_train', 'pipeline_train_features'"
     )
     target_column: str = Field(
-        description="Name of target column to predict. Must exist in each data row."
+        description="Name of target column to predict. Must exist in the dataset."
     )
     task_type: Literal["classification", "regression"] = Field(
         description="'classification' for discrete classes (fraud/not fraud), "
@@ -486,10 +478,27 @@ class SklearnRandomForestToolInput(BaseModel):
     )
 
 
+def _load_dataset_from_ref(dataset_ref: str) -> pd.DataFrame:
+    """Load a dataset from the registry by reference name."""
+    import sys
+    from pathlib import Path
+    
+    data_tools_path = str(Path(__file__).parent.parent.parent / "data-tools")
+    if data_tools_path not in sys.path:
+        sys.path.insert(0, data_tools_path)
+    
+    from utils import get_registered_dataset
+    
+    df = get_registered_dataset(dataset_ref)
+    if df is None:
+        raise ValueError(f"Dataset '{dataset_ref}' not found in registry.")
+    return df
+
+
 @tool("sklearn_random_forest", args_schema=SklearnRandomForestToolInput)
 def sklearn_random_forest_tool(
     model_name: str,
-    data: list[dict],
+    train_dataset_ref: str,
     target_column: str,
     task_type: Literal["classification", "regression"],
     description: str = "",
@@ -613,6 +622,10 @@ def sklearn_random_forest_tool(
         and model registry info.
     """
     try:
+        # Load dataset from registry
+        df = _load_dataset_from_ref(train_dataset_ref)
+        data = df.to_dict(orient="records")
+        
         result = train_random_forest(
             RandomForestTrainingInput(
                 model_name=model_name,

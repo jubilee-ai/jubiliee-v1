@@ -25,7 +25,6 @@ if str(_DATA_TOOLS_DIR) not in sys.path:
 from transformations.tool_utils import resolve_dataset, save_result
 from utils import register_dataset
 
-
 # =============================================================================
 # OPERATION EXECUTORS
 # =============================================================================
@@ -382,9 +381,292 @@ def execute_feature_spec(
 
 
 # =============================================================================
+# SPLIT-AWARE EXECUTOR (FIT ON TRAIN, TRANSFORM ALL)
+# =============================================================================
+
+def _fit_and_transform_bin(
+    train_df: pd.DataFrame,
+    val_df: Optional[pd.DataFrame],
+    test_df: Optional[pd.DataFrame],
+    formula: dict,
+    feature_name: str,
+) -> tuple[pd.DataFrame, Optional[pd.DataFrame], Optional[pd.DataFrame]]:
+    """
+    Fit bin edges on training data, apply to all sets.
+    """
+    column = formula["column"]
+    bins = formula["bins"]
+    strategy = formula.get("strategy", "quantile")
+    labels = formula.get("labels")
+    
+    train_df = train_df.copy()
+    
+    if isinstance(bins, int):
+        if strategy == "quantile":
+            # Compute quantile edges from training data
+            _, bin_edges = pd.qcut(train_df[column], q=bins, retbins=True, duplicates="drop")
+        else:
+            _, bin_edges = pd.cut(train_df[column], bins=bins, retbins=True)
+        
+        # Extend edges to handle values outside training range
+        bin_edges[0] = float('-inf')
+        bin_edges[-1] = float('inf')
+        
+        # Apply same edges to all sets
+        actual_labels = labels if labels else False
+        train_df[feature_name] = pd.cut(train_df[column], bins=bin_edges, labels=actual_labels)
+        
+        if val_df is not None:
+            val_df = val_df.copy()
+            val_df[feature_name] = pd.cut(val_df[column], bins=bin_edges, labels=actual_labels)
+        
+        if test_df is not None:
+            test_df = test_df.copy()
+            test_df[feature_name] = pd.cut(test_df[column], bins=bin_edges, labels=actual_labels)
+    else:
+        # Custom bin edges provided - apply directly
+        train_df[feature_name] = pd.cut(train_df[column], bins=bins, labels=labels)
+        if val_df is not None:
+            val_df = val_df.copy()
+            val_df[feature_name] = pd.cut(val_df[column], bins=bins, labels=labels)
+        if test_df is not None:
+            test_df = test_df.copy()
+            test_df[feature_name] = pd.cut(test_df[column], bins=bins, labels=labels)
+    
+    return train_df, val_df, test_df
+
+
+def _fit_and_transform_one_hot(
+    train_df: pd.DataFrame,
+    val_df: Optional[pd.DataFrame],
+    test_df: Optional[pd.DataFrame],
+    formula: dict,
+    feature_name: str,
+) -> tuple[pd.DataFrame, Optional[pd.DataFrame], Optional[pd.DataFrame], list[str]]:
+    """
+    Fit one-hot encoding on training data (get categories), apply to all sets.
+    Returns the list of created column names.
+    """
+    column = formula["column"]
+    drop_first = formula.get("drop_first", True)
+    
+    # Get categories from training data
+    train_categories = train_df[column].unique().tolist()
+    
+    train_df = train_df.copy()
+    train_dummies = pd.get_dummies(train_df[column], prefix=feature_name, drop_first=drop_first)
+    created_columns = train_dummies.columns.tolist()
+    train_df = pd.concat([train_df, train_dummies], axis=1)
+    
+    # Apply same categories to val/test (handle unseen categories)
+    if val_df is not None:
+        val_df = val_df.copy()
+        val_dummies = pd.get_dummies(val_df[column], prefix=feature_name, drop_first=drop_first)
+        # Add missing columns with zeros
+        for col in created_columns:
+            if col not in val_dummies.columns:
+                val_dummies[col] = 0
+        # Keep only columns from training (drop extra categories)
+        val_dummies = val_dummies[[c for c in created_columns if c in val_dummies.columns]]
+        val_df = pd.concat([val_df, val_dummies[created_columns]], axis=1)
+    
+    if test_df is not None:
+        test_df = test_df.copy()
+        test_dummies = pd.get_dummies(test_df[column], prefix=feature_name, drop_first=drop_first)
+        for col in created_columns:
+            if col not in test_dummies.columns:
+                test_dummies[col] = 0
+        test_dummies = test_dummies[[c for c in created_columns if c in test_dummies.columns]]
+        test_df = pd.concat([test_df, test_dummies[created_columns]], axis=1)
+    
+    return train_df, val_df, test_df, created_columns
+
+
+def _fit_and_transform_group_agg(
+    train_df: pd.DataFrame,
+    val_df: Optional[pd.DataFrame],
+    test_df: Optional[pd.DataFrame],
+    formula: dict,
+    feature_name: str,
+) -> tuple[pd.DataFrame, Optional[pd.DataFrame], Optional[pd.DataFrame]]:
+    """
+    Compute aggregation on training data, merge to all sets.
+    """
+    column = formula["column"]
+    agg = formula["agg"]
+    group_by = formula["group_by"]
+    
+    # Compute aggregation from training data only
+    agg_df = train_df.groupby(group_by)[column].agg(agg).reset_index()
+    agg_df = agg_df.rename(columns={column: feature_name})
+    
+    # Merge to all sets
+    train_df = train_df.copy()
+    train_df = train_df.merge(agg_df, on=group_by, how="left")
+    
+    if val_df is not None:
+        val_df = val_df.copy()
+        val_df = val_df.merge(agg_df, on=group_by, how="left")
+    
+    if test_df is not None:
+        test_df = test_df.copy()
+        test_df = test_df.merge(agg_df, on=group_by, how="left")
+    
+    return train_df, val_df, test_df
+
+
+def execute_feature_spec_split(
+    train_ref: str,
+    val_ref: Optional[str],
+    test_ref: Optional[str],
+    feature_spec: dict,
+    target_column: str,
+    grain: str,
+    as_of_cutoff: Optional[str] = None,
+) -> dict[str, Any]:
+    """
+    Execute a feature specification on train/val/test sets.
+    
+    IMPORTANT: Transformations that require fitting (binning, one-hot, group_agg)
+    are fit on training data and applied to all sets to prevent data leakage.
+    
+    Args:
+        train_ref: Reference to the training dataset
+        val_ref: Reference to the validation dataset (optional)
+        test_ref: Reference to the test dataset (optional)
+        feature_spec: The feature specification from step 4
+        target_column: Target column to keep
+        grain: Grain column(s) to keep
+        as_of_cutoff: Optional cutoff date for temporal constraints
+    
+    Returns:
+        Dict with:
+        - train_ref: Reference to transformed training dataset
+        - val_ref: Reference to transformed validation dataset (if provided)
+        - test_ref: Reference to transformed test dataset (if provided)
+        - features_created: List of features successfully created
+        - errors: List of any errors encountered
+    """
+    train_df = resolve_dataset(train_ref)
+    val_df = resolve_dataset(val_ref) if val_ref else None
+    test_df = resolve_dataset(test_ref) if test_ref else None
+    
+    features = feature_spec.get("features", [])
+    
+    features_created = []
+    errors = []
+    temporal_constraints_applied = 0
+    
+    # Track columns to keep at the end
+    columns_to_keep = set()
+    
+    # Always keep grain and target
+    if isinstance(grain, str):
+        columns_to_keep.add(grain)
+    elif isinstance(grain, list):
+        columns_to_keep.update(grain)
+    columns_to_keep.add(target_column)
+    
+    # Execute each feature
+    for feature in features:
+        feature_name = feature.get("name", "unknown")
+        formula = feature.get("formula", {})
+        op = formula.get("op")
+        as_of_constraint = feature.get("as_of_constraint")
+        
+        try:
+            # Operations that need fit-on-train logic
+            if op == "bin":
+                train_df, val_df, test_df = _fit_and_transform_bin(
+                    train_df, val_df, test_df, formula, feature_name
+                )
+                columns_to_keep.add(feature_name)
+                features_created.append(feature_name)
+            
+            elif op == "one_hot":
+                train_df, val_df, test_df, created_cols = _fit_and_transform_one_hot(
+                    train_df, val_df, test_df, formula, feature_name
+                )
+                columns_to_keep.update(created_cols)
+                features_created.extend(created_cols)
+            
+            elif op == "group_agg":
+                train_df, val_df, test_df = _fit_and_transform_group_agg(
+                    train_df, val_df, test_df, formula, feature_name
+                )
+                columns_to_keep.add(feature_name)
+                features_created.append(feature_name)
+            
+            # Operations that don't need fitting (apply same to all)
+            elif op in OPERATION_EXECUTORS:
+                executor = OPERATION_EXECUTORS[op]
+                train_df = executor(train_df, formula, feature_name)
+                if val_df is not None:
+                    val_df = executor(val_df, formula, feature_name)
+                if test_df is not None:
+                    test_df = executor(test_df, formula, feature_name)
+                columns_to_keep.add(feature_name)
+                features_created.append(feature_name)
+            
+            else:
+                errors.append(f"Unknown operation '{op}' for feature '{feature_name}'")
+                continue
+            
+            # Apply temporal constraint if present (to all sets)
+            if as_of_constraint:
+                train_df = _apply_as_of_constraint(train_df, feature_name, as_of_constraint, as_of_cutoff)
+                if val_df is not None:
+                    val_df = _apply_as_of_constraint(val_df, feature_name, as_of_constraint, as_of_cutoff)
+                if test_df is not None:
+                    test_df = _apply_as_of_constraint(test_df, feature_name, as_of_constraint, as_of_cutoff)
+                temporal_constraints_applied += 1
+                
+        except Exception as e:
+            errors.append(f"Feature '{feature_name}' ({op}): {str(e)}")
+    
+    # Select only the columns we want to keep
+    final_columns_train = [c for c in train_df.columns if c in columns_to_keep]
+    train_df_final = train_df[final_columns_train]
+    
+    # Register transformed datasets
+    output_train_ref = f"{train_ref}_features"
+    register_dataset(output_train_ref, train_df_final)
+    
+    output_val_ref = None
+    output_test_ref = None
+    
+    if val_df is not None:
+        final_columns_val = [c for c in val_df.columns if c in columns_to_keep]
+        val_df_final = val_df[final_columns_val]
+        output_val_ref = f"{val_ref}_features"
+        register_dataset(output_val_ref, val_df_final)
+    
+    if test_df is not None:
+        final_columns_test = [c for c in test_df.columns if c in columns_to_keep]
+        test_df_final = test_df[final_columns_test]
+        output_test_ref = f"{test_ref}_features"
+        register_dataset(output_test_ref, test_df_final)
+    
+    return {
+        "train_ref": output_train_ref,
+        "val_ref": output_val_ref,
+        "test_ref": output_test_ref,
+        "features_created": features_created,
+        "errors": errors,
+        "shapes": {
+            "train": train_df_final.shape,
+            "val": val_df_final.shape if val_df is not None else None,
+            "test": test_df_final.shape if test_df is not None else None,
+        },
+        "temporal_constraints_applied": temporal_constraints_applied,
+    }
+
+
+# =============================================================================
 # EXPORTS
 # =============================================================================
 
 __all__ = [
     "execute_feature_spec",
+    "execute_feature_spec_split",
 ]

@@ -3,17 +3,27 @@ ML Model Training Agent - LangGraph Structure
 Based on the architecture defined in README.md
 """
 
+# Import utilities for dataset registration
+import sys
+from pathlib import Path
 from typing import Any, Literal, Optional, TypedDict
 
 from langgraph.graph import END, StateGraph
 
 from .cleaning_simple import run_cleaning_simple
 from .data_collection import data_collection
-from .feature_engineering_executor import execute_feature_spec
+from .feature_engineering_executor import (execute_feature_spec,
+                                           execute_feature_spec_split)
 from .feature_engineering_simple import run_feature_engineering_simple
-from .label_and_split import run_label_split_definition
+from .label_and_split import (apply_split, compute_split_indices,
+                              run_label_split_definition)
 # Import node implementations
 from .select_model import select_model
+
+_DATA_TOOLS_DIR = Path(__file__).parent.parent.parent / "tools" / "data-tools"
+if str(_DATA_TOOLS_DIR) not in sys.path:
+    sys.path.insert(0, str(_DATA_TOOLS_DIR))
+from utils import get_registered_dataset, register_dataset
 
 # =============================================================================
 # STATE DEFINITIONS
@@ -56,13 +66,20 @@ class TrainingAgentState(TypedDict):
     
     # Step 3.5: Label & Split Definition
     label_definition: Optional[LabelDefinition]
+    split_indices: Optional[dict[str, Any]]  # Output of compute_split_indices
+    train_dataset_ref: Optional[str]  # Registered train dataset
+    val_dataset_ref: Optional[str]    # Registered val dataset
+    test_dataset_ref: Optional[str]   # Registered test dataset
     
     # Step 4: Feature Selection & Specification
     feature_spec: Optional[FeatureSpec]
     analysis_trace: list[dict[str, Any]]
     
     # Step 5: Feature Engineering
-    transformed_dataset_ref: Optional[str]
+    transformed_dataset_ref: Optional[str]  # Legacy - for backward compat
+    transformed_train_ref: Optional[str]    # NEW: transformed train dataset
+    transformed_val_ref: Optional[str]      # NEW: transformed val dataset
+    transformed_test_ref: Optional[str]     # NEW: transformed test dataset
     feature_validation_passed: bool
     
     # Step 6: Human Confirmation
@@ -129,7 +146,7 @@ def cleaning_node(state: TrainingAgentState) -> TrainingAgentState:
 
 def label_split_definition(state: TrainingAgentState) -> TrainingAgentState:
     """
-    Step 3.5: Label + Split Definition
+    Step 3.5: Label + Split Definition + Data Splitting
     
     Uses LLM to infer the 6 key parameters for supervised learning:
     1. Target column
@@ -139,15 +156,18 @@ def label_split_definition(state: TrainingAgentState) -> TrainingAgentState:
     5. Split strategy (random / time-based / entity-based)
     6. Forbidden columns (not available at prediction time)
     
+    Then SPLITS the data into train/val/test using the defined strategy.
+    
     If label_definition is already set in state, uses those values.
     Otherwise, LLM infers based on goal, model, and schema context.
     
-    Locked definitions passed to downstream steps (4, 5, 7)
+    Locked definitions + split datasets passed to downstream steps (4, 5, 7)
     """
     # Extract any pre-provided label definition values
     existing = state.get("label_definition") or {}
     
-    result = run_label_split_definition(
+    # Step 1: Get label definition from LLM
+    label_def = run_label_split_definition(
         dataset_ref=state["cleaned_dataset_ref"],
         goal=state["goal"],
         selected_model=state.get("selected_model"),
@@ -160,9 +180,43 @@ def label_split_definition(state: TrainingAgentState) -> TrainingAgentState:
         forbidden_columns=existing.get("forbidden_columns"),
     )
     
+    # Step 2: Get the cleaned dataset
+    df = get_registered_dataset(state["cleaned_dataset_ref"])
+    
+    # Step 3: Compute split indices based on strategy
+    print(f"[label_split_definition] Computing {label_def.get('split_strategy', 'random')} split...")
+    split_indices = compute_split_indices(
+        df=df,
+        label_definition=label_def,
+        train_ratio=0.7,
+        val_ratio=0.15,
+        test_ratio=0.15,
+    )
+    
+    # Step 4: Apply split to get train/val/test DataFrames
+    train_df, val_df, test_df = apply_split(df, split_indices)
+    
+    print(f"[label_split_definition] Split sizes: train={len(train_df)}, val={len(val_df)}, test={len(test_df)}")
+    
+    # Step 5: Register the split datasets
+    base_ref = state["cleaned_dataset_ref"]
+    train_ref = f"{base_ref}_train"
+    val_ref = f"{base_ref}_val"
+    test_ref = f"{base_ref}_test"
+    
+    register_dataset(train_ref, train_df)
+    register_dataset(val_ref, val_df)
+    register_dataset(test_ref, test_df)
+    
+    print(f"[label_split_definition] Registered: {train_ref}, {val_ref}, {test_ref}")
+    
     return {
         **state,
-        "label_definition": result,
+        "label_definition": label_def,
+        "split_indices": split_indices,
+        "train_dataset_ref": train_ref,
+        "val_dataset_ref": val_ref,
+        "test_dataset_ref": test_ref,
         "current_step": "feature_selection_specification",
     }
 
@@ -173,15 +227,21 @@ def feature_selection_specification(state: TrainingAgentState) -> TrainingAgentS
     
     Uses the simple approach: run all analysis tools upfront, then one LLM call.
     
+    IMPORTANT: Analysis runs on TRAINING DATA ONLY to prevent data leakage.
+    
     Inputs from state:
-    - cleaned_dataset_ref: The cleaned dataset from step 3
+    - train_dataset_ref: The training dataset from step 3.5
+    - val_dataset_ref: The validation dataset from step 3.5
+    - test_dataset_ref: The test dataset from step 3.5
     - goal: The ML goal
     - label_definition: Contains target_column, grain, as_of_cutoff, forbidden_columns
     
     Output: feature_spec (structured contract for step 5)
     """
     # Get inputs from state
-    dataset_ref = state.get("cleaned_dataset_ref")
+    train_ref = state.get("train_dataset_ref")
+    val_ref = state.get("val_dataset_ref")
+    test_ref = state.get("test_dataset_ref")
     goal = state.get("goal", "")
     label_def = state.get("label_definition") or {}
     
@@ -202,17 +262,21 @@ def feature_selection_specification(state: TrainingAgentState) -> TrainingAgentS
         task_type = "classification"
     
     # Validate we have required inputs
-    if not dataset_ref:
-        raise ValueError("No cleaned_dataset_ref in state - step 3 must complete first")
+    if not train_ref:
+        raise ValueError("No train_dataset_ref in state - step 3.5 must complete first")
     if not target_column:
         raise ValueError("No target_column in label_definition - step 3.5 must complete first")
     
-    # Run feature engineering
+    print(f"[feature_selection_specification] Running analysis on TRAINING data only ({train_ref})...")
+    
+    # Run feature engineering - analysis on train only!
     result = run_feature_engineering_simple(
-        dataset_ref=dataset_ref,
+        train_ref=train_ref,
         goal=goal,
         target_column=target_column,
         grain=grain,
+        val_ref=val_ref,
+        test_ref=test_ref,
         task_type=task_type,
         forbidden_columns=forbidden_columns,
         as_of_cutoff=as_of_cutoff,
@@ -247,18 +311,23 @@ def feature_engineering_executor(state: TrainingAgentState) -> TrainingAgentStat
     """
     Step 5: Feature Engineering Executor (DETERMINISTIC - no LLM reasoning loop)
     
+    IMPORTANT: Fits transformations on TRAINING data, applies to all splits.
+    This prevents data leakage from val/test into feature computation.
+    
     Inputs from state:
-    - cleaned_dataset_ref: The cleaned dataset from step 3
+    - train_dataset_ref, val_dataset_ref, test_dataset_ref: Split datasets from step 3.5
     - feature_spec: The feature specification from step 4
     - label_definition: Contains target_column, grain, as_of_cutoff
     
     Executes each feature in the spec using the appropriate transformation.
     No iterative LLM decision-making; execution follows the spec exactly.
     
-    Output: transformed_dataset_ref with all features built
+    Output: transformed_train_ref, transformed_val_ref, transformed_test_ref
     """
     # Get inputs from state
-    dataset_ref = state.get("cleaned_dataset_ref")
+    train_ref = state.get("train_dataset_ref")
+    val_ref = state.get("val_dataset_ref")
+    test_ref = state.get("test_dataset_ref")
     feature_spec = state.get("feature_spec")
     label_def = state.get("label_definition") or {}
     
@@ -267,16 +336,20 @@ def feature_engineering_executor(state: TrainingAgentState) -> TrainingAgentStat
     as_of_cutoff = label_def.get("as_of_cutoff")
     
     # Validate inputs
-    if not dataset_ref:
-        raise ValueError("No cleaned_dataset_ref in state - step 3 must complete first")
+    if not train_ref:
+        raise ValueError("No train_dataset_ref in state - step 3.5 must complete first")
     if not feature_spec:
         raise ValueError("No feature_spec in state - step 4 must complete first")
     if not target_column:
         raise ValueError("No target_column in label_definition")
     
-    # Execute the feature spec
-    result = execute_feature_spec(
-        dataset_ref=dataset_ref,
+    print(f"[feature_engineering_executor] Executing feature spec (fit on train, transform all)...")
+    
+    # Execute the feature spec with split-aware logic
+    result = execute_feature_spec_split(
+        train_ref=train_ref,
+        val_ref=val_ref,
+        test_ref=test_ref,
         feature_spec=feature_spec,
         target_column=target_column,
         grain=grain,
@@ -295,17 +368,25 @@ def feature_engineering_executor(state: TrainingAgentState) -> TrainingAgentStat
     features_created = result.get("features_created", [])
     validation_passed = len(features_created) > 0 and len(errors) < len(features_created)
     
+    print(f"[feature_engineering_executor] Created {len(features_created)} features")
+    print(f"[feature_engineering_executor] Shapes: {result.get('shapes')}")
+    
     # Update state
     return {
         **state,
-        "transformed_dataset_ref": result.get("transformed_dataset_ref"),
+        # NEW: Split-aware outputs
+        "transformed_train_ref": result.get("train_ref"),
+        "transformed_val_ref": result.get("val_ref"),
+        "transformed_test_ref": result.get("test_ref"),
+        # Legacy: for backward compatibility
+        "transformed_dataset_ref": result.get("train_ref"),
         "feature_validation_passed": validation_passed,
         "audit_trace": state.get("audit_trace", []) + [
             {
                 "step": "feature_engineering_executor",
                 "features_created": features_created,
                 "errors": errors,
-                "shape": result.get("shape"),
+                "shapes": result.get("shapes"),
                 "temporal_constraints_applied": result.get("temporal_constraints_applied", 0),
             }
         ],
@@ -327,24 +408,81 @@ def training(state: TrainingAgentState) -> TrainingAgentState:
     Tools: glm + logistic_regression + random_forest + survival_analysis + 
            xgboost_model + model_storage
     
-    Inputs from 3.5: split strategy, split indices (already locked)
+    Inputs from step 5: train_ref, val_ref, test_ref (already transformed with features)
+    Inputs from step 3.5: label_definition (target_column, etc.)
     
-    i. Run LLM analysis on data and goal to decide: parameters, model architecture, 
-       type of learning and learning params
-    ii. Training:
-        a. Apply the split defined in 3.5
-        b. Train on initial training set
-        c. Evaluate on validation
-        d. LLM decides to either:
-           → Go back to i (HUMAN IN THE LOOP)
-           → Continue to testing (HUMAN IN THE LOOP)
-        e. Run model on test set
-        f. Review test results and either:
-           → Go back to i (HUMAN IN THE LOOP)
-           → Complete (HUMAN IN THE LOOP)
-    iii. Complete and output weights file + audit trace, explanations
+    Uses the training agent to:
+    i. Train on the training set
+    ii. Evaluate on validation set
+    iii. Evaluate on test set
+    iv. Output model weights and metrics
     """
-    raise NotImplementedError("training not implemented")
+    from .training import run_training_simple
+
+    # Get inputs from state
+    train_ref = state.get("transformed_train_ref")
+    val_ref = state.get("transformed_val_ref")
+    test_ref = state.get("transformed_test_ref")
+    label_def = state.get("label_definition") or {}
+    
+    target_column = label_def.get("target_column", "")
+    selected_model = state.get("selected_model", "logistic_regression")
+    goal = state.get("goal", "")
+    
+    # Validate inputs
+    if not train_ref:
+        raise ValueError("No transformed_train_ref in state - step 5 must complete first")
+    if not target_column:
+        raise ValueError("No target_column in label_definition")
+    
+    # Generate model name
+    import time
+    model_name = f"{selected_model}_{int(time.time())}"
+    
+    print(f"[training] Starting training with {selected_model}...")
+    print(f"  Train: {train_ref}")
+    print(f"  Val: {val_ref}")
+    print(f"  Test: {test_ref}")
+    print(f"  Target: {target_column}")
+    
+    # Run training using the simple approach (direct tool calls)
+    result = run_training_simple(
+        train_ref=train_ref,
+        val_ref=val_ref,
+        test_ref=test_ref,
+        target_column=target_column,
+        selected_model=selected_model,
+        goal=goal,
+        model_name=model_name,
+    )
+    
+    if result.get("success"):
+        print(f"[training] Model trained successfully: {result.get('model_name')}")
+    else:
+        print(f"[training] Training failed: {result.get('error')}")
+    
+    # Update state
+    return {
+        **state,
+        "model_weights_path": result.get("model_name"),  # Model is saved in registry
+        "training_metrics": {
+            "success": result.get("success"),
+            "model_name": result.get("model_name"),
+            "model_type": result.get("model_type"),
+            "training_result": result.get("training_result"),
+            "validation_result": result.get("validation_result"),
+            "test_result": result.get("test_result"),
+        },
+        "training_iteration": state.get("training_iteration", 0) + 1,
+        "audit_trace": state.get("audit_trace", []) + [
+            {
+                "step": "training",
+                "model_name": result.get("model_name"),
+                "success": result.get("success"),
+                "error": result.get("error"),
+            }
+        ],
+    }
 
 
 def generate_report(state: TrainingAgentState) -> TrainingAgentState:

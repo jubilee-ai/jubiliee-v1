@@ -217,10 +217,12 @@ TaskType = Literal["classification", "regression"]
 
 
 def run_feature_engineering_simple(
-    dataset_ref: str,
+    train_ref: str,
     goal: str,
     target_column: str,
     grain: str,
+    val_ref: Optional[str] = None,
+    test_ref: Optional[str] = None,
     task_type: TaskType = "classification",
     forbidden_columns: list[str] = None,
     as_of_cutoff: Optional[str] = None,
@@ -230,15 +232,19 @@ def run_feature_engineering_simple(
     """
     Run feature engineering with all analysis upfront, then one LLM call.
     
-    Same interface as run_feature_engineering, but simpler execution:
-    1. Run all analysis tools
-    2. One LLM call with structured output
+    IMPORTANT: Analysis is run ONLY on training data to prevent data leakage.
+    The feature spec generated is based solely on training data statistics.
+    
+    This function generates the feature_spec. Use execute_feature_spec_split()
+    to apply the spec to train/val/test sets (fitting on train, transforming all).
     
     Args:
-        dataset_ref: Reference to the cleaned dataset
+        train_ref: Reference to the TRAINING dataset (analysis runs on this only)
         goal: Description of the ML goal
         target_column: The target column for prediction
         grain: What one row represents (e.g., policy_id)
+        val_ref: Optional reference to validation dataset (for info only, not analyzed)
+        test_ref: Optional reference to test dataset (for info only, not analyzed)
         task_type: Either "classification" or "regression"
         forbidden_columns: Columns not available at prediction time
         as_of_cutoff: Column representing the observation timestamp
@@ -250,12 +256,13 @@ def run_feature_engineering_simple(
         - feature_spec: The feature specification
         - validation: Validation results
         - analysis_results: Raw analysis tool outputs (for debugging)
+        - dataset_refs: {"train": train_ref, "val": val_ref, "test": test_ref}
     """
     forbidden_columns = forbidden_columns or []
     
-    # Step 1: Run all analysis tools
-    print("Running analysis tools...")
-    analysis_results = _run_all_analysis(dataset_ref, target_column, task_type)
+    # Step 1: Run all analysis tools ON TRAINING DATA ONLY
+    print(f"Running analysis tools on training data ({train_ref})...")
+    analysis_results = _run_all_analysis(train_ref, target_column, task_type)
     
     # Step 2: Format results into context
     analysis_context = _format_analysis_results(analysis_results)
@@ -267,10 +274,19 @@ def run_feature_engineering_simple(
             " (predict a class/category)" if task_type == "classification" 
             else " (predict a continuous value)"
         ),
-        f"## Dataset\n`{dataset_ref}`",
+        f"## Training Dataset\n`{train_ref}`",
         f"## Target Column\n`{target_column}`",
         f"## Grain\n{grain} (what one row represents)",
     ]
+    
+    # Include info about split structure
+    split_info = [f"- Training: `{train_ref}`"]
+    if val_ref:
+        split_info.append(f"- Validation: `{val_ref}`")
+    if test_ref:
+        split_info.append(f"- Test: `{test_ref}`")
+    context_parts.append(f"## Data Split\n" + "\n".join(split_info))
+    context_parts.append("*Note: Analysis above is from training data only to prevent leakage.*")
     
     if forbidden_columns:
         cols_str = ", ".join([f"`{c}`" for c in forbidden_columns])
@@ -282,7 +298,7 @@ def run_feature_engineering_simple(
     if prediction_horizon:
         context_parts.append(f"## Prediction Horizon\n{prediction_horizon}")
     
-    context_parts.append(f"## Analysis Results\n{analysis_context}")
+    context_parts.append(f"## Analysis Results (Training Data)\n{analysis_context}")
     context_parts.append("\n## Instructions\nBased on the analysis above, select features and specify how to build them using the formula DSL.")
     
     user_message = "\n\n".join(context_parts)
@@ -305,11 +321,11 @@ def run_feature_engineering_simple(
     else:
         feature_spec_dict = feature_spec
     
-    # Step 5: Validate
+    # Step 5: Validate against training data columns
     validation = None
     if feature_spec_dict:
         try:
-            df = resolve_dataset(dataset_ref)
+            df = resolve_dataset(train_ref)
             available_columns = set(df.columns)
         except:
             available_columns = set()
@@ -325,6 +341,11 @@ def run_feature_engineering_simple(
         "feature_spec": feature_spec_dict,
         "validation": validation,
         "analysis_results": analysis_results,
+        "dataset_refs": {
+            "train": train_ref,
+            "val": val_ref,
+            "test": test_ref,
+        },
     }
 
 

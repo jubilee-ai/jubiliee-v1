@@ -13,7 +13,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "tools" / "data-tools"))
 
 import numpy as np
 import pandas as pd
-
 from utils import clear_registry, get_registered_dataset, register_dataset
 
 # Valid operation types in the DSL
@@ -455,6 +454,594 @@ def test_feature_engineering_forbidden_columns_validation():
     return result
 
 
+# =============================================================================
+# SPLIT-AWARE FEATURE ENGINEERING TESTS
+# =============================================================================
+
+def test_execute_feature_spec_split_binning():
+    """
+    Test 4: Feature executor with split data - binning should fit on train.
+    
+    Verifies that bin edges are computed from training data only and
+    applied consistently to val/test.
+    """
+    print("\n" + "=" * 70)
+    print("TEST 4: execute_feature_spec_split - Binning (Fit on Train)")
+    print("=" * 70)
+    
+    clear_registry()
+    
+    # Create datasets with different distributions
+    np.random.seed(42)
+    
+    # Training data: values 0-100
+    train_df = pd.DataFrame({
+        "id": range(100),
+        "amount": np.random.uniform(0, 100, 100),
+        "target": np.random.choice([0, 1], 100),
+    })
+    
+    # Validation data: same range
+    val_df = pd.DataFrame({
+        "id": range(100, 150),
+        "amount": np.random.uniform(0, 100, 50),
+        "target": np.random.choice([0, 1], 50),
+    })
+    
+    # Test data: includes values OUTSIDE training range (0-150)
+    test_df = pd.DataFrame({
+        "id": range(150, 200),
+        "amount": np.random.uniform(50, 150, 50),  # Some values > 100!
+        "target": np.random.choice([0, 1], 50),
+    })
+    
+    print(f"\n[INPUT]")
+    print(f"  Train: {len(train_df)} rows, amount range: [{train_df['amount'].min():.1f}, {train_df['amount'].max():.1f}]")
+    print(f"  Val: {len(val_df)} rows, amount range: [{val_df['amount'].min():.1f}, {val_df['amount'].max():.1f}]")
+    print(f"  Test: {len(test_df)} rows, amount range: [{test_df['amount'].min():.1f}, {test_df['amount'].max():.1f}]")
+    print(f"  Note: Test has values > 100, outside training range!")
+    
+    # Register datasets
+    register_dataset("test_train", train_df)
+    register_dataset("test_val", val_df)
+    register_dataset("test_test", test_df)
+    
+    # Create feature spec with binning
+    feature_spec = {
+        "features": [
+            {
+                "name": "amount_binned",
+                "formula": {
+                    "op": "bin",
+                    "column": "amount",
+                    "bins": 5,
+                    "strategy": "quantile",
+                },
+                "grain": "id",
+            },
+        ],
+        "reasoning": "Test binning",
+    }
+    
+    print("\n[RUNNING execute_feature_spec_split...]")
+    
+    from agents.training.feature_engineering_executor import \
+        execute_feature_spec_split
+    
+    result = execute_feature_spec_split(
+        train_ref="test_train",
+        val_ref="test_val",
+        test_ref="test_test",
+        feature_spec=feature_spec,
+        target_column="target",
+        grain="id",
+    )
+    
+    print("\n[OUTPUT]")
+    print(f"  train_ref: {result['train_ref']}")
+    print(f"  val_ref: {result['val_ref']}")
+    print(f"  test_ref: {result['test_ref']}")
+    print(f"  features_created: {result['features_created']}")
+    print(f"  errors: {result['errors']}")
+    
+    # Validate
+    print("\n[VALIDATION]")
+    
+    # Load transformed datasets
+    train_transformed = get_registered_dataset(result['train_ref'])
+    val_transformed = get_registered_dataset(result['val_ref'])
+    test_transformed = get_registered_dataset(result['test_ref'])
+    
+    assert "amount_binned" in train_transformed.columns, "Binned column not in train"
+    assert "amount_binned" in val_transformed.columns, "Binned column not in val"
+    assert "amount_binned" in test_transformed.columns, "Binned column not in test"
+    print("✅ Binned column created in all splits")
+    
+    # Check that test values outside train range still get binned (to edge bins)
+    assert test_transformed["amount_binned"].notna().all(), "Test should have no NaN bins (edges extended)"
+    print("✅ Test values outside train range handled correctly")
+    
+    # Check no errors
+    assert len(result['errors']) == 0, f"Errors: {result['errors']}"
+    print("✅ No errors")
+    
+    print("\n" + "=" * 70)
+    print("TEST 4 PASSED ✓")
+    print("=" * 70 + "\n")
+    
+    return result
+
+
+def test_execute_feature_spec_split_one_hot():
+    """
+    Test 5: Feature executor with split data - one-hot should use train categories.
+    
+    Verifies that categories are learned from training data and unseen
+    categories in val/test are handled gracefully.
+    """
+    print("\n" + "=" * 70)
+    print("TEST 5: execute_feature_spec_split - One-Hot (Train Categories)")
+    print("=" * 70)
+    
+    clear_registry()
+    
+    # Training data: has categories A, B, C
+    train_df = pd.DataFrame({
+        "id": range(100),
+        "category": np.random.choice(["A", "B", "C"], 100),
+        "target": np.random.choice([0, 1], 100),
+    })
+    
+    # Validation data: same categories
+    val_df = pd.DataFrame({
+        "id": range(100, 150),
+        "category": np.random.choice(["A", "B", "C"], 50),
+        "target": np.random.choice([0, 1], 50),
+    })
+    
+    # Test data: includes category D (unseen in train!)
+    test_df = pd.DataFrame({
+        "id": range(150, 200),
+        "category": np.random.choice(["A", "B", "C", "D"], 50),  # D is new!
+        "target": np.random.choice([0, 1], 50),
+    })
+    
+    print(f"\n[INPUT]")
+    print(f"  Train categories: {sorted(train_df['category'].unique())}")
+    print(f"  Val categories: {sorted(val_df['category'].unique())}")
+    print(f"  Test categories: {sorted(test_df['category'].unique())} (includes 'D' unseen in train!)")
+    
+    # Register datasets
+    register_dataset("onehot_train", train_df)
+    register_dataset("onehot_val", val_df)
+    register_dataset("onehot_test", test_df)
+    
+    # Create feature spec with one-hot
+    feature_spec = {
+        "features": [
+            {
+                "name": "cat",
+                "formula": {
+                    "op": "one_hot",
+                    "column": "category",
+                    "drop_first": True,
+                },
+                "grain": "id",
+            },
+        ],
+        "reasoning": "Test one-hot",
+    }
+    
+    print("\n[RUNNING execute_feature_spec_split...]")
+    
+    from agents.training.feature_engineering_executor import \
+        execute_feature_spec_split
+    
+    result = execute_feature_spec_split(
+        train_ref="onehot_train",
+        val_ref="onehot_val",
+        test_ref="onehot_test",
+        feature_spec=feature_spec,
+        target_column="target",
+        grain="id",
+    )
+    
+    print("\n[OUTPUT]")
+    print(f"  features_created: {result['features_created']}")
+    
+    # Validate
+    print("\n[VALIDATION]")
+    
+    # Load transformed datasets
+    train_transformed = get_registered_dataset(result['train_ref'])
+    val_transformed = get_registered_dataset(result['val_ref'])
+    test_transformed = get_registered_dataset(result['test_ref'])
+    
+    # Get one-hot columns
+    train_oh_cols = [c for c in train_transformed.columns if c.startswith("cat_")]
+    val_oh_cols = [c for c in val_transformed.columns if c.startswith("cat_")]
+    test_oh_cols = [c for c in test_transformed.columns if c.startswith("cat_")]
+    
+    print(f"  Train one-hot columns: {train_oh_cols}")
+    print(f"  Val one-hot columns: {val_oh_cols}")
+    print(f"  Test one-hot columns: {test_oh_cols}")
+    
+    # Check same columns in all splits
+    assert set(train_oh_cols) == set(val_oh_cols), "Val should have same columns as train"
+    assert set(train_oh_cols) == set(test_oh_cols), "Test should have same columns as train"
+    print("✅ Same one-hot columns in all splits")
+    
+    # Check that 'D' (unseen category) did NOT create a new column
+    assert "cat_D" not in test_oh_cols, "Unseen category D should NOT create new column"
+    print("✅ Unseen category 'D' handled correctly (no new column)")
+    
+    print("\n" + "=" * 70)
+    print("TEST 5 PASSED ✓")
+    print("=" * 70 + "\n")
+    
+    return result
+
+
+def test_execute_feature_spec_split_group_agg():
+    """
+    Test 6: Feature executor with split data - group_agg should use train stats.
+    
+    Verifies that group aggregations are computed from training data only
+    and merged to val/test.
+    """
+    print("\n" + "=" * 70)
+    print("TEST 6: execute_feature_spec_split - Group Agg (Train Stats)")
+    print("=" * 70)
+    
+    clear_registry()
+    
+    np.random.seed(42)
+    
+    # Training data: region means are known
+    train_df = pd.DataFrame({
+        "id": range(300),
+        "region": np.random.choice(["East", "West", "North"], 300),
+        "amount": np.random.exponential(100, 300),
+        "target": np.random.choice([0, 1], 300),
+    })
+    
+    # Validation data: same regions
+    val_df = pd.DataFrame({
+        "id": range(300, 400),
+        "region": np.random.choice(["East", "West", "North"], 100),
+        "amount": np.random.exponential(100, 100),
+        "target": np.random.choice([0, 1], 100),
+    })
+    
+    # Test data: includes region "South" (unseen in train!)
+    test_df = pd.DataFrame({
+        "id": range(400, 500),
+        "region": np.random.choice(["East", "West", "North", "South"], 100),
+        "amount": np.random.exponential(100, 100),
+        "target": np.random.choice([0, 1], 100),
+    })
+    
+    # Compute expected means from training data
+    train_means = train_df.groupby("region")["amount"].mean()
+    
+    print(f"\n[INPUT]")
+    print(f"  Train region means: {train_means.to_dict()}")
+    print(f"  Test includes 'South' region (unseen in train)")
+    
+    # Register datasets
+    register_dataset("agg_train", train_df)
+    register_dataset("agg_val", val_df)
+    register_dataset("agg_test", test_df)
+    
+    # Create feature spec with group_agg
+    feature_spec = {
+        "features": [
+            {
+                "name": "region_avg_amount",
+                "formula": {
+                    "op": "group_agg",
+                    "column": "amount",
+                    "agg": "mean",
+                    "group_by": ["region"],
+                },
+                "grain": "id",
+            },
+        ],
+        "reasoning": "Test group agg",
+    }
+    
+    print("\n[RUNNING execute_feature_spec_split...]")
+    
+    from agents.training.feature_engineering_executor import \
+        execute_feature_spec_split
+    
+    result = execute_feature_spec_split(
+        train_ref="agg_train",
+        val_ref="agg_val",
+        test_ref="agg_test",
+        feature_spec=feature_spec,
+        target_column="target",
+        grain="id",
+    )
+    
+    print("\n[OUTPUT]")
+    print(f"  features_created: {result['features_created']}")
+    
+    # Validate
+    print("\n[VALIDATION]")
+    
+    # Load transformed datasets
+    train_transformed = get_registered_dataset(result['train_ref'])
+    val_transformed = get_registered_dataset(result['val_ref'])
+    test_transformed = get_registered_dataset(result['test_ref'])
+    
+    assert "region_avg_amount" in train_transformed.columns, "Feature not in train"
+    assert "region_avg_amount" in val_transformed.columns, "Feature not in val"
+    assert "region_avg_amount" in test_transformed.columns, "Feature not in test"
+    print("✅ Group agg feature created in all splits")
+    
+    # Check that val uses train means by looking up the original val_df to find East rows
+    # Then check that their region_avg_amount matches the train mean
+    val_east_rows = val_df[val_df["region"] == "East"].index
+    if len(val_east_rows) > 0:
+        # Get the first East row's position in the val split
+        first_east_idx = val_east_rows[0]
+        # Find this in val_transformed - use the id column to match
+        val_east_id = val_df.loc[first_east_idx, "id"]
+        val_east_row = val_transformed[val_transformed["id"] == val_east_id]
+        if len(val_east_row) > 0:
+            val_east_mean = val_east_row["region_avg_amount"].iloc[0]
+            expected_east_mean = train_means["East"]
+            
+            assert abs(val_east_mean - expected_east_mean) < 0.01, \
+                f"Val should use train mean for East: got {val_east_mean}, expected {expected_east_mean}"
+            print(f"✅ Val uses train means (East: {val_east_mean:.2f} == {expected_east_mean:.2f})")
+    
+    # Check that unseen region "South" gets NaN by looking up test_df
+    south_ids = test_df[test_df["region"] == "South"]["id"].tolist()
+    if south_ids:
+        south_rows_transformed = test_transformed[test_transformed["id"].isin(south_ids)]
+        if len(south_rows_transformed) > 0:
+            assert south_rows_transformed["region_avg_amount"].isna().all(), \
+                "Unseen region 'South' should have NaN (no train data)"
+            print("✅ Unseen region 'South' correctly has NaN values")
+    
+    print("\n" + "=" * 70)
+    print("TEST 6 PASSED ✓")
+    print("=" * 70 + "\n")
+    
+    return result
+
+
+def test_feature_engineering_simple_with_split():
+    """
+    Test 7: Full feature engineering simple with split data (requires LLM).
+    
+    Tests that run_feature_engineering_simple correctly accepts split refs
+    and runs analysis only on training data.
+    """
+    print("\n" + "=" * 70)
+    print("TEST 7: run_feature_engineering_simple with Split Data")
+    print("=" * 70)
+    
+    clear_registry()
+    
+    # Create and split a dataset
+    np.random.seed(42)
+    
+    # Load real loan default dataset
+    csv_path = Path(__file__).parent.parent / "datasets" / "csv" / "Loan_default.csv"
+    df = pd.read_csv(csv_path)
+    df = df.sample(n=1000, random_state=42).reset_index(drop=True)
+    df = df.rename(columns={"Default": "default", "LoanID": "loan_id"})
+    
+    # Split the data
+    from agents.training.label_and_split import (apply_split,
+                                                 compute_split_indices)
+    
+    label_def = {
+        "target_column": "default",
+        "split_strategy": "random",
+        "grain": "one loan",
+    }
+    
+    split_indices = compute_split_indices(df, label_def, train_ratio=0.7, val_ratio=0.15, test_ratio=0.15)
+    train_df, val_df, test_df = apply_split(df, split_indices)
+    
+    print(f"\n[INPUT]")
+    print(f"  Train: {len(train_df)} rows")
+    print(f"  Val: {len(val_df)} rows")
+    print(f"  Test: {len(test_df)} rows")
+    
+    # Register datasets
+    register_dataset("fe_train", train_df)
+    register_dataset("fe_val", val_df)
+    register_dataset("fe_test", test_df)
+    
+    print("\n[RUNNING run_feature_engineering_simple with split data...]")
+    
+    from agents.training.feature_engineering_simple import \
+        run_feature_engineering_simple
+    
+    result = run_feature_engineering_simple(
+        train_ref="fe_train",
+        goal="Predict loan default",
+        target_column="default",
+        grain="loan_id",
+        val_ref="fe_val",
+        test_ref="fe_test",
+        task_type="classification",
+        forbidden_columns=["loan_id"],
+    )
+    
+    print("\n[OUTPUT]")
+    print(f"  feature_spec: {len(result['feature_spec'].get('features', []))} features")
+    print(f"  dataset_refs: {result['dataset_refs']}")
+    
+    # Validate
+    print("\n[VALIDATION]")
+    
+    feature_spec = result.get("feature_spec")
+    assert feature_spec is not None, "feature_spec should not be None"
+    print("✅ feature_spec generated")
+    
+    assert result["dataset_refs"]["train"] == "fe_train", "Train ref not preserved"
+    assert result["dataset_refs"]["val"] == "fe_val", "Val ref not preserved"
+    assert result["dataset_refs"]["test"] == "fe_test", "Test ref not preserved"
+    print("✅ Dataset refs preserved in output")
+    
+    features = feature_spec.get("features", [])
+    assert len(features) > 0, "Should have at least one feature"
+    print(f"✅ Got {len(features)} features")
+    
+    # Check all features have valid formulas
+    for feat in features:
+        assert "formula" in feat, f"Feature {feat.get('name')} missing formula"
+        assert feat["formula"].get("op") in VALID_OPS, f"Invalid op: {feat['formula'].get('op')}"
+    print("✅ All features have valid structured formulas")
+    
+    print("\n" + "=" * 70)
+    print("TEST 7 PASSED ✓")
+    print("=" * 70 + "\n")
+    
+    return result
+
+
+def test_full_split_feature_pipeline():
+    """
+    Test 8: Full pipeline - split → feature spec → execute with split.
+    
+    Integration test for the complete workflow.
+    """
+    print("\n" + "=" * 70)
+    print("TEST 8: Full Split + Feature Engineering Pipeline")
+    print("=" * 70)
+    
+    clear_registry()
+    
+    # Create dataset
+    np.random.seed(42)
+    n_rows = 500
+    
+    df = pd.DataFrame({
+        "customer_id": range(n_rows),
+        "age": np.random.randint(18, 70, n_rows),
+        "income": np.random.exponential(50000, n_rows),
+        "region": np.random.choice(["East", "West", "North", "South"], n_rows),
+        "tenure_months": np.random.randint(1, 120, n_rows),
+        "churned": np.random.choice([0, 1], n_rows, p=[0.8, 0.2]),
+    })
+    
+    print(f"\n[1] Created dataset with {len(df)} rows")
+    
+    # Step 1: Split the data
+    print("\n[2] Splitting data...")
+    from agents.training.label_and_split import (apply_split,
+                                                 compute_split_indices)
+    
+    label_def = {
+        "target_column": "churned",
+        "split_strategy": "random",
+        "grain": "one customer",
+    }
+    
+    split_indices = compute_split_indices(df, label_def)
+    train_df, val_df, test_df = apply_split(df, split_indices)
+    
+    register_dataset("pipeline_train", train_df)
+    register_dataset("pipeline_val", val_df)
+    register_dataset("pipeline_test", test_df)
+    
+    print(f"  Train: {len(train_df)}, Val: {len(val_df)}, Test: {len(test_df)}")
+    
+    # Step 2: Create a feature spec (manually for this test, to avoid LLM)
+    print("\n[3] Creating feature spec...")
+    feature_spec = {
+        "features": [
+            {
+                "name": "age",
+                "formula": {"op": "passthrough", "column": "age"},
+                "grain": "customer_id",
+            },
+            {
+                "name": "income_binned",
+                "formula": {"op": "bin", "column": "income", "bins": 4, "strategy": "quantile"},
+                "grain": "customer_id",
+            },
+            {
+                "name": "region_encoded",
+                "formula": {"op": "one_hot", "column": "region", "drop_first": True},
+                "grain": "customer_id",
+            },
+            {
+                "name": "region_avg_income",
+                "formula": {"op": "group_agg", "column": "income", "agg": "mean", "group_by": ["region"]},
+                "grain": "customer_id",
+            },
+        ],
+        "reasoning": "Test pipeline",
+    }
+    
+    print(f"  Feature spec: {len(feature_spec['features'])} features")
+    
+    # Step 3: Execute feature spec with split
+    print("\n[4] Executing feature spec with split data...")
+    from agents.training.feature_engineering_executor import \
+        execute_feature_spec_split
+    
+    result = execute_feature_spec_split(
+        train_ref="pipeline_train",
+        val_ref="pipeline_val",
+        test_ref="pipeline_test",
+        feature_spec=feature_spec,
+        target_column="churned",
+        grain="customer_id",
+    )
+    
+    print(f"  Train output: {result['train_ref']}, shape: {result['shapes']['train']}")
+    print(f"  Val output: {result['val_ref']}, shape: {result['shapes']['val']}")
+    print(f"  Test output: {result['test_ref']}, shape: {result['shapes']['test']}")
+    print(f"  Features created: {result['features_created']}")
+    print(f"  Errors: {result['errors']}")
+    
+    # Validate
+    print("\n[VALIDATION]")
+    
+    train_out = get_registered_dataset(result['train_ref'])
+    val_out = get_registered_dataset(result['val_ref'])
+    test_out = get_registered_dataset(result['test_ref'])
+    
+    # Check all expected columns present
+    expected_cols = {"customer_id", "churned", "age", "income_binned", "region_avg_income"}
+    # Plus one-hot columns
+    oh_cols = [c for c in train_out.columns if c.startswith("region_encoded_")]
+    
+    assert expected_cols.issubset(set(train_out.columns)), f"Missing columns in train: {expected_cols - set(train_out.columns)}"
+    assert len(oh_cols) > 0, "No one-hot columns created"
+    print(f"✅ All expected columns present (including {len(oh_cols)} one-hot columns)")
+    
+    # Check same columns across splits
+    assert set(train_out.columns) == set(val_out.columns), "Val has different columns than train"
+    assert set(train_out.columns) == set(test_out.columns), "Test has different columns than train"
+    print("✅ Same columns across all splits")
+    
+    # Check no errors
+    assert len(result['errors']) == 0, f"Errors: {result['errors']}"
+    print("✅ No errors in execution")
+    
+    # Check data integrity
+    assert len(train_out) == len(train_df), "Train row count changed"
+    assert len(val_out) == len(val_df), "Val row count changed"
+    assert len(test_out) == len(test_df), "Test row count changed"
+    print("✅ Row counts preserved")
+    
+    print("\n" + "=" * 70)
+    print("TEST 8 PASSED ✓")
+    print("=" * 70 + "\n")
+    
+    return result
+
+
 def run_all_tests():
     """Run all tests and print summary."""
     print("\n" + "=" * 70)
@@ -463,7 +1050,7 @@ def run_all_tests():
     
     results = {}
     
-    # Test 1
+    # Original tests (require LLM)
     try:
         test_feature_engineering_loan_default()
         results["test_1_loan_default"] = "PASSED"
@@ -471,7 +1058,6 @@ def run_all_tests():
         results["test_1_loan_default"] = f"FAILED: {e}"
         print(f"\n❌ Test 1 failed: {e}")
     
-    # Test 2
     try:
         test_feature_engineering_insurance_pricing()
         results["test_2_insurance_pricing"] = "PASSED"
@@ -479,13 +1065,50 @@ def run_all_tests():
         results["test_2_insurance_pricing"] = f"FAILED: {e}"
         print(f"\n❌ Test 2 failed: {e}")
     
-    # Test 3
     try:
         test_feature_engineering_forbidden_columns_validation()
         results["test_3_forbidden_columns"] = "PASSED"
     except Exception as e:
         results["test_3_forbidden_columns"] = f"FAILED: {e}"
         print(f"\n❌ Test 3 failed: {e}")
+    
+    # New split-aware tests (tests 4-6 don't require LLM)
+    try:
+        test_execute_feature_spec_split_binning()
+        results["test_4_split_binning"] = "PASSED"
+    except Exception as e:
+        results["test_4_split_binning"] = f"FAILED: {e}"
+        print(f"\n❌ Test 4 failed: {e}")
+    
+    try:
+        test_execute_feature_spec_split_one_hot()
+        results["test_5_split_one_hot"] = "PASSED"
+    except Exception as e:
+        results["test_5_split_one_hot"] = f"FAILED: {e}"
+        print(f"\n❌ Test 5 failed: {e}")
+    
+    try:
+        test_execute_feature_spec_split_group_agg()
+        results["test_6_split_group_agg"] = "PASSED"
+    except Exception as e:
+        results["test_6_split_group_agg"] = f"FAILED: {e}"
+        print(f"\n❌ Test 6 failed: {e}")
+    
+    # Test 7 requires LLM
+    try:
+        test_feature_engineering_simple_with_split()
+        results["test_7_simple_with_split"] = "PASSED"
+    except Exception as e:
+        results["test_7_simple_with_split"] = f"FAILED: {e}"
+        print(f"\n❌ Test 7 failed: {e}")
+    
+    # Test 8 doesn't require LLM
+    try:
+        test_full_split_feature_pipeline()
+        results["test_8_full_pipeline"] = "PASSED"
+    except Exception as e:
+        results["test_8_full_pipeline"] = f"FAILED: {e}"
+        print(f"\n❌ Test 8 failed: {e}")
     
     # Summary
     print("\n" + "=" * 70)
@@ -507,7 +1130,7 @@ def run_all_tests():
 
 if __name__ == "__main__":
     import sys
-    
+
     # Check if running a specific test
     if len(sys.argv) > 1:
         test_name = sys.argv[1]

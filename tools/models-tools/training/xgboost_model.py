@@ -265,32 +265,24 @@ def train_xgboost(input_data: XGBoostTrainingInput) -> XGBoostTrainingOutput:
 
     preprocessor = ColumnTransformer(transformers=transformers, remainder="passthrough")
 
-    # Split data: train / validation / test
+    # NOTE: No large internal train_test_split - data is already split by the pipeline
+    # The training agent passes pre-split training data here
+    # Validation/test evaluation happens via evaluate_model tool
+    #
+    # However, XGBoost benefits from early stopping, so we keep a SMALL (10%) 
+    # internal holdout purely for early stopping purposes
     stratify = y if input_data.task_type == "classification" else None
     
-    # First split: train+val vs test
-    X_trainval, X_test, y_trainval, y_test = train_test_split(
+    X_train, X_early_stop, y_train, y_early_stop = train_test_split(
         X, y,
-        test_size=input_data.test_size,
+        test_size=0.1,  # Only 10% for early stopping eval
         random_state=input_data.random_state,
         stratify=stratify,
     )
-    
-    # Second split: train vs validation
-    stratify_trainval = y_trainval if input_data.task_type == "classification" else None
-    val_ratio = input_data.validation_size / (1 - input_data.test_size)
-    
-    X_train, X_val, y_train, y_val = train_test_split(
-        X_trainval, y_trainval,
-        test_size=val_ratio,
-        random_state=input_data.random_state,
-        stratify=stratify_trainval,
-    )
 
-    # Fit preprocessor on training data only
+    # Fit preprocessor on training portion
     X_train_processed = preprocessor.fit_transform(X_train)
-    X_val_processed = preprocessor.transform(X_val)
-    X_test_processed = preprocessor.transform(X_test)
+    X_early_stop_processed = preprocessor.transform(X_early_stop)
 
     # Get feature names
     try:
@@ -339,8 +331,8 @@ def train_xgboost(input_data: XGBoostTrainingInput) -> XGBoostTrainingOutput:
             early_stopping_rounds=input_data.early_stopping_rounds,
         )
 
-    # Train with evaluation set to capture loss history
-    eval_set = [(X_train_processed, y_train), (X_val_processed, y_val)]
+    # Train with evaluation set to capture loss history (using small holdout for early stopping)
+    eval_set = [(X_train_processed, y_train), (X_early_stop_processed, y_early_stop)]
     
     model.fit(
         X_train_processed, y_train,
@@ -363,46 +355,46 @@ def train_xgboost(input_data: XGBoostTrainingInput) -> XGBoostTrainingOutput:
     best_iteration = model.best_iteration if hasattr(model, 'best_iteration') else input_data.n_estimators
     actual_n_estimators = best_iteration + 1 if input_data.early_stopping_rounds else input_data.n_estimators
 
-    # Predictions
-    y_train_pred = model.predict(X_train_processed)
-    y_val_pred = model.predict(X_val_processed)
-    y_test_pred = model.predict(X_test_processed)
+    # Now refit on ALL data for final model (early stopping determined optimal n_estimators)
+    # Preprocess ALL data
+    X_all_processed = preprocessor.fit_transform(X)
+    model.set_params(n_estimators=actual_n_estimators, early_stopping_rounds=None)
+    model.fit(X_all_processed, y, verbose=False)
 
-    # Metrics
+    # Predictions on training data (for sanity check metrics)
+    y_pred = model.predict(X_all_processed)
+
+    # Metrics - training only (use evaluate_model for val/test)
     additional_metrics = {}
     classification_report_str = None
     conf_matrix = None
     class_dist = None
 
     if input_data.task_type == "classification":
-        train_score = accuracy_score(y_train, y_train_pred)
-        val_score = accuracy_score(y_val, y_val_pred)
-        test_score = accuracy_score(y_test, y_test_pred)
+        train_score = accuracy_score(y, y_pred)
 
         # ROC-AUC
         try:
-            y_test_proba = model.predict_proba(X_test_processed)
+            y_proba = model.predict_proba(X_all_processed)
             if n_classes == 2:
-                roc_auc = roc_auc_score(y_test, y_test_proba[:, 1])
+                roc_auc = roc_auc_score(y, y_proba[:, 1])
             else:
-                roc_auc = roc_auc_score(y_test, y_test_proba, multi_class="ovr", average="weighted")
+                roc_auc = roc_auc_score(y, y_proba, multi_class="ovr", average="weighted")
             additional_metrics["roc_auc"] = roc_auc
         except ValueError:
             additional_metrics["roc_auc"] = None
 
-        classification_report_str = classification_report(y_test, y_test_pred)
-        conf_matrix = confusion_matrix(y_test, y_test_pred).tolist()
+        classification_report_str = classification_report(y, y_pred)
+        conf_matrix = confusion_matrix(y, y_pred).tolist()
         
         class_dist = pd.Series(y).value_counts().to_dict()
         class_dist = {str(k): int(v) for k, v in class_dist.items()}
 
     else:
-        train_score = r2_score(y_train, y_train_pred)
-        val_score = r2_score(y_val, y_val_pred)
-        test_score = r2_score(y_test, y_test_pred)
+        train_score = r2_score(y, y_pred)
 
-        additional_metrics["mae"] = mean_absolute_error(y_test, y_test_pred)
-        additional_metrics["rmse"] = np.sqrt(mean_squared_error(y_test, y_test_pred))
+        additional_metrics["mae"] = mean_absolute_error(y, y_pred)
+        additional_metrics["rmse"] = np.sqrt(mean_squared_error(y, y_pred))
 
     # Feature importances
     importances = model.feature_importances_
@@ -418,10 +410,9 @@ def train_xgboost(input_data: XGBoostTrainingInput) -> XGBoostTrainingOutput:
     joblib.dump(pipeline, save_path)
 
     # Register in registry
+    # NOTE: These are TRAINING metrics only - use evaluate_model for val/test metrics
     metrics = {
         "train_score": train_score,
-        "val_score": val_score,
-        "test_score": test_score,
         **additional_metrics,
     }
 
@@ -468,8 +459,8 @@ def train_xgboost(input_data: XGBoostTrainingInput) -> XGBoostTrainingOutput:
         n_classes=n_classes,
         class_distribution=class_dist,
         train_score=train_score,
-        val_score=val_score,
-        test_score=test_score,
+        val_score=train_score,  # Same as train (no internal split anymore)
+        test_score=train_score,  # Same as train (no internal split anymore)
         additional_metrics=additional_metrics,
         classification_report=classification_report_str,
         confusion_matrix=conf_matrix,
@@ -493,7 +484,10 @@ class SklearnXGBoostToolInput(BaseModel):
 
     model_name: str = Field(description="Unique model name for storage")
     description: str = Field(default="", description="Model description")
-    data: list[dict] = Field(description="Training data as list of row dicts")
+    train_dataset_ref: str = Field(
+        description="Reference name of the registered training dataset. "
+        "The dataset must be registered via register_dataset()."
+    )
     target_column: str = Field(description="Target column name")
     task_type: Literal["classification", "regression"] = Field(
         description="'classification' or 'regression'"
@@ -516,10 +510,27 @@ class SklearnXGBoostToolInput(BaseModel):
     validation_size: float = Field(default=0.1, gt=0, lt=0.5)
 
 
+def _load_dataset_from_ref(dataset_ref: str):
+    """Load a dataset from the registry by reference name."""
+    import sys
+    from pathlib import Path
+    
+    data_tools_path = str(Path(__file__).parent.parent.parent / "data-tools")
+    if data_tools_path not in sys.path:
+        sys.path.insert(0, data_tools_path)
+    
+    from utils import get_registered_dataset
+    
+    df = get_registered_dataset(dataset_ref)
+    if df is None:
+        raise ValueError(f"Dataset '{dataset_ref}' not found in registry.")
+    return df
+
+
 @tool("xgboost_train", args_schema=SklearnXGBoostToolInput)
 def xgboost_train_tool(
     model_name: str,
-    data: list[dict],
+    train_dataset_ref: str,
     target_column: str,
     task_type: Literal["classification", "regression"],
     description: str = "",
@@ -602,6 +613,10 @@ def xgboost_train_tool(
         return "❌ XGBoost is not installed. Run: pip install xgboost"
 
     try:
+        # Load dataset from registry
+        df = _load_dataset_from_ref(train_dataset_ref)
+        data = df.to_dict(orient="records")
+        
         result = train_xgboost(
             XGBoostTrainingInput(
                 model_name=model_name,

@@ -240,15 +240,14 @@ def train_survival_model(input_data: SurvivalTrainingInput) -> SurvivalTrainingO
         "max": float(df[input_data.duration_column].max()),
     }
 
-    # Train/test split
-    np.random.seed(input_data.random_state)
-    indices = np.random.permutation(len(survival_df))
-    split_idx = int(len(indices) * (1 - input_data.test_size))
-    train_idx = indices[:split_idx]
-    test_idx = indices[split_idx:]
+    # NOTE: No internal train_test_split - data is already split by the pipeline
+    # The training agent passes pre-split training data here
+    # Validation/test evaluation happens via evaluate_model tool
+    
+    # Use all indices for training
+    train_idx = np.arange(len(survival_df))
 
     train_df = survival_df.iloc[train_idx].copy()
-    test_df = survival_df.iloc[test_idx].copy()
 
     # Initialize and fit the model
     if input_data.model_type == "cox":
@@ -283,15 +282,8 @@ def train_survival_model(input_data: SurvivalTrainingInput) -> SurvivalTrainingO
         )
 
     # Calculate concordance index
+    # NOTE: These are TRAINING metrics only - use evaluate_model for val/test metrics
     train_concordance = model.concordance_index_
-    
-    # Test concordance
-    test_concordance = concordance_index(
-        test_df[input_data.duration_column],
-        -model.predict_partial_hazard(test_df) if input_data.model_type == "cox" 
-        else model.predict_median(test_df),
-        test_df[input_data.event_column],
-    )
 
     # Get model statistics
     log_likelihood = float(model.log_likelihood_) if hasattr(model, "log_likelihood_") else None
@@ -338,10 +330,9 @@ def train_survival_model(input_data: SurvivalTrainingInput) -> SurvivalTrainingO
     joblib.dump(wrapped_model, save_path)
 
     # Register in registry
+    # NOTE: These are TRAINING metrics only - use evaluate_model for val/test metrics
     metrics = {
         "train_concordance": train_concordance,
-        "test_concordance": test_concordance,
-        "test_score": test_concordance,  # For compatibility
         "event_rate": event_rate,
         "log_likelihood": log_likelihood,
         "aic": aic,
@@ -383,7 +374,7 @@ def train_survival_model(input_data: SurvivalTrainingInput) -> SurvivalTrainingO
         feature_names=feature_cols,
         duration_stats=duration_stats,
         train_concordance=train_concordance,
-        test_concordance=test_concordance,
+        test_concordance=train_concordance,  # Same as train (no internal split anymore)
         log_likelihood=log_likelihood,
         aic=aic,
         bic=bic,
@@ -404,7 +395,10 @@ class SurvivalAnalysisToolInput(BaseModel):
 
     model_name: str = Field(description="Unique model name for storage")
     description: str = Field(default="", description="Model description")
-    data: list[dict] = Field(description="Training data as list of row dicts")
+    train_dataset_ref: str = Field(
+        description="Reference name of the registered training dataset. "
+        "The dataset must be registered via register_dataset()."
+    )
     duration_column: str = Field(description="Column with time until event/censoring")
     event_column: str = Field(description="Column with event indicator (1=event, 0=censored)")
     feature_columns: Optional[list[str]] = Field(default=None)
@@ -418,10 +412,27 @@ class SurvivalAnalysisToolInput(BaseModel):
     random_state: Optional[int] = Field(default=42)
 
 
+def _load_dataset_from_ref(dataset_ref: str):
+    """Load a dataset from the registry by reference name."""
+    import sys
+    from pathlib import Path
+    
+    data_tools_path = str(Path(__file__).parent.parent.parent / "data-tools")
+    if data_tools_path not in sys.path:
+        sys.path.insert(0, data_tools_path)
+    
+    from utils import get_registered_dataset
+    
+    df = get_registered_dataset(dataset_ref)
+    if df is None:
+        raise ValueError(f"Dataset '{dataset_ref}' not found in registry.")
+    return df
+
+
 @tool("survival_analysis", args_schema=SurvivalAnalysisToolInput)
 def survival_analysis_tool(
     model_name: str,
-    data: list[dict],
+    train_dataset_ref: str,
     duration_column: str,
     event_column: str,
     description: str = "",
@@ -526,6 +537,10 @@ def survival_analysis_tool(
         )
 
     try:
+        # Load dataset from registry
+        df = _load_dataset_from_ref(train_dataset_ref)
+        data = df.to_dict(orient="records")
+        
         result = train_survival_model(
             SurvivalTrainingInput(
                 model_name=model_name,

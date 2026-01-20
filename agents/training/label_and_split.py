@@ -11,15 +11,21 @@ Step 3.5: Defines the 6 key parameters for supervised learning:
 
 Takes optional user-provided values and uses LLM to infer missing ones
 based on goal, schema, and model context.
+
+Also provides functions to compute and apply the actual train/val/test split
+based on the defined strategy.
 """
 
 import json
 import sys
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Literal, Optional, Tuple
 
+import numpy as np
+import pandas as pd
 from dotenv import load_dotenv
 from langchain.chat_models import init_chat_model
+from sklearn.model_selection import train_test_split
 
 load_dotenv(Path(__file__).parent.parent.parent / ".env")
 
@@ -281,11 +287,219 @@ def run_label_split_definition(
 
 
 # =============================================================================
+# SPLITTING FUNCTIONS
+# =============================================================================
+
+def compute_split_indices(
+    df: pd.DataFrame,
+    label_definition: dict,
+    train_ratio: float = 0.7,
+    val_ratio: float = 0.15,
+    test_ratio: float = 0.15,
+    random_state: int = 42,
+) -> dict:
+    """
+    Compute train/val/test indices based on the split strategy.
+    
+    Args:
+        df: The DataFrame to split
+        label_definition: Output from run_label_split_definition containing:
+            - split_strategy: "random", "time_based", or "entity_based"
+            - as_of_cutoff: Column name for time-based splits
+            - grain: Column name for entity-based splits
+        train_ratio: Proportion for training set (default 0.7)
+        val_ratio: Proportion for validation set (default 0.15)
+        test_ratio: Proportion for test set (default 0.15)
+        random_state: Random seed for reproducibility
+    
+    Returns:
+        Dict with:
+            - train_idx: array of training indices
+            - val_idx: array of validation indices
+            - test_idx: array of test indices
+            - split_strategy: the strategy used
+            - ratios: {"train": 0.7, "val": 0.15, "test": 0.15}
+    """
+    if abs(train_ratio + val_ratio + test_ratio - 1.0) > 1e-6:
+        raise ValueError(f"Ratios must sum to 1.0, got {train_ratio + val_ratio + test_ratio}")
+    
+    strategy = label_definition.get("split_strategy", "random")
+    n = len(df)
+    indices = np.arange(n)
+    
+    if strategy == "random":
+        train_idx, temp_idx = train_test_split(
+            indices,
+            train_size=train_ratio,
+            random_state=random_state,
+        )
+        # Split remaining into val and test
+        val_size_adjusted = val_ratio / (val_ratio + test_ratio)
+        val_idx, test_idx = train_test_split(
+            temp_idx,
+            train_size=val_size_adjusted,
+            random_state=random_state,
+        )
+    
+    elif strategy == "time_based":
+        time_col = label_definition.get("as_of_cutoff")
+        if not time_col:
+            raise ValueError("time_based split requires 'as_of_cutoff' column")
+        if time_col not in df.columns:
+            raise ValueError(f"as_of_cutoff column '{time_col}' not found in DataFrame")
+        
+        # Sort by time and split by position
+        sorted_indices = df[time_col].sort_values().index.to_numpy()
+        # Map to positional indices
+        sorted_positions = np.array([df.index.get_loc(i) for i in sorted_indices])
+        
+        train_end = int(n * train_ratio)
+        val_end = int(n * (train_ratio + val_ratio))
+        
+        train_idx = sorted_positions[:train_end]
+        val_idx = sorted_positions[train_end:val_end]
+        test_idx = sorted_positions[val_end:]
+    
+    elif strategy == "entity_based":
+        grain = label_definition.get("grain")
+        if not grain:
+            raise ValueError("entity_based split requires 'grain' to identify entity column")
+        
+        # Try to find an entity column - grain is descriptive ("one policy"), 
+        # so we need to infer or require an entity_column field
+        # For now, look for common ID patterns or use first column with "id" in name
+        entity_col = _find_entity_column(df, grain)
+        if not entity_col:
+            raise ValueError(
+                f"Could not find entity column for grain='{grain}'. "
+                "Consider adding 'entity_column' to label_definition."
+            )
+        
+        # Get unique entities and split them
+        unique_entities = df[entity_col].unique()
+        np.random.seed(random_state)
+        np.random.shuffle(unique_entities)
+        
+        n_entities = len(unique_entities)
+        train_end = int(n_entities * train_ratio)
+        val_end = int(n_entities * (train_ratio + val_ratio))
+        
+        train_entities = set(unique_entities[:train_end])
+        val_entities = set(unique_entities[train_end:val_end])
+        test_entities = set(unique_entities[val_end:])
+        
+        train_idx = df.index[df[entity_col].isin(train_entities)].to_numpy()
+        val_idx = df.index[df[entity_col].isin(val_entities)].to_numpy()
+        test_idx = df.index[df[entity_col].isin(test_entities)].to_numpy()
+        
+        # Convert to positional indices if needed
+        if not isinstance(df.index, pd.RangeIndex):
+            train_idx = np.array([df.index.get_loc(i) for i in train_idx])
+            val_idx = np.array([df.index.get_loc(i) for i in val_idx])
+            test_idx = np.array([df.index.get_loc(i) for i in test_idx])
+    
+    else:
+        raise ValueError(f"Unknown split strategy: {strategy}")
+    
+    return {
+        "train_idx": train_idx,
+        "val_idx": val_idx,
+        "test_idx": test_idx,
+        "split_strategy": strategy,
+        "ratios": {"train": train_ratio, "val": val_ratio, "test": test_ratio},
+    }
+
+
+def _find_entity_column(df: pd.DataFrame, grain: str) -> Optional[str]:
+    """
+    Try to find the entity column based on grain description.
+    
+    Looks for columns with 'id' in the name, or common patterns like
+    'customer_id', 'policy_id', 'user_id', etc.
+    """
+    grain_lower = grain.lower()
+    
+    # Extract entity type from grain (e.g., "one policy" -> "policy")
+    entity_keywords = []
+    for word in ["customer", "policy", "user", "account", "loan", "claim", "transaction", "order"]:
+        if word in grain_lower:
+            entity_keywords.append(word)
+    
+    # Look for columns matching entity + id pattern
+    for col in df.columns:
+        col_lower = col.lower()
+        for keyword in entity_keywords:
+            if keyword in col_lower and "id" in col_lower:
+                return col
+    
+    # Fallback: look for any column ending in '_id' or 'id'
+    for col in df.columns:
+        col_lower = col.lower()
+        if col_lower.endswith("_id") or col_lower == "id":
+            return col
+    
+    return None
+
+
+def apply_split(
+    df: pd.DataFrame,
+    split_indices: dict,
+) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """
+    Apply precomputed split indices to get train/val/test DataFrames.
+    
+    Args:
+        df: The DataFrame to split
+        split_indices: Output from compute_split_indices containing
+            train_idx, val_idx, test_idx
+    
+    Returns:
+        Tuple of (train_df, val_df, test_df)
+    """
+    train_df = df.iloc[split_indices["train_idx"]].copy()
+    val_df = df.iloc[split_indices["val_idx"]].copy()
+    test_df = df.iloc[split_indices["test_idx"]].copy()
+    
+    return train_df, val_df, test_df
+
+
+def add_split_column(
+    df: pd.DataFrame,
+    split_indices: dict,
+    column_name: str = "_split",
+) -> pd.DataFrame:
+    """
+    Add a split label column to the DataFrame instead of physically splitting.
+    
+    Useful if you want to keep data in one DataFrame but mark which rows
+    belong to which split. Feature engineering can then filter by this column.
+    
+    Args:
+        df: The DataFrame to label
+        split_indices: Output from compute_split_indices
+        column_name: Name for the split column (default "_split")
+    
+    Returns:
+        DataFrame with new column containing "train", "val", or "test"
+    """
+    df = df.copy()
+    df[column_name] = None
+    df.iloc[split_indices["train_idx"], df.columns.get_loc(column_name)] = "train"
+    df.iloc[split_indices["val_idx"], df.columns.get_loc(column_name)] = "val"
+    df.iloc[split_indices["test_idx"], df.columns.get_loc(column_name)] = "test"
+    
+    return df
+
+
+# =============================================================================
 # EXPORTS
 # =============================================================================
 
 __all__ = [
     "run_label_split_definition",
+    "compute_split_indices",
+    "apply_split",
+    "add_split_column",
     "LabelDefinition",
     "SplitStrategy",
 ]
