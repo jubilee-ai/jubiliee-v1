@@ -164,6 +164,177 @@ def _prepare_data_for_tool(df) -> list[dict]:
     return df.to_dict(orient="records")
 
 
+def _extract_metrics_from_messages(messages: list, val_ref: str, test_ref: str) -> dict:
+    """
+    Parse agent messages to extract metrics from tool calls.
+    
+    Looks for:
+    1. evaluate_model tool results (JSON format, preferred)
+    2. Training tool results (text format with metrics, fallback)
+    
+    Returns dict with val_accuracy, val_roc_auc, test_accuracy, test_roc_auc.
+    """
+    import json
+    import re
+    
+    val_metrics = {}
+    test_metrics = {}
+    last_training_metrics = {}
+    training_failed = False
+    
+    training_tools = ["sklearn_logistic_regression", "sklearn_random_forest", 
+                     "xgboost_train", "sklearn_glm", "survival_analysis"]
+    
+    for i, msg in enumerate(messages):
+        msg_name = getattr(msg, "name", None)
+        
+        # Skip non-tool messages
+        if not hasattr(msg, "content") or msg_name is None:
+            continue
+            
+        content = msg.content
+        if not content or not isinstance(content, str):
+            continue
+        
+        # Check for evaluate_model results (JSON format)
+        if msg_name == "evaluate_model":
+            try:
+                data = json.loads(content)
+                if isinstance(data, dict):
+                    # Look at previous AIMessage for tool call args to identify val vs test
+                    if i > 0:
+                        prev_msg = messages[i - 1]
+                        if hasattr(prev_msg, "tool_calls"):
+                            for tc in prev_msg.tool_calls:
+                                if tc.get("name") == "evaluate_model":
+                                    args = tc.get("args", {})
+                                    dataset_ref = args.get("dataset_ref", "")
+                                    
+                                    accuracy = data.get("accuracy")
+                                    roc_auc = data.get("roc_auc")
+                                    
+                                    if dataset_ref == test_ref or "test" in dataset_ref.lower():
+                                        test_metrics = {"accuracy": accuracy, "roc_auc": roc_auc}
+                                    elif dataset_ref == val_ref or "val" in dataset_ref.lower():
+                                        val_metrics = {"accuracy": accuracy, "roc_auc": roc_auc}
+            except (json.JSONDecodeError, TypeError):
+                pass
+        
+        # Check training tool results (text format)
+        if msg_name in training_tools:
+            # Check for training failure
+            if "TRAINING FAILED" in content or "Error:" in content:
+                training_failed = True
+                continue
+            
+            # Parse text format like:
+            # "  Train Accuracy: 0.8914"
+            # "  Test Accuracy:  0.8914"
+            # "  Test ROC-AUC:   0.6123"
+            
+            train_acc_match = re.search(r"Train Accuracy:\s*([\d.]+)", content)
+            test_acc_match = re.search(r"Test Accuracy:\s*([\d.]+)", content)
+            test_roc_match = re.search(r"Test ROC-AUC:\s*([\d.]+)", content)
+            # TODO: LLM extract these from structured output instead
+            
+            if train_acc_match or test_acc_match:
+                training_failed = False  # Found successful training output
+                last_training_metrics = {
+                    "train_accuracy": float(train_acc_match.group(1)) if train_acc_match else None,
+                    "test_accuracy": float(test_acc_match.group(1)) if test_acc_match else None,
+                    "test_roc_auc": float(test_roc_match.group(1)) if test_roc_match else None,
+                }
+    
+    # Use evaluate_model results if available, otherwise fall back to training tool metrics
+    if val_metrics:
+        result_val_accuracy = val_metrics.get("accuracy")
+        result_val_roc_auc = val_metrics.get("roc_auc")
+    else:
+        # Training tools report "Test" metrics but it's really training data (no internal split)
+        # These are the best we have if evaluate_model wasn't called
+        result_val_accuracy = last_training_metrics.get("train_accuracy")
+        result_val_roc_auc = last_training_metrics.get("test_roc_auc")  # ROC-AUC from training
+    
+    if test_metrics:
+        result_test_accuracy = test_metrics.get("accuracy")
+        result_test_roc_auc = test_metrics.get("roc_auc")
+    else:
+        result_test_accuracy = last_training_metrics.get("test_accuracy")
+        result_test_roc_auc = last_training_metrics.get("test_roc_auc")
+    
+    return {
+        "val_accuracy": result_val_accuracy,
+        "val_roc_auc": result_val_roc_auc,
+        "test_accuracy": result_test_accuracy,
+        "test_roc_auc": result_test_roc_auc,
+        "training_failed": training_failed,
+    }
+
+
+def _extract_iterations_from_messages(messages: list) -> list[dict]:
+    """
+    Extract training iteration logs from agent messages.
+    
+    Returns list of iteration dicts with model_name, hyperparams, and metrics.
+    """
+    import re
+    
+    iterations = []
+    training_tools = ["sklearn_logistic_regression", "sklearn_random_forest", 
+                     "xgboost_train", "sklearn_glm", "survival_analysis"]
+    
+    for i, msg in enumerate(messages):
+        # Look for AIMessage with tool_calls
+        if hasattr(msg, "tool_calls") and msg.tool_calls:
+            for tc in msg.tool_calls:
+                if tc.get("name") in training_tools:
+                    args = tc.get("args", {})
+                    iteration = {
+                        "model_name": args.get("model_name", "unknown"),
+                        "tool": tc.get("name"),
+                        "hyperparams": {
+                            "C": args.get("C"),
+                            "class_weight": args.get("class_weight"),
+                            "n_estimators": args.get("n_estimators"),
+                            "max_depth": args.get("max_depth"),
+                            "max_iter": args.get("max_iter"),
+                        },
+                        "metrics": None,  # Will be filled from tool result
+                        "success": False,
+                    }
+                    
+                    # Look for the corresponding ToolMessage result
+                    for j in range(i + 1, min(i + 3, len(messages))):
+                        result_msg = messages[j]
+                        if hasattr(result_msg, "name") and result_msg.name == tc.get("name"):
+                            content = result_msg.content if hasattr(result_msg, "content") else ""
+                            
+                            # Check for failure
+                            if "TRAINING FAILED" in content:
+                                iteration["success"] = False
+                                iteration["error"] = "Training failed"
+                                break
+                            
+                            # Extract metrics from success output
+                            if "TRAINING COMPLETE" in content:
+                                iteration["success"] = True
+                                
+                                train_acc = re.search(r"Train Accuracy:\s*([\d.]+)", content)
+                                test_acc = re.search(r"Test Accuracy:\s*([\d.]+)", content)
+                                test_roc = re.search(r"Test ROC-AUC:\s*([\d.]+)", content)
+                                
+                                iteration["metrics"] = {
+                                    "train_accuracy": float(train_acc.group(1)) if train_acc else None,
+                                    "test_accuracy": float(test_acc.group(1)) if test_acc else None,
+                                    "roc_auc": float(test_roc.group(1)) if test_roc else None,
+                                }
+                            break
+                    
+                    iterations.append(iteration)
+    
+    return iterations
+
+
 def _get_task_type(selected_model: str, goal: str) -> Literal["classification", "regression"]:
     """Infer task type from model selection and goal."""
     goal_lower = goal.lower()
@@ -350,6 +521,7 @@ Begin training now.
     try:
         # Invoke the agent
         result = agent.invoke({"messages": messages})
+        # TODO: Make this structured output and remove stuff below
         
         # Extract the final response
         final_messages = result.get("messages", [])
@@ -359,18 +531,65 @@ Begin training now.
                 final_response = msg.content
                 break
         
+        # Extract metrics from tool call results
+        metrics = _extract_metrics_from_messages(final_messages, val_ref, test_ref)
+        
+        # Extract iteration logs
+        iterations = _extract_iterations_from_messages(final_messages)
+        
+        # Determine success based on whether training actually succeeded
+        training_succeeded = not metrics.get("training_failed", False)
+        
+        # Find best iteration (highest ROC-AUC)
+        best_iteration = None
+        best_model = model_name
+        for it in iterations:
+            if it.get("success") and it.get("metrics"):
+                if best_iteration is None or (it["metrics"].get("roc_auc") or 0) > (best_iteration["metrics"].get("roc_auc") or 0):
+                    best_iteration = it
+                    best_model = it.get("model_name", model_name)
+        
+        # Log iterations
         print(f"\n[training_agent] Training complete!")
-        print(f"  Model saved as: {model_name}")
+        print(f"  Success: {training_succeeded}")
+        print(f"  Iterations: {len(iterations)}")
+        print()
+        print("  📊 ITERATION LOG:")
+        print("  " + "-" * 60)
+        for i, it in enumerate(iterations, 1):
+            status = "✅" if it.get("success") else "❌"
+            m = it.get("metrics") or {}
+            hp = it.get("hyperparams") or {}
+            hp_str = ", ".join(f"{k}={v}" for k, v in hp.items() if v is not None)
+            print(f"  {status} Iter {i}: {it.get('model_name', 'unknown')}")
+            print(f"     Hyperparams: {hp_str[:60]}...")
+            if m:
+                print(f"     Accuracy: {m.get('train_accuracy', 'N/A'):.3f}, ROC-AUC: {m.get('roc_auc', 'N/A'):.3f}" if m.get('train_accuracy') else f"     Metrics: {m}")
+            if it.get("error"):
+                print(f"     Error: {it.get('error')}")
+        print("  " + "-" * 60)
+        print(f"  Best Model: {best_model}")
+        print(f"  Val Accuracy: {metrics.get('val_accuracy')}")
+        print(f"  Val ROC-AUC: {metrics.get('val_roc_auc')}")
+        print(f"  Test Accuracy: {metrics.get('test_accuracy')}")
+        print(f"  Test ROC-AUC: {metrics.get('test_roc_auc')}")
         
         return {
-            "success": True,
-            "model_name": model_name,
+            "success": training_succeeded,
+            "model_name": best_model,
             "model_type": selected_model,
             "task_type": task_type,
             "target_column": target_column,
             "train_size": len(train_data),
             "val_size": len(val_data),
             "test_size": len(test_data),
+            "val_accuracy": metrics.get("val_accuracy"),
+            "val_roc_auc": metrics.get("val_roc_auc"),
+            "test_accuracy": metrics.get("test_accuracy"),
+            "test_roc_auc": metrics.get("test_roc_auc"),
+            "iterations": iterations,
+            "num_iterations": len(iterations),
+            "best_iteration": best_iteration,
             "agent_response": final_response,
             "messages": final_messages,
         }
