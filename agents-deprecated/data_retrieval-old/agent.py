@@ -22,11 +22,11 @@ _DATA_TOOLS_DIR = Path(__file__).parent.parent.parent / "tools" / "data-tools"
 if str(_DATA_TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(_DATA_TOOLS_DIR))
 
+from data_loader import dataset_get_tool
+from join_merge import join_merge_tool
 # Import tools from data-tools package
 from retrieval import catalog_search_tool, list_datasets_tool
-from data_loader import dataset_get_tool
 from sql_query import get_sql_schema_tool, sql_query_tool
-from join_merge import join_merge_tool
 
 # =============================================================================
 # Configuration
@@ -73,7 +73,7 @@ If the request cannot be fulfilled, explain why and suggest alternatives.
 # LLM Setup
 # =============================================================================
 
-llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+llm = ChatOpenAI(model="gpt-5.1", temperature=0)
 
 # =============================================================================
 # Tools

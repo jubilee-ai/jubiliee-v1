@@ -247,16 +247,34 @@ class PredictInput(BaseModel):
     model_name: str = Field(
         description="Name of the trained model to use for predictions"
     )
-    data: list[dict] = Field(
-        description="Data to predict on, as list of row dictionaries. "
+    dataset_ref: str = Field(
+        description="Reference name of the registered dataset to predict on. "
+                    "The dataset must be registered via register_dataset(). "
                     "Must have the same feature columns as training data."
     )
+
+
+def _load_dataset_from_ref(dataset_ref: str) -> pd.DataFrame:
+    """Load a dataset from the registry by reference name."""
+    import sys
+    from pathlib import Path
+    
+    data_tools_path = str(Path(__file__).parent.parent.parent / "data-tools")
+    if data_tools_path not in sys.path:
+        sys.path.insert(0, data_tools_path)
+    
+    from utils import get_registered_dataset
+    
+    df = get_registered_dataset(dataset_ref)
+    if df is None:
+        raise ValueError(f"Dataset '{dataset_ref}' not found in registry.")
+    return df
 
 
 @tool("predict_with_model", args_schema=PredictInput)
 def predict_with_model_tool(
     model_name: str,
-    data: list[dict],
+    dataset_ref: str,
 ) -> str:
     """Make predictions using a trained model from the registry.
     
@@ -277,7 +295,7 @@ def predict_with_model_tool(
     
     Args:
         model_name: Name of the model to use
-        data: List of dictionaries, each representing a row to predict
+        dataset_ref: Reference name of registered dataset to predict on
     """
     # Get model info
     info = get_model_info(model_name)
@@ -292,8 +310,9 @@ def predict_with_model_tool(
         # Load model
         model = load_model(model_name)
         
-        # Convert to DataFrame
-        df = pd.DataFrame(data)
+        # Load dataset from registry
+        df = _load_dataset_from_ref(dataset_ref)
+        data = df.to_dict(orient="records")
         
         # Make predictions
         predictions = model.predict(df)
@@ -465,4 +484,189 @@ def delete_trained_model_tool(
         return f"✅ Model '{model_name}' deleted successfully."
     else:
         return f"❌ Failed to delete model '{model_name}'."
+
+
+# =============================================================================
+# EVALUATE MODEL TOOL
+# =============================================================================
+
+class EvaluateModelInput(BaseModel):
+    """Input for evaluating a model on a dataset."""
+    model_name: str = Field(
+        description="Name of the trained model to evaluate"
+    )
+    dataset_ref: str = Field(
+        description="Reference name of the registered dataset to evaluate on (e.g., 'val_data', 'test_data')"
+    )
+    target_column: str = Field(
+        description="Name of the target column in the dataset"
+    )
+
+
+@tool("evaluate_model", args_schema=EvaluateModelInput)
+def evaluate_model_tool(
+    model_name: str,
+    dataset_ref: str,
+    target_column: str,
+) -> str:
+    """Evaluate a trained model on a registered dataset and return metrics.
+    
+    WHAT IT DOES:
+    Loads a trained model and a registered dataset, makes predictions,
+    and computes comprehensive classification/regression metrics.
+    
+    WHEN TO USE:
+    - After training, evaluate on validation data to check performance
+    - Evaluate on test data for final metrics
+    - Compare different models on the same dataset
+    
+    METRICS COMPUTED:
+    - For classification: accuracy, ROC-AUC, precision, recall, F1, confusion matrix
+    - For regression: MSE, RMSE, MAE, R²
+    
+    Args:
+        model_name: Name of the trained model in the registry
+        dataset_ref: Reference name of the registered dataset (must be registered via register_dataset)
+        target_column: Name of the target column to evaluate against
+    
+    Returns:
+        Formatted string with evaluation metrics
+    """
+    import sys
+    from pathlib import Path
+    
+    # Add data-tools path
+    data_tools_path = str(Path(__file__).parent.parent.parent / "data-tools")
+    if data_tools_path not in sys.path:
+        sys.path.insert(0, data_tools_path)
+    
+    from utils import get_registered_dataset
+    
+    # Load model info
+    info = get_model_info(model_name)
+    if info is None:
+        return f"❌ Model '{model_name}' not found in registry."
+    
+    # Load model
+    model = load_model(model_name)
+    if model is None:
+        return f"❌ Failed to load model '{model_name}'."
+    
+    # Load dataset
+    df = get_registered_dataset(dataset_ref)
+    if df is None:
+        return f"❌ Dataset '{dataset_ref}' not found in registry."
+    
+    # Check target column exists
+    if target_column not in df.columns:
+        return f"❌ Target column '{target_column}' not found in dataset. Available: {list(df.columns)}"
+    
+    # Prepare data
+    y_true = df[target_column]
+    feature_cols = [c for c in df.columns if c != target_column]
+    X = df[feature_cols]
+    
+    # Make predictions
+    try:
+        y_pred = model.predict(X)
+        
+        # Check if classification or regression
+        is_classification = hasattr(model, 'predict_proba') or hasattr(model, 'classes_')
+        
+        if is_classification:
+            # Classification metrics
+            from sklearn.metrics import (
+                accuracy_score, roc_auc_score, precision_score, recall_score,
+                f1_score, confusion_matrix, classification_report
+            )
+            
+            accuracy = accuracy_score(y_true, y_pred)
+            
+            # Get probabilities if available
+            roc_auc = None
+            if hasattr(model, 'predict_proba'):
+                try:
+                    y_proba = model.predict_proba(X)
+                    if y_proba.shape[1] == 2:
+                        roc_auc = roc_auc_score(y_true, y_proba[:, 1])
+                    else:
+                        roc_auc = roc_auc_score(y_true, y_proba, multi_class='ovr', average='weighted')
+                except Exception:
+                    pass
+            
+            # Precision, recall, F1
+            try:
+                precision = precision_score(y_true, y_pred, average='weighted', zero_division=0)
+                recall = recall_score(y_true, y_pred, average='weighted', zero_division=0)
+                f1 = f1_score(y_true, y_pred, average='weighted', zero_division=0)
+            except Exception:
+                precision = recall = f1 = None
+            
+            # Confusion matrix
+            cm = confusion_matrix(y_true, y_pred)
+            
+            # Classification report
+            report = classification_report(y_true, y_pred, zero_division=0)
+            
+            lines = [
+                "=" * 60,
+                f"EVALUATION: {model_name} on {dataset_ref}",
+                "=" * 60,
+                "",
+                "📊 DATASET INFO",
+                f"  Samples: {len(df)}",
+                f"  Features: {len(feature_cols)}",
+                f"  Target: {target_column}",
+                "",
+                "📈 CLASSIFICATION METRICS",
+                f"  Accuracy: {accuracy:.4f}",
+                f"  ROC-AUC: {roc_auc:.4f}" if roc_auc else "  ROC-AUC: N/A",
+                f"  Precision (weighted): {precision:.4f}" if precision else "  Precision: N/A",
+                f"  Recall (weighted): {recall:.4f}" if recall else "  Recall: N/A",
+                f"  F1 Score (weighted): {f1:.4f}" if f1 else "  F1: N/A",
+                "",
+                "🔢 CONFUSION MATRIX",
+                str(cm),
+                "",
+                "📋 CLASSIFICATION REPORT",
+                report,
+                "",
+                "=" * 60,
+            ]
+            
+            return "\n".join(lines)
+            
+        else:
+            # Regression metrics
+            from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
+            import numpy as np
+            
+            mse = mean_squared_error(y_true, y_pred)
+            rmse = np.sqrt(mse)
+            mae = mean_absolute_error(y_true, y_pred)
+            r2 = r2_score(y_true, y_pred)
+            
+            lines = [
+                "=" * 60,
+                f"EVALUATION: {model_name} on {dataset_ref}",
+                "=" * 60,
+                "",
+                "📊 DATASET INFO",
+                f"  Samples: {len(df)}",
+                f"  Features: {len(feature_cols)}",
+                f"  Target: {target_column}",
+                "",
+                "📈 REGRESSION METRICS",
+                f"  MSE: {mse:.4f}",
+                f"  RMSE: {rmse:.4f}",
+                f"  MAE: {mae:.4f}",
+                f"  R²: {r2:.4f}",
+                "",
+                "=" * 60,
+            ]
+            
+            return "\n".join(lines)
+            
+    except Exception as e:
+        return f"❌ Evaluation failed: {str(e)}"
 

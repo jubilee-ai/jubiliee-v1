@@ -59,9 +59,15 @@ from .reshape_ops import (
 )
 from .tool_utils import cleanup_datasets, format_result, resolve_dataset, save_result
 from .utility_tools import cleanup_datasets_tool, list_datasets_tool, utility_tools
+from .apply_transformations import (
+    apply_transformations,
+    apply_transformations_tool,
+    get_registered_tools,
+    get_tool_descriptions,
+)
 
 # All tools for agent binding
-transform_tools = column_tools + row_tools + time_tools + reshape_tools + agg_tools + clean_tools + feature_tools + utility_tools
+transform_tools = column_tools + row_tools + time_tools + reshape_tools + agg_tools + clean_tools + feature_tools + utility_tools + [apply_transformations_tool]
 
 __all__ = [
     # All tools combined
@@ -131,4 +137,10 @@ __all__ = [
     "save_result",
     "format_result",
     "cleanup_datasets",
+    
+    # Batch transformations
+    "apply_transformations",
+    "apply_transformations_tool",
+    "get_registered_tools",
+    "get_tool_descriptions",
 ]

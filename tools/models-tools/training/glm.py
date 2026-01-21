@@ -244,30 +244,17 @@ def train_glm(input_data: GLMTrainingInput) -> GLMTrainingOutput:
     # Create pipeline
     pipeline = Pipeline([("preprocessor", preprocessor), ("glm", model)])
 
-    # Train/test split
-    if exposure is not None:
-        X_train, X_test, y_train, y_test, exp_train, exp_test = train_test_split(
-            X, y, exposure,
-            test_size=input_data.test_size,
-            random_state=input_data.random_state,
-        )
-    else:
-        X_train, X_test, y_train, y_test = train_test_split(
-            X, y,
-            test_size=input_data.test_size,
-            random_state=input_data.random_state,
-        )
-        exp_train = exp_test = None
+    # NOTE: No internal train_test_split - data is already split by the pipeline
+    # The training agent passes pre-split training data here
+    # Validation/test evaluation happens via evaluate_model tool
 
-    # Fit pipeline
-    # Note: For exposure, we need to fit the model differently
-    if exp_train is not None:
+    # Fit pipeline on ALL provided data (it's already the training set)
+    if exposure is not None:
         # Fit preprocessor first
-        X_train_processed = preprocessor.fit_transform(X_train)
-        X_test_processed = preprocessor.transform(X_test)
+        X_processed = preprocessor.fit_transform(X)
         
         # Fit GLM with sample_weight=exposure for rate modeling
-        model.fit(X_train_processed, y_train, sample_weight=exp_train)
+        model.fit(X_processed, y, sample_weight=exposure)
         
         # Create wrapper for predictions
         class GLMWithExposure:
@@ -284,23 +271,19 @@ def train_glm(input_data: GLMTrainingInput) -> GLMTrainingOutput:
         
         pipeline = GLMWithExposure(preprocessor, model)
         
-        # Predictions
-        y_train_pred = model.predict(X_train_processed)
-        y_test_pred = model.predict(X_test_processed)
+        # Predictions on training data
+        y_pred = model.predict(X_processed)
         
         # Scores
-        train_deviance = model.score(X_train_processed, y_train, sample_weight=exp_train)
-        test_deviance = model.score(X_test_processed, y_test, sample_weight=exp_test)
+        train_deviance = model.score(X_processed, y, sample_weight=exposure)
     else:
-        pipeline.fit(X_train, y_train)
+        pipeline.fit(X, y)
         
-        # Predictions
-        y_train_pred = pipeline.predict(X_train)
-        y_test_pred = pipeline.predict(X_test)
+        # Predictions on training data
+        y_pred = pipeline.predict(X)
         
         # Scores (D² deviance explained)
-        train_deviance = pipeline.score(X_train, y_train)
-        test_deviance = pipeline.score(X_test, y_test)
+        train_deviance = pipeline.score(X, y)
 
     # Get feature names
     try:
@@ -308,14 +291,12 @@ def train_glm(input_data: GLMTrainingInput) -> GLMTrainingOutput:
     except AttributeError:
         feature_names_out = feature_cols
 
-    # Calculate additional metrics
-    train_mae = mean_absolute_error(y_train, y_train_pred)
-    test_mae = mean_absolute_error(y_test, y_test_pred)
-    train_rmse = np.sqrt(mean_squared_error(y_train, y_train_pred))
-    test_rmse = np.sqrt(mean_squared_error(y_test, y_test_pred))
+    # Calculate additional metrics (training only - use evaluate_model for val/test)
+    train_mae = mean_absolute_error(y, y_pred)
+    train_rmse = np.sqrt(mean_squared_error(y, y_pred))
 
     # Get coefficients
-    glm_model = model if exp_train is not None else pipeline.named_steps["glm"]
+    glm_model = model if exposure is not None else pipeline.named_steps["glm"]
     coefficients = {name: float(coef) for name, coef in zip(feature_names_out, glm_model.coef_)}
     intercept = float(glm_model.intercept_)
     n_iterations = int(glm_model.n_iter_)
@@ -334,14 +315,11 @@ def train_glm(input_data: GLMTrainingInput) -> GLMTrainingOutput:
     joblib.dump(pipeline, save_path)
 
     # Register in registry
+    # NOTE: These are TRAINING metrics only - use evaluate_model for val/test metrics
     metrics = {
         "train_deviance": train_deviance,
-        "test_deviance": test_deviance,
-        "test_score": test_deviance,  # For compatibility with list_models
         "train_mae": train_mae,
-        "test_mae": test_mae,
         "train_rmse": train_rmse,
-        "test_rmse": test_rmse,
     }
 
     hyperparameters = {
@@ -377,11 +355,11 @@ def train_glm(input_data: GLMTrainingInput) -> GLMTrainingOutput:
         feature_names=feature_names_out,
         target_stats=target_stats,
         train_deviance=train_deviance,
-        test_deviance=test_deviance,
+        test_deviance=train_deviance,  # Same as train (no internal split anymore)
         train_mae=train_mae,
-        test_mae=test_mae,
+        test_mae=train_mae,  # Same as train (no internal split anymore)
         train_rmse=train_rmse,
-        test_rmse=test_rmse,
+        test_rmse=train_rmse,  # Same as train (no internal split anymore)
         coefficients=coefficients,
         intercept=intercept,
         n_iterations=n_iterations,
@@ -401,7 +379,10 @@ class SklearnGLMToolInput(BaseModel):
 
     model_name: str = Field(description="Unique model name for storage")
     description: str = Field(default="", description="Model description")
-    data: list[dict] = Field(description="Training data as list of row dicts")
+    train_dataset_ref: str = Field(
+        description="Reference name of the registered training dataset. "
+        "The dataset must be registered via register_dataset()."
+    )
     target_column: str = Field(description="Target column name")
     distribution: Literal["poisson", "gamma", "tweedie"] = Field(
         description="GLM distribution: 'poisson' (counts), 'gamma' (positive continuous), 'tweedie' (zeros + positive)"
@@ -421,10 +402,27 @@ class SklearnGLMToolInput(BaseModel):
     random_state: Optional[int] = Field(default=42)
 
 
+def _load_dataset_from_ref(dataset_ref: str):
+    """Load a dataset from the registry by reference name."""
+    import sys
+    from pathlib import Path
+    
+    data_tools_path = str(Path(__file__).parent.parent.parent / "data-tools")
+    if data_tools_path not in sys.path:
+        sys.path.insert(0, data_tools_path)
+    
+    from utils import get_registered_dataset
+    
+    df = get_registered_dataset(dataset_ref)
+    if df is None:
+        raise ValueError(f"Dataset '{dataset_ref}' not found in registry.")
+    return df
+
+
 @tool("sklearn_glm", args_schema=SklearnGLMToolInput)
 def sklearn_glm_tool(
     model_name: str,
-    data: list[dict],
+    train_dataset_ref: str,
     target_column: str,
     distribution: Literal["poisson", "gamma", "tweedie"],
     description: str = "",
@@ -527,6 +525,10 @@ def sklearn_glm_tool(
         Training results with coefficients, deviance scores, and model info.
     """
     try:
+        # Load dataset from registry
+        df = _load_dataset_from_ref(train_dataset_ref)
+        data = df.to_dict(orient="records")
+        
         result = train_glm(
             GLMTrainingInput(
                 model_name=model_name,

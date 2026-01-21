@@ -1,0 +1,1090 @@
+{
+  "models": {
+    "test_model_lr": {
+      "model_name": "test_model_lr",
+      "model_path": "/Users/noahnefsky/jubiliee-v1/tools/trained_models/test_model_lr.joblib",
+      "model_type": "sklearn_logistic_regression",
+      "description": "Predict loan default",
+      "metrics": {
+        "train_accuracy": 0.5125,
+        "test_accuracy": 0.45,
+        "test_roc_auc": 0.72
+      },
+      "feature_names": [
+        "num__age",
+        "num__income",
+        "num__credit_score"
+      ],
+      "target_column": "default",
+      "hyperparameters": {
+        "C": 1.0,
+        "l1_ratio": 0.0,
+        "solver": "lbfgs",
+        "max_iter": 500,
+        "class_weight": "balanced",
+        "fit_intercept": true,
+        "random_state": 42,
+        "test_size": 0.2
+      },
+      "training_samples": 200,
+      "classes": [
+        "0",
+        "1"
+      ],
+      "created_at": "2026-01-20T04:12:10.351486+00:00",
+      "updated_at": "2026-01-20T04:12:10.351491+00:00"
+    },
+    "loan_default_demo_v1": {
+      "model_name": "loan_default_demo_v1",
+      "model_path": "/Users/noahnefsky/jubiliee-v1/tools/trained_models/loan_default_demo_v1.joblib",
+      "model_type": "sklearn_logistic_regression",
+      "description": "Predicts loan default risk",
+      "metrics": {
+        "train_accuracy": 0.75,
+        "test_accuracy": 0.825,
+        "test_roc_auc": 0.8708791208791209
+      },
+      "feature_names": [
+        "num__age",
+        "num__income",
+        "num__credit_score"
+      ],
+      "target_column": "default",
+      "hyperparameters": {
+        "C": 1.0,
+        "l1_ratio": 0.0,
+        "solver": "lbfgs",
+        "max_iter": 100,
+        "class_weight": "balanced",
+        "fit_intercept": true,
+        "random_state": 42,
+        "test_size": 0.2
+      },
+      "training_samples": 200,
+      "classes": [
+        "0",
+        "1"
+      ],
+      "created_at": "2026-01-20T04:24:22.098430+00:00",
+      "updated_at": "2026-01-20T04:24:22.098435+00:00"
+    },
+    "test_basic_v1": {
+      "model_name": "test_basic_v1",
+      "model_path": "/Users/noahnefsky/jubiliee-v1/tools/trained_models/test_basic_v1.joblib",
+      "model_type": "sklearn_logistic_regression",
+      "description": "Logistic regression baseline for loan default prediction",
+      "metrics": {
+        "train_accuracy": 0.68,
+        "train_roc_auc": 0.7553587472724939
+      },
+      "feature_names": [
+        "num__age",
+        "num__income",
+        "num__credit_score"
+      ],
+      "target_column": "default",
+      "hyperparameters": {
+        "C": 1.0,
+        "l1_ratio": 0.0,
+        "solver": "lbfgs",
+        "max_iter": 500,
+        "class_weight": "balanced",
+        "fit_intercept": true,
+        "random_state": 42
+      },
+      "training_samples": 200,
+      "classes": [
+        "0",
+        "1"
+      ],
+      "created_at": "2026-01-20T04:31:01.875229+00:00",
+      "updated_at": "2026-01-20T06:22:20.961086+00:00"
+    },
+    "test_basic_v2": {
+      "model_name": "test_basic_v2",
+      "model_path": "/Users/noahnefsky/jubiliee-v1/tools/trained_models/test_basic_v2.joblib",
+      "model_type": "sklearn_logistic_regression",
+      "description": "Logistic regression with stronger regularization for loan default prediction",
+      "metrics": {
+        "train_accuracy": 0.675,
+        "train_roc_auc": 0.7552303940444102
+      },
+      "feature_names": [
+        "num__age",
+        "num__income",
+        "num__credit_score"
+      ],
+      "target_column": "default",
+      "hyperparameters": {
+        "C": 0.3,
+        "l1_ratio": 0.0,
+        "solver": "lbfgs",
+        "max_iter": 500,
+        "class_weight": "balanced",
+        "fit_intercept": true,
+        "random_state": 42
+      },
+      "training_samples": 200,
+      "classes": [
+        "0",
+        "1"
+      ],
+      "created_at": "2026-01-20T04:38:43.786703+00:00",
+      "updated_at": "2026-01-20T06:22:25.382207+00:00"
+    },
+    "test_basic_v3": {
+      "model_name": "test_basic_v3",
+      "model_path": "/Users/noahnefsky/jubiliee-v1/tools/trained_models/test_basic_v3.joblib",
+      "model_type": "sklearn_random_forest",
+      "description": "Random Forest to capture non-linearities after logistic attempts; class_weight balanced",
+      "metrics": {
+        "train_score": 1.0,
+        "test_score": 0.775,
+        "roc_auc": 0.7774294670846394
+      },
+      "feature_names": [
+        "num__age",
+        "num__income",
+        "num__credit_score"
+      ],
+      "target_column": "default",
+      "hyperparameters": {
+        "task_type": "classification",
+        "n_estimators": 200,
+        "max_depth": 10,
+        "min_samples_split": 2,
+        "min_samples_leaf": 1,
+        "max_features": "sqrt",
+        "bootstrap": true,
+        "class_weight": "balanced",
+        "random_state": 42,
+        "n_jobs": -1,
+        "test_size": 0.2
+      },
+      "training_samples": 200,
+      "classes": [
+        "0",
+        "1"
+      ],
+      "created_at": "2026-01-20T04:39:40.023628+00:00",
+      "updated_at": "2026-01-20T04:52:19.785373+00:00"
+    },
+    "quick_test_v1": {
+      "model_name": "quick_test_v1",
+      "model_path": "/Users/noahnefsky/jubiliee-v1/tools/trained_models/quick_test_v1.joblib",
+      "model_type": "sklearn_logistic_regression",
+      "description": "Predict default for customers using logistic regression.",
+      "metrics": {
+        "train_accuracy": 0.625,
+        "test_accuracy": 0.7,
+        "test_roc_auc": 0.47252747252747246
+      },
+      "feature_names": [
+        "num__age",
+        "num__income"
+      ],
+      "target_column": "default",
+      "hyperparameters": {
+        "C": 1.0,
+        "l1_ratio": 0.0,
+        "solver": "lbfgs",
+        "max_iter": 100,
+        "class_weight": null,
+        "fit_intercept": true,
+        "random_state": 42,
+        "test_size": 0.2
+      },
+      "training_samples": 100,
+      "classes": [
+        "0",
+        "1"
+      ],
+      "created_at": "2026-01-20T04:40:34.799876+00:00",
+      "updated_at": "2026-01-20T04:40:34.799880+00:00"
+    },
+    "quick_test_v2": {
+      "model_name": "quick_test_v2",
+      "model_path": "/Users/noahnefsky/jubiliee-v1/tools/trained_models/quick_test_v2.joblib",
+      "model_type": "sklearn_logistic_regression",
+      "description": "Predict default for customers using logistic regression with increased regularization to reduce overfitting.",
+      "metrics": {
+        "train_accuracy": 0.625,
+        "test_accuracy": 0.65,
+        "test_roc_auc": 0.4835164835164835
+      },
+      "feature_names": [
+        "num__age",
+        "num__income"
+      ],
+      "target_column": "default",
+      "hyperparameters": {
+        "C": 0.1,
+        "l1_ratio": 0.0,
+        "solver": "lbfgs",
+        "max_iter": 100,
+        "class_weight": null,
+        "fit_intercept": true,
+        "random_state": 42,
+        "test_size": 0.2
+      },
+      "training_samples": 100,
+      "classes": [
+        "0",
+        "1"
+      ],
+      "created_at": "2026-01-20T04:40:51.245719+00:00",
+      "updated_at": "2026-01-20T04:40:51.245726+00:00"
+    },
+    "ref_test_v1": {
+      "model_name": "ref_test_v1",
+      "model_path": "/Users/noahnefsky/jubiliee-v1/tools/trained_models/ref_test_v1.joblib",
+      "model_type": "sklearn_logistic_regression",
+      "description": "Iteration 1: Logistic regression with default hyperparameters",
+      "metrics": {
+        "train_accuracy": 0.4875,
+        "test_accuracy": 0.5,
+        "test_roc_auc": 0.47252747252747246
+      },
+      "feature_names": [
+        "num__age",
+        "num__income"
+      ],
+      "target_column": "default",
+      "hyperparameters": {
+        "C": 1.0,
+        "l1_ratio": 0.0,
+        "solver": "lbfgs",
+        "max_iter": 100,
+        "class_weight": "balanced",
+        "fit_intercept": true,
+        "random_state": 42,
+        "test_size": 0.2
+      },
+      "training_samples": 100,
+      "classes": [
+        "0",
+        "1"
+      ],
+      "created_at": "2026-01-20T04:49:33.444262+00:00",
+      "updated_at": "2026-01-20T04:49:33.444270+00:00"
+    },
+    "ref_test_v2": {
+      "model_name": "ref_test_v2",
+      "model_path": "/Users/noahnefsky/jubiliee-v1/tools/trained_models/ref_test_v2.joblib",
+      "model_type": "sklearn_logistic_regression",
+      "description": "Iteration 2: Logistic regression with higher regularization",
+      "metrics": {
+        "train_accuracy": 0.4875,
+        "test_accuracy": 0.5,
+        "test_roc_auc": 0.4835164835164835
+      },
+      "feature_names": [
+        "num__age",
+        "num__income"
+      ],
+      "target_column": "default",
+      "hyperparameters": {
+        "C": 0.1,
+        "l1_ratio": 0.0,
+        "solver": "lbfgs",
+        "max_iter": 100,
+        "class_weight": "balanced",
+        "fit_intercept": true,
+        "random_state": 42,
+        "test_size": 0.2
+      },
+      "training_samples": 100,
+      "classes": [
+        "0",
+        "1"
+      ],
+      "created_at": "2026-01-20T04:49:41.923893+00:00",
+      "updated_at": "2026-01-20T04:49:41.923904+00:00"
+    },
+    "tool_lr_test": {
+      "model_name": "tool_lr_test",
+      "model_path": "/Users/noahnefsky/jubiliee-v1/tools/trained_models/tool_lr_test.joblib",
+      "model_type": "sklearn_logistic_regression",
+      "description": "",
+      "metrics": {
+        "train_accuracy": 0.4875,
+        "test_accuracy": 0.5,
+        "test_roc_auc": 0.47252747252747246
+      },
+      "feature_names": [
+        "num__age",
+        "num__income"
+      ],
+      "target_column": "default",
+      "hyperparameters": {
+        "C": 1.0,
+        "l1_ratio": 0.0,
+        "solver": "lbfgs",
+        "max_iter": 100,
+        "class_weight": "balanced",
+        "fit_intercept": true,
+        "random_state": 42,
+        "test_size": 0.2
+      },
+      "training_samples": 100,
+      "classes": [
+        "0",
+        "1"
+      ],
+      "created_at": "2026-01-20T04:55:50.381570+00:00",
+      "updated_at": "2026-01-20T04:55:50.381575+00:00"
+    },
+    "tool_test_lr": {
+      "model_name": "tool_test_lr",
+      "model_path": "/Users/noahnefsky/jubiliee-v1/tools/trained_models/tool_test_lr.joblib",
+      "model_type": "sklearn_logistic_regression",
+      "description": "",
+      "metrics": {
+        "train_accuracy": 0.625,
+        "test_accuracy": 0.4,
+        "test_roc_auc": 0.5833333333333333
+      },
+      "feature_names": [
+        "num__feature1",
+        "num__feature2"
+      ],
+      "target_column": "target",
+      "hyperparameters": {
+        "C": 1.0,
+        "l1_ratio": 0.0,
+        "solver": "lbfgs",
+        "max_iter": 100,
+        "class_weight": "balanced",
+        "fit_intercept": true,
+        "random_state": 42,
+        "test_size": 0.2
+      },
+      "training_samples": 50,
+      "classes": [
+        "0",
+        "1"
+      ],
+      "created_at": "2026-01-20T04:57:59.518448+00:00",
+      "updated_at": "2026-01-20T04:57:59.518454+00:00"
+    },
+    "multi_lr": {
+      "model_name": "multi_lr",
+      "model_path": "/Users/noahnefsky/jubiliee-v1/tools/trained_models/multi_lr.joblib",
+      "model_type": "sklearn_logistic_regression",
+      "description": "",
+      "metrics": {
+        "train_accuracy": 0.65,
+        "test_accuracy": 0.4,
+        "test_roc_auc": 0.41666666666666663
+      },
+      "feature_names": [
+        "num__x1",
+        "num__x2",
+        "num__x3"
+      ],
+      "target_column": "y",
+      "hyperparameters": {
+        "C": 1.0,
+        "l1_ratio": 0.0,
+        "solver": "lbfgs",
+        "max_iter": 100,
+        "class_weight": null,
+        "fit_intercept": true,
+        "random_state": 42,
+        "test_size": 0.2
+      },
+      "training_samples": 100,
+      "classes": [
+        "0",
+        "1"
+      ],
+      "created_at": "2026-01-20T04:58:08.081927+00:00",
+      "updated_at": "2026-01-20T04:58:08.081930+00:00"
+    },
+    "multi_rf": {
+      "model_name": "multi_rf",
+      "model_path": "/Users/noahnefsky/jubiliee-v1/tools/trained_models/multi_rf.joblib",
+      "model_type": "sklearn_random_forest",
+      "description": "",
+      "metrics": {
+        "train_score": 1.0,
+        "test_score": 0.5,
+        "roc_auc": 0.2916666666666667
+      },
+      "feature_names": [
+        "num__x1",
+        "num__x2",
+        "num__x3"
+      ],
+      "target_column": "y",
+      "hyperparameters": {
+        "task_type": "classification",
+        "n_estimators": 50,
+        "max_depth": null,
+        "min_samples_split": 2,
+        "min_samples_leaf": 1,
+        "max_features": "sqrt",
+        "bootstrap": true,
+        "class_weight": null,
+        "random_state": 42,
+        "n_jobs": -1,
+        "test_size": 0.2
+      },
+      "training_samples": 100,
+      "classes": [
+        "0",
+        "1"
+      ],
+      "created_at": "2026-01-20T04:58:08.281308+00:00",
+      "updated_at": "2026-01-20T04:58:08.281316+00:00"
+    },
+    "multi_xgb": {
+      "model_name": "multi_xgb",
+      "model_path": "/Users/noahnefsky/jubiliee-v1/tools/trained_models/multi_xgb.joblib",
+      "model_type": "xgboost",
+      "description": "",
+      "metrics": {
+        "train_score": 0.6285714285714286,
+        "val_score": 0.6,
+        "test_score": 0.6,
+        "roc_auc": 0.37500000000000006
+      },
+      "feature_names": [
+        "num__x1",
+        "num__x2",
+        "num__x3"
+      ],
+      "target_column": "y",
+      "hyperparameters": {
+        "task_type": "classification",
+        "n_estimators": 3,
+        "max_depth": 6,
+        "learning_rate": 0.1,
+        "min_child_weight": 1,
+        "gamma": 0.0,
+        "reg_alpha": 0.0,
+        "reg_lambda": 1.0,
+        "subsample": 1.0,
+        "colsample_bytree": 1.0,
+        "early_stopping_rounds": 10,
+        "random_state": 42
+      },
+      "training_samples": 100,
+      "classes": [
+        "0",
+        "1"
+      ],
+      "created_at": "2026-01-20T04:58:08.339206+00:00",
+      "updated_at": "2026-01-20T04:58:08.339211+00:00"
+    },
+    "verbose_test_model_v1": {
+      "model_name": "verbose_test_model_v1",
+      "model_path": "/Users/noahnefsky/jubiliee-v1/tools/trained_models/verbose_test_model_v1.joblib",
+      "model_type": "sklearn_logistic_regression",
+      "description": "Predict loan default risk for credit decisioning",
+      "metrics": {
+        "train_accuracy": 0.6875,
+        "test_accuracy": 0.5714285714285714,
+        "test_roc_auc": 0.6394557823129252
+      },
+      "feature_names": [
+        "num__age",
+        "num__income",
+        "num__credit_score"
+      ],
+      "target_column": "default",
+      "hyperparameters": {
+        "C": 1.0,
+        "l1_ratio": 0.0,
+        "solver": "lbfgs",
+        "max_iter": 100,
+        "class_weight": "balanced",
+        "fit_intercept": true,
+        "random_state": 42,
+        "test_size": 0.2
+      },
+      "training_samples": 140,
+      "classes": [
+        "0",
+        "1"
+      ],
+      "created_at": "2026-01-20T04:58:18.598827+00:00",
+      "updated_at": "2026-01-20T04:58:18.598832+00:00"
+    },
+    "verbose_test_model_v2": {
+      "model_name": "verbose_test_model_v2",
+      "model_path": "/Users/noahnefsky/jubiliee-v1/tools/trained_models/verbose_test_model_v2.joblib",
+      "model_type": "sklearn_logistic_regression",
+      "description": "Predict loan default risk with adjusted regularization",
+      "metrics": {
+        "train_accuracy": 0.6875,
+        "test_accuracy": 0.5714285714285714,
+        "test_roc_auc": 0.6462585034013606
+      },
+      "feature_names": [
+        "num__age",
+        "num__income",
+        "num__credit_score"
+      ],
+      "target_column": "default",
+      "hyperparameters": {
+        "C": 0.1,
+        "l1_ratio": 0.0,
+        "solver": "lbfgs",
+        "max_iter": 500,
+        "class_weight": "balanced",
+        "fit_intercept": true,
+        "random_state": 42,
+        "test_size": 0.2
+      },
+      "training_samples": 140,
+      "classes": [
+        "0",
+        "1"
+      ],
+      "created_at": "2026-01-20T04:58:24.627538+00:00",
+      "updated_at": "2026-01-20T04:58:24.627548+00:00"
+    },
+    "final_test_v1": {
+      "model_name": "final_test_v1",
+      "model_path": "/Users/noahnefsky/jubiliee-v1/tools/trained_models/final_test_v1.joblib",
+      "model_type": "sklearn_logistic_regression",
+      "description": "Predicts loan default",
+      "metrics": {
+        "train_accuracy": 0.6875,
+        "test_accuracy": 0.45,
+        "test_roc_auc": 0.8933333333333334
+      },
+      "feature_names": [
+        "num__age",
+        "num__income",
+        "num__credit_score"
+      ],
+      "target_column": "default",
+      "hyperparameters": {
+        "C": 1.0,
+        "l1_ratio": 0.0,
+        "solver": "lbfgs",
+        "max_iter": 100,
+        "class_weight": "balanced",
+        "fit_intercept": true,
+        "random_state": 42,
+        "test_size": 0.2
+      },
+      "training_samples": 100,
+      "classes": [
+        "0",
+        "1"
+      ],
+      "created_at": "2026-01-20T05:00:51.336529+00:00",
+      "updated_at": "2026-01-20T05:00:51.336540+00:00"
+    },
+    "test_imbalanced_v1": {
+      "model_name": "test_imbalanced_v1",
+      "model_path": "/Users/noahnefsky/jubiliee-v1/tools/trained_models/test_imbalanced_v1.joblib",
+      "model_type": "sklearn_logistic_regression",
+      "description": "Imbalanced default prediction, iteration 1 logistic regression",
+      "metrics": {
+        "train_accuracy": 0.725,
+        "train_roc_auc": 0.8367691787766138
+      },
+      "feature_names": [
+        "num__age",
+        "num__income",
+        "num__credit_score"
+      ],
+      "target_column": "default",
+      "hyperparameters": {
+        "C": 1.0,
+        "l1_ratio": 0.0,
+        "solver": "lbfgs",
+        "max_iter": 500,
+        "class_weight": "balanced",
+        "fit_intercept": true,
+        "random_state": 42
+      },
+      "training_samples": 280,
+      "classes": [
+        "0",
+        "1"
+      ],
+      "created_at": "2026-01-20T05:06:20.538423+00:00",
+      "updated_at": "2026-01-20T06:23:00.180014+00:00"
+    },
+    "test_imbalanced_v2": {
+      "model_name": "test_imbalanced_v2",
+      "model_path": "/Users/noahnefsky/jubiliee-v1/tools/trained_models/test_imbalanced_v2.joblib",
+      "model_type": "sklearn_logistic_regression",
+      "description": "Imbalanced default prediction, iteration 2 logistic regression stronger regularization",
+      "metrics": {
+        "train_accuracy": 0.7142857142857143,
+        "train_roc_auc": 0.8408246029063873
+      },
+      "feature_names": [
+        "num__age",
+        "num__income",
+        "num__credit_score"
+      ],
+      "target_column": "default",
+      "hyperparameters": {
+        "C": 0.1,
+        "l1_ratio": 0.0,
+        "solver": "lbfgs",
+        "max_iter": 500,
+        "class_weight": "balanced",
+        "fit_intercept": true,
+        "random_state": 42
+      },
+      "training_samples": 280,
+      "classes": [
+        "0",
+        "1"
+      ],
+      "created_at": "2026-01-20T05:06:33.562395+00:00",
+      "updated_at": "2026-01-20T06:23:04.014849+00:00"
+    },
+    "iter_test_v1": {
+      "model_name": "iter_test_v1",
+      "model_path": "/Users/noahnefsky/jubiliee-v1/tools/trained_models/iter_test_v1.joblib",
+      "model_type": "sklearn_logistic_regression",
+      "description": "Iteration 1 baseline logistic regression with class_weight balanced",
+      "metrics": {
+        "train_accuracy": 0.6875,
+        "test_accuracy": 0.5714285714285714,
+        "test_roc_auc": 0.6394557823129252
+      },
+      "feature_names": [
+        "num__age",
+        "num__income",
+        "num__credit_score"
+      ],
+      "target_column": "default",
+      "hyperparameters": {
+        "C": 1.0,
+        "l1_ratio": 0.0,
+        "solver": "lbfgs",
+        "max_iter": 500,
+        "class_weight": "balanced",
+        "fit_intercept": true,
+        "random_state": 42,
+        "test_size": 0.2
+      },
+      "training_samples": 140,
+      "classes": [
+        "0",
+        "1"
+      ],
+      "created_at": "2026-01-20T05:10:45.679241+00:00",
+      "updated_at": "2026-01-20T05:10:45.679248+00:00"
+    },
+    "iter_test_v2": {
+      "model_name": "iter_test_v2",
+      "model_path": "/Users/noahnefsky/jubiliee-v1/tools/trained_models/iter_test_v2.joblib",
+      "model_type": "sklearn_logistic_regression",
+      "description": "Iteration 2 logistic regression with weaker regularization C=3.0",
+      "metrics": {
+        "train_accuracy": 0.6875,
+        "test_accuracy": 0.5714285714285714,
+        "test_roc_auc": 0.6394557823129252
+      },
+      "feature_names": [
+        "num__age",
+        "num__income",
+        "num__credit_score"
+      ],
+      "target_column": "default",
+      "hyperparameters": {
+        "C": 3.0,
+        "l1_ratio": 0.0,
+        "solver": "lbfgs",
+        "max_iter": 500,
+        "class_weight": "balanced",
+        "fit_intercept": true,
+        "random_state": 42,
+        "test_size": 0.2
+      },
+      "training_samples": 140,
+      "classes": [
+        "0",
+        "1"
+      ],
+      "created_at": "2026-01-20T05:10:49.542124+00:00",
+      "updated_at": "2026-01-20T05:10:49.542130+00:00"
+    },
+    "iter_test_v3": {
+      "model_name": "iter_test_v3",
+      "model_path": "/Users/noahnefsky/jubiliee-v1/tools/trained_models/iter_test_v3.joblib",
+      "model_type": "sklearn_logistic_regression",
+      "description": "Iteration 3 logistic regression with stronger regularization C=0.3",
+      "metrics": {
+        "train_accuracy": 0.6875,
+        "test_accuracy": 0.5714285714285714,
+        "test_roc_auc": 0.6394557823129252
+      },
+      "feature_names": [
+        "num__age",
+        "num__income",
+        "num__credit_score"
+      ],
+      "target_column": "default",
+      "hyperparameters": {
+        "C": 0.3,
+        "l1_ratio": 0.0,
+        "solver": "lbfgs",
+        "max_iter": 500,
+        "class_weight": "balanced",
+        "fit_intercept": true,
+        "random_state": 42,
+        "test_size": 0.2
+      },
+      "training_samples": 140,
+      "classes": [
+        "0",
+        "1"
+      ],
+      "created_at": "2026-01-20T05:10:53.081403+00:00",
+      "updated_at": "2026-01-20T05:10:53.081407+00:00"
+    },
+    "test_imbalanced_v3": {
+      "model_name": "test_imbalanced_v3",
+      "model_path": "/Users/noahnefsky/jubiliee-v1/tools/trained_models/test_imbalanced_v3.joblib",
+      "model_type": "xgboost",
+      "description": "XGBoost model for predicting rare default events with imbalanced classes.",
+      "metrics": {
+        "train_score": 0.9591836734693877,
+        "val_score": 0.9642857142857143,
+        "test_score": 0.9642857142857143,
+        "roc_auc": 0.8101851851851852
+      },
+      "feature_names": [
+        "num__age",
+        "num__income",
+        "num__credit_score"
+      ],
+      "target_column": "default",
+      "hyperparameters": {
+        "task_type": "classification",
+        "n_estimators": 11,
+        "max_depth": 5,
+        "learning_rate": 0.1,
+        "min_child_weight": 1,
+        "gamma": 0.0,
+        "reg_alpha": 0.0,
+        "reg_lambda": 1.0,
+        "subsample": 0.8,
+        "colsample_bytree": 0.8,
+        "early_stopping_rounds": 10,
+        "random_state": 42
+      },
+      "training_samples": 280,
+      "classes": [
+        "0",
+        "1"
+      ],
+      "created_at": "2026-01-20T05:12:53.979389+00:00",
+      "updated_at": "2026-01-20T05:12:53.979395+00:00"
+    },
+    "test_rf_v1": {
+      "model_name": "test_rf_v1",
+      "model_path": "/Users/noahnefsky/jubiliee-v1/tools/trained_models/test_rf_v1.joblib",
+      "model_type": "sklearn_random_forest",
+      "description": "Random Forest default prediction v1",
+      "metrics": {
+        "train_score": 1.0,
+        "roc_auc": 1.0
+      },
+      "feature_names": [
+        "num__age",
+        "num__income",
+        "num__credit_score",
+        "num__debt_ratio"
+      ],
+      "target_column": "default",
+      "hyperparameters": {
+        "task_type": "classification",
+        "n_estimators": 100,
+        "max_depth": 10,
+        "min_samples_split": 2,
+        "min_samples_leaf": 1,
+        "max_features": "sqrt",
+        "bootstrap": true,
+        "class_weight": null,
+        "random_state": 42,
+        "n_jobs": -1
+      },
+      "training_samples": 200,
+      "classes": [
+        "0",
+        "1"
+      ],
+      "created_at": "2026-01-20T05:13:13.370900+00:00",
+      "updated_at": "2026-01-20T06:23:43.049183+00:00"
+    },
+    "test_xgb_v1": {
+      "model_name": "test_xgb_v1",
+      "model_path": "/Users/noahnefsky/jubiliee-v1/tools/trained_models/test_xgb_v1.joblib",
+      "model_type": "xgboost",
+      "description": "XGBoost binary classifier for default prediction, iteration 1",
+      "metrics": {
+        "train_score": 1.0,
+        "roc_auc": 1.0
+      },
+      "feature_names": [
+        "num__age",
+        "num__income",
+        "num__credit_score"
+      ],
+      "target_column": "default",
+      "hyperparameters": {
+        "task_type": "classification",
+        "n_estimators": 93,
+        "max_depth": 4,
+        "learning_rate": 0.1,
+        "min_child_weight": 1,
+        "gamma": 0.0,
+        "reg_alpha": 0.0,
+        "reg_lambda": 1.0,
+        "subsample": 0.8,
+        "colsample_bytree": 0.8,
+        "early_stopping_rounds": 10,
+        "random_state": 42
+      },
+      "training_samples": 200,
+      "classes": [
+        "0",
+        "1"
+      ],
+      "created_at": "2026-01-20T05:13:30.573638+00:00",
+      "updated_at": "2026-01-20T06:24:05.754052+00:00"
+    },
+    "test_saved_model_v1": {
+      "model_name": "test_saved_model_v1",
+      "model_path": "/Users/noahnefsky/jubiliee-v1/tools/trained_models/test_saved_model_v1.joblib",
+      "model_type": "sklearn_logistic_regression",
+      "description": "Logistic regression baseline for simple binary classification",
+      "metrics": {
+        "train_accuracy": 0.495,
+        "train_roc_auc": 0.5265106042416967
+      },
+      "feature_names": [
+        "num__feature1",
+        "num__feature2"
+      ],
+      "target_column": "target",
+      "hyperparameters": {
+        "C": 1.0,
+        "l1_ratio": 0.0,
+        "solver": "lbfgs",
+        "max_iter": 500,
+        "class_weight": null,
+        "fit_intercept": true,
+        "random_state": 42
+      },
+      "training_samples": 200,
+      "classes": [
+        "0",
+        "1"
+      ],
+      "created_at": "2026-01-20T05:13:52.929321+00:00",
+      "updated_at": "2026-01-20T06:24:30.464114+00:00"
+    },
+    "test_iteration_v1": {
+      "model_name": "test_iteration_v1",
+      "model_path": "/Users/noahnefsky/jubiliee-v1/tools/trained_models/test_iteration_v1.joblib",
+      "model_type": "sklearn_logistic_regression",
+      "description": "Iteration 1 logistic regression on noisy data",
+      "metrics": {
+        "train_accuracy": 0.515,
+        "train_roc_auc": 0.5354535453545354
+      },
+      "feature_names": [
+        "num__noise1",
+        "num__noise2",
+        "num__noise3"
+      ],
+      "target_column": "target",
+      "hyperparameters": {
+        "C": 1.0,
+        "l1_ratio": 0.0,
+        "solver": "lbfgs",
+        "max_iter": 500,
+        "class_weight": null,
+        "fit_intercept": true,
+        "random_state": 42
+      },
+      "training_samples": 200,
+      "classes": [
+        "0",
+        "1"
+      ],
+      "created_at": "2026-01-20T05:14:08.919040+00:00",
+      "updated_at": "2026-01-20T06:24:56.036393+00:00"
+    },
+    "test_iteration_v2": {
+      "model_name": "test_iteration_v2",
+      "model_path": "/Users/noahnefsky/jubiliee-v1/tools/trained_models/test_iteration_v2.joblib",
+      "model_type": "sklearn_logistic_regression",
+      "description": "Iteration 2 logistic regression with weaker regularization on noisy data",
+      "metrics": {
+        "train_accuracy": 0.515,
+        "train_roc_auc": 0.5353535353535352
+      },
+      "feature_names": [
+        "num__noise1",
+        "num__noise2",
+        "num__noise3"
+      ],
+      "target_column": "target",
+      "hyperparameters": {
+        "C": 10.0,
+        "l1_ratio": 0.0,
+        "solver": "lbfgs",
+        "max_iter": 1000,
+        "class_weight": null,
+        "fit_intercept": true,
+        "random_state": 42
+      },
+      "training_samples": 200,
+      "classes": [
+        "0",
+        "1"
+      ],
+      "created_at": "2026-01-20T05:14:12.992073+00:00",
+      "updated_at": "2026-01-20T06:25:00.421523+00:00"
+    },
+    "test_iteration_v3": {
+      "model_name": "test_iteration_v3",
+      "model_path": "/Users/noahnefsky/jubiliee-v1/tools/trained_models/test_iteration_v3.joblib",
+      "model_type": "sklearn_logistic_regression",
+      "description": "Iteration 3 logistic regression with stronger regularization on noisy data",
+      "metrics": {
+        "train_accuracy": 0.52,
+        "train_roc_auc": 0.5370537053705371
+      },
+      "feature_names": [
+        "num__noise1",
+        "num__noise2",
+        "num__noise3"
+      ],
+      "target_column": "target",
+      "hyperparameters": {
+        "C": 0.1,
+        "l1_ratio": 0.0,
+        "solver": "lbfgs",
+        "max_iter": 1000,
+        "class_weight": null,
+        "fit_intercept": true,
+        "random_state": 42
+      },
+      "training_samples": 200,
+      "classes": [
+        "0",
+        "1"
+      ],
+      "created_at": "2026-01-20T05:14:17.989279+00:00",
+      "updated_at": "2026-01-20T06:25:05.041917+00:00"
+    },
+    "pipeline_model_v1": {
+      "model_name": "pipeline_model_v1",
+      "model_path": "/Users/noahnefsky/jubiliee-v1/tools/trained_models/pipeline_model_v1.joblib",
+      "model_type": "sklearn_logistic_regression",
+      "description": "Logistic regression for loan default prediction, iteration 1",
+      "metrics": {
+        "train_accuracy": 0.6971428571428572,
+        "train_roc_auc": 0.5531240334055058
+      },
+      "feature_names": [
+        "num__age_binned",
+        "num__income_log",
+        "num__region_encoded_North",
+        "num__region_encoded_South",
+        "num__credit_score_normalized"
+      ],
+      "target_column": "default",
+      "hyperparameters": {
+        "C": 1.0,
+        "l1_ratio": 0.0,
+        "solver": "lbfgs",
+        "max_iter": 500,
+        "class_weight": null,
+        "fit_intercept": true,
+        "random_state": 42
+      },
+      "training_samples": 350,
+      "classes": [
+        "0",
+        "1"
+      ],
+      "created_at": "2026-01-20T05:14:37.815399+00:00",
+      "updated_at": "2026-01-20T06:25:49.386202+00:00"
+    },
+    "pipeline_model_v2": {
+      "model_name": "pipeline_model_v2",
+      "model_path": "/Users/noahnefsky/jubiliee-v1/tools/trained_models/pipeline_model_v2.joblib",
+      "model_type": "sklearn_logistic_regression",
+      "description": "Logistic regression with balanced class weights for loan default prediction, iteration 2",
+      "metrics": {
+        "train_accuracy": 0.5514285714285714,
+        "train_roc_auc": 0.5545545932570368
+      },
+      "feature_names": [
+        "num__age_binned",
+        "num__income_log",
+        "num__region_encoded_North",
+        "num__region_encoded_South",
+        "num__credit_score_normalized"
+      ],
+      "target_column": "default",
+      "hyperparameters": {
+        "C": 1.0,
+        "l1_ratio": 0.0,
+        "solver": "lbfgs",
+        "max_iter": 500,
+        "class_weight": "balanced",
+        "fit_intercept": true,
+        "random_state": 42
+      },
+      "training_samples": 350,
+      "classes": [
+        "0",
+        "1"
+      ],
+      "created_at": "2026-01-20T05:14:41.708446+00:00",
+      "updated_at": "2026-01-20T06:25:56.998469+00:00"
+    },
+    "pipeline_model_v3": {
+      "model_name": "pipeline_model_v3",
+      "model_path": "/Users/noahnefsky/jubiliee-v1/tools/trained_models/pipeline_model_v3.joblib",
+      "model_type": "sklearn_logistic_regression",
+      "description": "Logistic regression with balanced class weights and weaker regularization (C=3.0) for loan default prediction, iteration 3",
+      "metrics": {
+        "train_accuracy": 0.5514285714285714,
+        "train_roc_auc": 0.5546319208165791
+      },
+      "feature_names": [
+        "num__age_binned",
+        "num__income_log",
+        "num__region_encoded_North",
+        "num__region_encoded_South",
+        "num__credit_score_normalized"
+      ],
+      "target_column": "default",
+      "hyperparameters": {
+        "C": 3.0,
+        "l1_ratio": 0.0,
+        "solver": "lbfgs",
+        "max_iter": 500,
+        "class_weight": "balanced",
+        "fit_intercept": true,
+        "random_state": 42
+      },
+      "training_samples": 350,
+      "classes": [
+        "0",
+        "1"
+      ],
+      "created_at": "2026-01-20T05:14:46.472733+00:00",
+      "updated_at": "2026-01-20T06:26:01.508135+00:00"
+    }
+  }
+}

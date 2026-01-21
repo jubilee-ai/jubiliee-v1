@@ -217,39 +217,33 @@ def train_logistic_regression(input_data: LogisticRegressionTrainingInput) -> Lo
         ('classifier', model)
     ])
     
-    # Train/test split
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y,
-        test_size=input_data.test_size,
-        random_state=input_data.random_state,
-        stratify=y
-    )
+    # NOTE: No internal train_test_split - data is already split by the pipeline
+    # The training agent passes pre-split training data here
+    # Validation/test evaluation happens via evaluate_model tool
     
-    # Fit pipeline
-    pipeline.fit(X_train, y_train)
+    # Fit pipeline on ALL provided data (it's already the training set)
+    pipeline.fit(X, y)
     
-    # Predictions
-    y_train_pred = pipeline.predict(X_train)
-    y_test_pred = pipeline.predict(X_test)
-    y_test_proba = pipeline.predict_proba(X_test)
+    # Predictions on training data (for sanity check metrics)
+    y_pred = pipeline.predict(X)
+    y_proba = pipeline.predict_proba(X)
     
-    # Metrics
-    train_acc = accuracy_score(y_train, y_train_pred)
-    test_acc = accuracy_score(y_test, y_test_pred)
+    # Training metrics (use for sanity check, not model selection)
+    train_acc = accuracy_score(y, y_pred)
     
     # ROC-AUC (handle binary vs multiclass)
     classes = pipeline.classes_
     n_classes = len(classes)
     try:
         if n_classes == 2:
-            test_roc_auc = roc_auc_score(y_test, y_test_proba[:, 1])
+            train_roc_auc = roc_auc_score(y, y_proba[:, 1])
         else:
-            test_roc_auc = roc_auc_score(y_test, y_test_proba, multi_class='ovr', average='weighted')
+            train_roc_auc = roc_auc_score(y, y_proba, multi_class='ovr', average='weighted')
     except ValueError:
-        test_roc_auc = None
+        train_roc_auc = None
     
-    clf_report = classification_report(y_test, y_test_pred)
-    conf_matrix = confusion_matrix(y_test, y_test_pred).tolist()
+    clf_report = classification_report(y, y_pred)
+    conf_matrix = confusion_matrix(y, y_pred).tolist()
     
     # Extract coefficients with feature names
     classifier = pipeline.named_steps['classifier']
@@ -285,10 +279,10 @@ def train_logistic_regression(input_data: LogisticRegressionTrainingInput) -> Lo
     joblib.dump(pipeline, save_path)
     
     # Prepare metrics and hyperparameters for registry
+    # NOTE: These are TRAINING metrics only - use evaluate_model for val/test metrics
     metrics = {
         "train_accuracy": train_acc,
-        "test_accuracy": test_acc,
-        "test_roc_auc": test_roc_auc,
+        "train_roc_auc": train_roc_auc,
     }
     
     hyperparameters = {
@@ -299,7 +293,6 @@ def train_logistic_regression(input_data: LogisticRegressionTrainingInput) -> Lo
         "class_weight": input_data.class_weight,
         "fit_intercept": input_data.fit_intercept,
         "random_state": input_data.random_state,
-        "test_size": input_data.test_size,
     }
     
     # Register model in the registry
@@ -324,8 +317,8 @@ def train_logistic_regression(input_data: LogisticRegressionTrainingInput) -> Lo
         class_distribution=class_dist,
         feature_names=feature_names_out,
         train_accuracy=train_acc,
-        test_accuracy=test_acc,
-        test_roc_auc=test_roc_auc,
+        test_accuracy=train_acc,  # Same as train (no internal split anymore)
+        test_roc_auc=train_roc_auc,  # Same as train (no internal split anymore)
         classification_report=clf_report,
         confusion_matrix=conf_matrix,
         coefficients=coefficients,
@@ -353,12 +346,13 @@ class SklearnLogisticRegressionToolInput(BaseModel):
         default="",
         description="Human-readable description of the model's purpose."
     )
-    data: list[dict] = Field(
-        description="Training data as list of row dicts. Each dict must have the same keys. "
-                    "Example: [{'age': 25, 'income': 50000, 'risk': 'low'}, {'age': 35, 'income': 80000, 'risk': 'high'}]"
+    train_dataset_ref: str = Field(
+        description="Reference name of the registered training dataset. "
+                    "The dataset must be registered via register_dataset(). "
+                    "Example: 'basic_train', 'pipeline_train_features'"
     )
     target_column: str = Field(
-        description="Name of target column to predict. Must exist in each data row."
+        description="Name of target column to predict. Must exist in the dataset."
     )
     feature_columns: Optional[list[str]] = Field(
         default=None,
@@ -408,10 +402,29 @@ class SklearnLogisticRegressionToolInput(BaseModel):
     )
 
 
+def _load_dataset_from_ref(dataset_ref: str) -> pd.DataFrame:
+    """Load a dataset from the registry by reference name."""
+    import sys
+    from pathlib import Path
+    
+    # Add data-tools path
+    data_tools_path = str(Path(__file__).parent.parent.parent / "data-tools")
+    if data_tools_path not in sys.path:
+        sys.path.insert(0, data_tools_path)
+    
+    from utils import get_registered_dataset
+    
+    df = get_registered_dataset(dataset_ref)
+    if df is None:
+        raise ValueError(f"Dataset '{dataset_ref}' not found in registry. "
+                        "Make sure to register it with register_dataset() first.")
+    return df
+
+
 @tool("sklearn_logistic_regression", args_schema=SklearnLogisticRegressionToolInput)
 def sklearn_logistic_regression_tool(
     model_name: str,
-    data: list[dict],
+    train_dataset_ref: str,
     target_column: str,
     description: str = "",
     feature_columns: Optional[list[str]] = None,
@@ -468,15 +481,14 @@ def sklearn_logistic_regression_tool(
     
     EXAMPLE:
     ```
+    # First register your training data
+    register_dataset("my_train_data", train_df)
+    
+    # Then train using the reference
     result = sklearn_logistic_regression(
         model_name="loan_default_v1",
         description="Predicts loan default for retail customers",
-        data=[
-            {"age": 25, "income": 50000, "employed": "yes", "default": 0},
-            {"age": 45, "income": 120000, "employed": "yes", "default": 0},
-            {"age": 32, "income": 35000, "employed": "no", "default": 1},
-            ...
-        ],
+        train_dataset_ref="my_train_data",
         target_column="default",
         categorical_columns=["employed"],
         C=0.1,
@@ -487,7 +499,7 @@ def sklearn_logistic_regression_tool(
     Args:
         model_name: Unique name for this model (used to save and load)
         description: Human-readable description of the model
-        data: Training data as list of row dictionaries
+        train_dataset_ref: Reference name of registered training dataset
         target_column: Name of the target column to predict
         feature_columns: Which columns to use as features (None = all except target)
         categorical_columns: Which columns are categorical (None = auto-detect)
@@ -505,6 +517,10 @@ def sklearn_logistic_regression_tool(
         classification report, feature coefficients, and model registry info.
     """
     try:
+        # Load dataset from registry
+        df = _load_dataset_from_ref(train_dataset_ref)
+        data = df.to_dict(orient="records")
+        
         result = train_logistic_regression(LogisticRegressionTrainingInput(
             model_name=model_name,
             description=description,

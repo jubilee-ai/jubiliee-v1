@@ -10,13 +10,125 @@ Run once per dataset after validation passes.
 
 import sys
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Literal, Optional, TypedDict
 
 import numpy as np
 import pandas as pd
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 from scipy import stats
+
+# =============================================================================
+# TYPE DEFINITIONS
+# =============================================================================
+
+class ShapeInfo(TypedDict):
+    """Shape information for the dataset."""
+    rows: int
+    columns: int
+
+
+class SchemaColumn(TypedDict, total=False):
+    """Schema info for a single column."""
+    column: str
+    dtype: str
+    null_pct: float
+    unique: int  # Only present for categorical columns
+
+
+class NumericColumnSummary(TypedDict):
+    """Summary statistics for a numeric column."""
+    column: str
+    mean: float
+    median: float
+    std: float
+    min: float
+    max: float
+    p5: float
+    p95: float
+    skew: float
+    outliers_pct: float
+
+
+class CategoryValue(TypedDict):
+    """A single category value with its percentage."""
+    value: str
+    pct: float
+
+
+class CategoricalColumnSummary(TypedDict):
+    """Summary for a categorical column."""
+    column: str
+    unique: int
+    top_values: list[CategoryValue]
+    id_like: bool
+
+
+class TargetAnalysis(TypedDict, total=False):
+    """Analysis of the target variable."""
+    column: str
+    task: str
+    # Classification fields
+    class_counts: dict[str, int]
+    imbalance_ratio: float
+    # Regression fields
+    mean: float
+    std: float
+    skew: float
+    # Common
+    recommendation: str
+
+
+class TargetAssociation(TypedDict, total=False):
+    """Feature-target association info."""
+    column: str
+    metric: str  # 'auc' or 'correlation'
+    value: float
+    direction: str  # Only for AUC
+
+
+class CorrelationPair(TypedDict):
+    """A pair of highly correlated columns."""
+    col1: str
+    col2: str
+    corr: float
+
+
+class CorrelationsInfo(TypedDict):
+    """Correlation analysis results."""
+    high_pairs: list[CorrelationPair]
+
+
+class Alert(TypedDict, total=False):
+    """An alert about a data issue."""
+    type: str
+    message: str
+    column: str
+    columns: list[str]
+    skew: float
+    unique: int
+    corr: float
+    null_pct: float
+
+
+class EdaSummary(TypedDict):
+    """High-level summary for the agent."""
+    key_findings: list[str]
+    top_actions: list[str]
+
+
+class EdaReportType(TypedDict, total=False):
+    """Complete EDA report structure."""
+    shape: ShapeInfo
+    schema: list[SchemaColumn]
+    numeric_summary: list[NumericColumnSummary]
+    categorical_summary: list[CategoricalColumnSummary]
+    target_analysis: TargetAnalysis
+    target_associations: list[TargetAssociation]
+    correlations: CorrelationsInfo
+    alerts: list[Alert]
+    recommendations: list[str]
+    summary: EdaSummary
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from transformations.tool_utils import resolve_dataset
@@ -432,7 +544,7 @@ def run_eda_report(
     task_type: Optional[str] = None,
     sample_n: int = 100000,
     caps: Optional[dict] = None,
-) -> dict:
+) -> EdaReportType:
     """
     Generate comprehensive EDA report for a dataset.
     
@@ -444,7 +556,7 @@ def run_eda_report(
         caps: Limits for output size
     
     Returns:
-        EDA report dictionary
+        EdaReportType with shape, schema, summaries, correlations, alerts, and recommendations
     """
     df = resolve_dataset(dataset_ref)
     
@@ -729,5 +841,18 @@ __all__ = [
     "eda_report_tool",
     "run_eda_report",
     "eda_tools",
+    # Types
+    "EdaReportType",
+    "ShapeInfo",
+    "SchemaColumn",
+    "NumericColumnSummary",
+    "CategoricalColumnSummary",
+    "CategoryValue",
+    "TargetAnalysis",
+    "TargetAssociation",
+    "CorrelationPair",
+    "CorrelationsInfo",
+    "Alert",
+    "EdaSummary",
 ]
 
