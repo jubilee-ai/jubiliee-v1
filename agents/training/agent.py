@@ -126,8 +126,8 @@ def cleaning_node(state: TrainingAgentState) -> TrainingAgentState:
         from utils import get_registered_dataset
         df = get_registered_dataset(state["collected_dataset_ref"])
         num_columns = len(df.columns) if df is not None else 20
-        # Base of 15 iterations + 0.5 per column, capped at 50
-        max_iters = min(50, max(15, 15 + int(num_columns * 0.5)))
+        # Base of 30 iterations + 1 per column, capped at 80
+        max_iters = min(80, max(30, 30 + num_columns))
     except Exception:
         max_iters = 50
     
