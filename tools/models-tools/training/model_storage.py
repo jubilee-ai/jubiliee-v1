@@ -14,7 +14,7 @@ from typing import Any, Literal, Optional
 import joblib
 import pandas as pd
 from langchain.tools import tool
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 # Default storage location
 TRAINED_MODELS_DIR = os.path.join(
@@ -148,6 +148,8 @@ def delete_model(model_name: str) -> bool:
 
 class ListModelsInput(BaseModel):
     """Input for listing trained models."""
+    model_config = ConfigDict(extra="forbid")
+    
     model_type: Optional[str] = Field(
         default=None,
         description="Filter by model type (e.g., 'sklearn_logistic_regression'). If None, lists all models."
@@ -237,6 +239,8 @@ def list_trained_models_tool(
 
 class LoadModelInput(BaseModel):
     """Input for loading a trained model."""
+    model_config = ConfigDict(extra="forbid")
+    
     model_name: str = Field(
         description="Name of the model to load (as shown in list_trained_models)"
     )
@@ -244,6 +248,8 @@ class LoadModelInput(BaseModel):
 
 class PredictInput(BaseModel):
     """Input for making predictions with a trained model."""
+    model_config = ConfigDict(extra="forbid")
+    
     model_name: str = Field(
         description="Name of the trained model to use for predictions"
     )
@@ -369,6 +375,8 @@ def predict_with_model_tool(
 
 class GetModelInfoInput(BaseModel):
     """Input for getting detailed model information."""
+    model_config = ConfigDict(extra="forbid")
+    
     model_name: str = Field(
         description="Name of the model to get info for"
     )
@@ -452,6 +460,8 @@ def get_model_info_tool(
 
 class DeleteModelInput(BaseModel):
     """Input for deleting a trained model."""
+    model_config = ConfigDict(extra="forbid")
+    
     model_name: str = Field(
         description="Name of the model to delete"
     )
@@ -492,6 +502,8 @@ def delete_trained_model_tool(
 
 class EvaluateModelInput(BaseModel):
     """Input for evaluating a model on a dataset."""
+    model_config = ConfigDict(extra="forbid")
+    
     model_name: str = Field(
         description="Name of the trained model to evaluate"
     )
@@ -501,6 +513,24 @@ class EvaluateModelInput(BaseModel):
     target_column: str = Field(
         description="Name of the target column in the dataset"
     )
+    # Threshold tuning options
+    optimize_threshold: bool = Field(
+        default=False,
+        description="If True, find optimal classification threshold instead of using 0.5. "
+                    "Useful for imbalanced data. Only works for binary classification."
+    )
+    optimize_for: Literal["f1", "precision", "recall", "balanced_accuracy"] = Field(
+        default="f1",
+        description="Metric to optimize when finding threshold: 'f1', 'precision', 'recall', or 'balanced_accuracy'"
+    )
+    min_precision: Optional[float] = Field(
+        default=None,
+        description="Minimum precision constraint when optimizing threshold (e.g., 0.3 means precision >= 30%)"
+    )
+    min_recall: Optional[float] = Field(
+        default=None,
+        description="Minimum recall constraint when optimizing threshold (e.g., 0.5 means recall >= 50%)"
+    )
 
 
 @tool("evaluate_model", args_schema=EvaluateModelInput)
@@ -508,6 +538,10 @@ def evaluate_model_tool(
     model_name: str,
     dataset_ref: str,
     target_column: str,
+    optimize_threshold: bool = False,
+    optimize_for: Literal["f1", "precision", "recall", "balanced_accuracy"] = "f1",
+    min_precision: Optional[float] = None,
+    min_recall: Optional[float] = None,
 ) -> str:
     """Evaluate a trained model on a registered dataset and return metrics.
     
@@ -520,6 +554,14 @@ def evaluate_model_tool(
     - Evaluate on test data for final metrics
     - Compare different models on the same dataset
     
+    THRESHOLD TUNING (classification only):
+    Set optimize_threshold=True to find the optimal decision threshold instead of 0.5.
+    This is valuable for imbalanced data where 0.5 is often suboptimal.
+    - optimize_for="f1": Maximize F1 score (balance precision/recall)
+    - optimize_for="recall": Maximize recall (catch more positives)
+    - optimize_for="precision": Maximize precision (fewer false positives)
+    - min_precision/min_recall: Add constraints (e.g., "maximize F1 but keep precision >= 0.3")
+    
     METRICS COMPUTED:
     - For classification: accuracy, ROC-AUC, precision, recall, F1, confusion matrix
     - For regression: MSE, RMSE, MAE, R²
@@ -528,6 +570,10 @@ def evaluate_model_tool(
         model_name: Name of the trained model in the registry
         dataset_ref: Reference name of the registered dataset (must be registered via register_dataset)
         target_column: Name of the target column to evaluate against
+        optimize_threshold: If True, find optimal threshold (binary classification only)
+        optimize_for: Metric to optimize ('f1', 'precision', 'recall', 'balanced_accuracy')
+        min_precision: Optional minimum precision constraint
+        min_recall: Optional minimum recall constraint
     
     Returns:
         Formatted string with evaluation metrics
@@ -577,12 +623,12 @@ def evaluate_model_tool(
             # Classification metrics
             from sklearn.metrics import (
                 accuracy_score, roc_auc_score, precision_score, recall_score,
-                f1_score, confusion_matrix, classification_report
+                f1_score, confusion_matrix, classification_report, balanced_accuracy_score
             )
-            
-            accuracy = accuracy_score(y_true, y_pred)
+            import numpy as np
             
             # Get probabilities if available
+            y_proba = None
             roc_auc = None
             if hasattr(model, 'predict_proba'):
                 try:
@@ -594,13 +640,67 @@ def evaluate_model_tool(
                 except Exception:
                     pass
             
+            # Threshold optimization for binary classification
+            optimal_threshold = 0.5
+            threshold_results = None
+            if optimize_threshold and y_proba is not None and y_proba.shape[1] == 2:
+                # Sweep thresholds
+                thresholds = np.arange(0.05, 0.96, 0.01)
+                best_score = -1
+                best_thresh = 0.5
+                
+                for thresh in thresholds:
+                    y_pred_thresh = (y_proba[:, 1] >= thresh).astype(int)
+                    
+                    prec = precision_score(y_true, y_pred_thresh, zero_division=0)
+                    rec = recall_score(y_true, y_pred_thresh, zero_division=0)
+                    
+                    # Check constraints
+                    if min_precision is not None and prec < min_precision:
+                        continue
+                    if min_recall is not None and rec < min_recall:
+                        continue
+                    
+                    # Calculate target metric
+                    if optimize_for == "f1":
+                        score = f1_score(y_true, y_pred_thresh, zero_division=0)
+                    elif optimize_for == "precision":
+                        score = prec
+                    elif optimize_for == "recall":
+                        score = rec
+                    elif optimize_for == "balanced_accuracy":
+                        score = balanced_accuracy_score(y_true, y_pred_thresh)
+                    else:
+                        score = f1_score(y_true, y_pred_thresh, zero_division=0)
+                    
+                    if score > best_score:
+                        best_score = score
+                        best_thresh = thresh
+                
+                optimal_threshold = best_thresh
+                y_pred = (y_proba[:, 1] >= optimal_threshold).astype(int)
+                
+                # Metrics at optimal threshold
+                threshold_results = {
+                    "optimal_threshold": optimal_threshold,
+                    "optimized_for": optimize_for,
+                    "score_at_threshold": best_score,
+                }
+            
+            accuracy = accuracy_score(y_true, y_pred)
+            
             # Precision, recall, F1
             try:
                 precision = precision_score(y_true, y_pred, average='weighted', zero_division=0)
                 recall = recall_score(y_true, y_pred, average='weighted', zero_division=0)
                 f1 = f1_score(y_true, y_pred, average='weighted', zero_division=0)
+                # Also get binary metrics for positive class
+                prec_pos = precision_score(y_true, y_pred, average='binary', zero_division=0)
+                rec_pos = recall_score(y_true, y_pred, average='binary', zero_division=0)
+                f1_pos = f1_score(y_true, y_pred, average='binary', zero_division=0)
             except Exception:
                 precision = recall = f1 = None
+                prec_pos = rec_pos = f1_pos = None
             
             # Confusion matrix
             cm = confusion_matrix(y_true, y_pred)
@@ -618,12 +718,41 @@ def evaluate_model_tool(
                 f"  Features: {len(feature_cols)}",
                 f"  Target: {target_column}",
                 "",
+            ]
+            
+            # Show threshold tuning results
+            if threshold_results:
+                lines.extend([
+                    "🎯 THRESHOLD OPTIMIZATION",
+                    f"  Optimized for: {threshold_results['optimized_for']}",
+                    f"  Optimal threshold: {threshold_results['optimal_threshold']:.2f} (default was 0.50)",
+                    f"  Score at threshold: {threshold_results['score_at_threshold']:.4f}",
+                ])
+                if min_precision:
+                    lines.append(f"  Constraint: precision >= {min_precision}")
+                if min_recall:
+                    lines.append(f"  Constraint: recall >= {min_recall}")
+                lines.append("")
+            
+            lines.extend([
                 "📈 CLASSIFICATION METRICS",
                 f"  Accuracy: {accuracy:.4f}",
                 f"  ROC-AUC: {roc_auc:.4f}" if roc_auc else "  ROC-AUC: N/A",
                 f"  Precision (weighted): {precision:.4f}" if precision else "  Precision: N/A",
                 f"  Recall (weighted): {recall:.4f}" if recall else "  Recall: N/A",
                 f"  F1 Score (weighted): {f1:.4f}" if f1 else "  F1: N/A",
+            ])
+            
+            if prec_pos is not None:
+                lines.extend([
+                    "",
+                    "📈 POSITIVE CLASS METRICS",
+                    f"  Precision: {prec_pos:.4f}",
+                    f"  Recall: {rec_pos:.4f}",
+                    f"  F1: {f1_pos:.4f}",
+                ])
+            
+            lines.extend([
                 "",
                 "🔢 CONFUSION MATRIX",
                 str(cm),
@@ -632,7 +761,7 @@ def evaluate_model_tool(
                 report,
                 "",
                 "=" * 60,
-            ]
+            ])
             
             return "\n".join(lines)
             

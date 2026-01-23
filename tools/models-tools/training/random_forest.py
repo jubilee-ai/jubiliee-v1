@@ -15,7 +15,7 @@ import numpy as np
 import pandas as pd
 from langchain.tools import tool
 from model_storage import generate_model_path, register_model
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 from sklearn.metrics import (
@@ -34,6 +34,7 @@ from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
 class RandomForestTrainingInput(BaseModel):
     """Input schema for training a Random Forest model."""
+    model_config = ConfigDict(extra="forbid")
 
     # Model identification
     model_name: str = Field(
@@ -63,6 +64,10 @@ class RandomForestTrainingInput(BaseModel):
         default=None,
         description="List of column names that are categorical (will be one-hot encoded). "
         "Numeric columns will be standardized. If None, auto-detects from dtypes.",
+    )
+    sample_weight_column: Optional[str] = Field(
+        default=None,
+        description="Column containing per-row sample weights. Excluded from features.",
     )
 
     # Task type
@@ -204,14 +209,25 @@ def train_random_forest(
             f"Available columns: {list(df.columns)}"
         )
 
-    # Determine feature columns
+    # Extract sample weights if provided
+    sample_weights = None
+    if input_data.sample_weight_column:
+        if input_data.sample_weight_column not in df.columns:
+            raise ValueError(f"Sample weight column '{input_data.sample_weight_column}' not found.")
+        sample_weights = df[input_data.sample_weight_column].values
+    
+    # Determine feature columns (exclude target and sample_weight_column)
+    exclude_cols = [input_data.target_column]
+    if input_data.sample_weight_column:
+        exclude_cols.append(input_data.sample_weight_column)
+    
     if input_data.feature_columns:
-        feature_cols = input_data.feature_columns
+        feature_cols = [c for c in input_data.feature_columns if c not in exclude_cols]
         missing = set(feature_cols) - set(df.columns)
         if missing:
             raise ValueError(f"Feature columns not found in data: {missing}")
     else:
-        feature_cols = [c for c in df.columns if c != input_data.target_column]
+        feature_cols = [c for c in df.columns if c not in exclude_cols]
 
     # Separate features and target
     X = df[feature_cols]
@@ -272,7 +288,10 @@ def train_random_forest(
     # Validation/test evaluation happens via evaluate_model tool
 
     # Fit pipeline on ALL provided data (it's already the training set)
-    pipeline.fit(X, y)
+    if sample_weights is not None:
+        pipeline.fit(X, y, model__sample_weight=sample_weights)
+    else:
+        pipeline.fit(X, y)
 
     # Get transformed feature names
     try:
@@ -440,6 +459,10 @@ class SklearnRandomForestToolInput(BaseModel):
         default=None,
         description="Columns to one-hot encode. If None, auto-detects from dtypes.",
     )
+    sample_weight_column: Optional[str] = Field(
+        default=None,
+        description="Column with per-row weights. Use for recency, policy size, or label confidence."
+    )
     n_estimators: int = Field(
         default=100, description="Number of trees in forest. Default: 100", ge=1
     )
@@ -504,6 +527,7 @@ def sklearn_random_forest_tool(
     description: str = "",
     feature_columns: Optional[list[str]] = None,
     categorical_columns: Optional[list[str]] = None,
+    sample_weight_column: Optional[str] = None,
     n_estimators: int = 100,
     max_depth: Optional[int] = None,
     min_samples_split: int = 2,
@@ -551,6 +575,16 @@ def sklearn_random_forest_tool(
     - min_samples_split/leaf: Increase to 5-10 for noisy data or small datasets.
     - max_features: 'sqrt' is good for classification, try 0.3-0.5 for regression.
     - class_weight: Use 'balanced' for imbalanced classification (rare fraud, defaults).
+    
+    FOR IMBALANCED DATA (positive rate < 20%):
+    - ALWAYS use class_weight='balanced'
+    - When switching FROM logistic regression that used class_weight='balanced', 
+      you MUST also use class_weight='balanced' here
+    
+    FOR OVERFITTING (train_score >> val_score by >0.1):
+    - Reduce max_depth (try 4-6)
+    - Increase min_samples_leaf (try 5-10)
+    - Increase min_samples_split (try 5-10)
 
     OUTPUT INTERPRETATION:
     - test_score: Accuracy (classification) or R² (regression). Compare to baseline.
@@ -635,6 +669,7 @@ def sklearn_random_forest_tool(
                 task_type=task_type,
                 feature_columns=feature_columns,
                 categorical_columns=categorical_columns,
+                sample_weight_column=sample_weight_column,
                 n_estimators=n_estimators,
                 max_depth=max_depth,
                 min_samples_split=min_samples_split,

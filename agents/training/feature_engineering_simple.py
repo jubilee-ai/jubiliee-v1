@@ -227,7 +227,7 @@ def run_feature_engineering_simple(
     forbidden_columns: list[str] = None,
     as_of_cutoff: Optional[str] = None,
     prediction_horizon: Optional[str] = None,
-    model: str = "openai:gpt-5.1",
+    model: str = "openai:gpt-5-mini",
 ) -> dict[str, Any]:
     """
     Run feature engineering with all analysis upfront, then one LLM call.

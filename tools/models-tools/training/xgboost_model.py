@@ -16,7 +16,7 @@ import numpy as np
 import pandas as pd
 from langchain.tools import tool
 from model_storage import generate_model_path, register_model
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from sklearn.compose import ColumnTransformer
 from sklearn.metrics import (accuracy_score, classification_report,
                              confusion_matrix, mean_absolute_error,
@@ -52,6 +52,7 @@ class XGBoostPipelineWrapper:
 
 class XGBoostTrainingInput(BaseModel):
     """Input schema for training an XGBoost model."""
+    model_config = ConfigDict(extra="forbid")
 
     # Model identification
     model_name: str = Field(
@@ -77,6 +78,10 @@ class XGBoostTrainingInput(BaseModel):
     categorical_columns: Optional[list[str]] = Field(
         default=None,
         description="List of categorical column names (will be one-hot encoded).",
+    )
+    sample_weight_column: Optional[str] = Field(
+        default=None,
+        description="Column containing per-row sample weights. Excluded from features.",
     )
 
     # Task type
@@ -137,6 +142,31 @@ class XGBoostTrainingInput(BaseModel):
         description="Fraction of features per tree. <1.0 adds randomness. Default: 1.0",
         gt=0,
         le=1,
+    )
+
+    # Imbalanced data
+    scale_pos_weight: Optional[float] = Field(
+        default=None,
+        description="Balance weight for positive class in binary classification. "
+        "Set to (negative_count / positive_count) for imbalanced data. "
+        "E.g., if 95% negative and 5% positive, set to 19.0. Default: None (no reweighting)",
+    )
+
+    # Interpretability constraints
+    monotone_constraints: Optional[dict[str, int]] = Field(
+        default=None,
+        description="Monotonic constraints per feature. Dict mapping feature name to constraint: "
+        "1 = increasing (higher feature → higher prediction), "
+        "-1 = decreasing (higher feature → lower prediction), "
+        "0 = no constraint. Example: {'income': -1, 'debt_ratio': 1} for default prediction. "
+        "Default: None (no constraints)",
+    )
+
+    # Tree algorithm
+    tree_method: Literal["auto", "exact", "approx", "hist"] = Field(
+        default="auto",
+        description="Tree construction algorithm. 'auto' picks best. 'hist' is faster for large data (>10k rows). "
+        "'exact' is most accurate but slow. Default: 'auto'",
     )
 
     # Early stopping
@@ -225,14 +255,25 @@ def train_xgboost(input_data: XGBoostTrainingInput) -> XGBoostTrainingOutput:
             f"Available: {list(df.columns)}"
         )
 
-    # Determine feature columns
+    # Extract sample weights if provided
+    sample_weights = None
+    if input_data.sample_weight_column:
+        if input_data.sample_weight_column not in df.columns:
+            raise ValueError(f"Sample weight column '{input_data.sample_weight_column}' not found.")
+        sample_weights = df[input_data.sample_weight_column].values
+    
+    # Determine feature columns (exclude target and sample_weight_column)
+    exclude_cols = [input_data.target_column]
+    if input_data.sample_weight_column:
+        exclude_cols.append(input_data.sample_weight_column)
+    
     if input_data.feature_columns:
-        feature_cols = input_data.feature_columns
+        feature_cols = [c for c in input_data.feature_columns if c not in exclude_cols]
         missing = set(feature_cols) - set(df.columns)
         if missing:
             raise ValueError(f"Feature columns not found: {missing}")
     else:
-        feature_cols = [c for c in df.columns if c != input_data.target_column]
+        feature_cols = [c for c in df.columns if c not in exclude_cols]
 
     # Separate features and target
     X = df[feature_cols].copy()
@@ -273,12 +314,21 @@ def train_xgboost(input_data: XGBoostTrainingInput) -> XGBoostTrainingOutput:
     # internal holdout purely for early stopping purposes
     stratify = y if input_data.task_type == "classification" else None
     
-    X_train, X_early_stop, y_train, y_early_stop = train_test_split(
-        X, y,
-        test_size=0.1,  # Only 10% for early stopping eval
-        random_state=input_data.random_state,
-        stratify=stratify,
-    )
+    if sample_weights is not None:
+        X_train, X_early_stop, y_train, y_early_stop, sw_train, sw_early_stop = train_test_split(
+            X, y, sample_weights,
+            test_size=0.1,
+            random_state=input_data.random_state,
+            stratify=stratify,
+        )
+    else:
+        X_train, X_early_stop, y_train, y_early_stop = train_test_split(
+            X, y,
+            test_size=0.1,
+            random_state=input_data.random_state,
+            stratify=stratify,
+        )
+        sw_train = sw_early_stop = None
 
     # Fit preprocessor on training portion
     X_train_processed = preprocessor.fit_transform(X_train)
@@ -289,6 +339,22 @@ def train_xgboost(input_data: XGBoostTrainingInput) -> XGBoostTrainingOutput:
         feature_names_out = preprocessor.get_feature_names_out().tolist()
     except AttributeError:
         feature_names_out = feature_cols
+
+    # Build monotone constraints tuple if provided (XGBoost needs tuple format)
+    monotone_constraints_tuple = None
+    if input_data.monotone_constraints:
+        # Map feature names to their positions after preprocessing
+        constraint_list = []
+        for feat_name in feature_names_out:
+            constraint = input_data.monotone_constraints.get(feat_name, 0)
+            # Also check original feature name (before one-hot encoding prefix)
+            if constraint == 0:
+                for orig_name, orig_constraint in input_data.monotone_constraints.items():
+                    if feat_name.startswith(f"cat__{orig_name}_") or feat_name.startswith(f"num__{orig_name}"):
+                        constraint = orig_constraint
+                        break
+            constraint_list.append(constraint)
+        monotone_constraints_tuple = tuple(constraint_list)
 
     # Build XGBoost model
     if input_data.task_type == "classification":
@@ -306,6 +372,9 @@ def train_xgboost(input_data: XGBoostTrainingInput) -> XGBoostTrainingOutput:
             reg_lambda=input_data.reg_lambda,
             subsample=input_data.subsample,
             colsample_bytree=input_data.colsample_bytree,
+            scale_pos_weight=input_data.scale_pos_weight,
+            monotone_constraints=monotone_constraints_tuple,
+            tree_method=input_data.tree_method,
             objective=objective,
             eval_metric=eval_metric,
             random_state=input_data.random_state,
@@ -324,6 +393,8 @@ def train_xgboost(input_data: XGBoostTrainingInput) -> XGBoostTrainingOutput:
             reg_lambda=input_data.reg_lambda,
             subsample=input_data.subsample,
             colsample_bytree=input_data.colsample_bytree,
+            monotone_constraints=monotone_constraints_tuple,
+            tree_method=input_data.tree_method,
             objective="reg:squarederror",
             eval_metric="rmse",
             random_state=input_data.random_state,
@@ -337,6 +408,7 @@ def train_xgboost(input_data: XGBoostTrainingInput) -> XGBoostTrainingOutput:
     model.fit(
         X_train_processed, y_train,
         eval_set=eval_set,
+        sample_weight=sw_train,
         verbose=False,
     )
 
@@ -359,7 +431,7 @@ def train_xgboost(input_data: XGBoostTrainingInput) -> XGBoostTrainingOutput:
     # Preprocess ALL data
     X_all_processed = preprocessor.fit_transform(X)
     model.set_params(n_estimators=actual_n_estimators, early_stopping_rounds=None)
-    model.fit(X_all_processed, y, verbose=False)
+    model.fit(X_all_processed, y, sample_weight=sample_weights, verbose=False)
 
     # Predictions on training data (for sanity check metrics)
     y_pred = model.predict(X_all_processed)
@@ -427,6 +499,9 @@ def train_xgboost(input_data: XGBoostTrainingInput) -> XGBoostTrainingOutput:
         "reg_lambda": input_data.reg_lambda,
         "subsample": input_data.subsample,
         "colsample_bytree": input_data.colsample_bytree,
+        "scale_pos_weight": input_data.scale_pos_weight,
+        "monotone_constraints": input_data.monotone_constraints,
+        "tree_method": input_data.tree_method,
         "early_stopping_rounds": input_data.early_stopping_rounds,
         "random_state": input_data.random_state,
     }
@@ -481,6 +556,7 @@ def train_xgboost(input_data: XGBoostTrainingInput) -> XGBoostTrainingOutput:
 
 class SklearnXGBoostToolInput(BaseModel):
     """Input for training an XGBoost model."""
+    model_config = ConfigDict(extra="forbid")
 
     model_name: str = Field(description="Unique model name for storage")
     description: str = Field(default="", description="Model description")
@@ -494,6 +570,10 @@ class SklearnXGBoostToolInput(BaseModel):
     )
     feature_columns: Optional[list[str]] = Field(default=None)
     categorical_columns: Optional[list[str]] = Field(default=None)
+    sample_weight_column: Optional[str] = Field(
+        default=None,
+        description="Column with per-row weights. Use for recency, policy size, or label confidence."
+    )
     n_estimators: int = Field(default=100, ge=1)
     max_depth: int = Field(default=6, ge=1)
     learning_rate: float = Field(default=0.1, gt=0, le=1)
@@ -503,6 +583,18 @@ class SklearnXGBoostToolInput(BaseModel):
     reg_lambda: float = Field(default=1, ge=0)
     subsample: float = Field(default=1.0, gt=0, le=1)
     colsample_bytree: float = Field(default=1.0, gt=0, le=1)
+    scale_pos_weight: Optional[float] = Field(
+        default=None,
+        description="Balance weight for positive class. Set to (neg_count/pos_count) for imbalanced data."
+    )
+    monotone_constraints: Optional[dict[str, int]] = Field(
+        default=None,
+        description="Monotonic constraints: {feature_name: 1 (increasing), -1 (decreasing), 0 (none)}"
+    )
+    tree_method: Literal["auto", "exact", "approx", "hist"] = Field(
+        default="auto",
+        description="Tree algorithm. 'hist' is faster for large datasets."
+    )
     early_stopping_rounds: Optional[int] = Field(default=10)
     random_state: Optional[int] = Field(default=42)
     n_jobs: int = Field(default=-1)
@@ -536,6 +628,7 @@ def xgboost_train_tool(
     description: str = "",
     feature_columns: Optional[list[str]] = None,
     categorical_columns: Optional[list[str]] = None,
+    sample_weight_column: Optional[str] = None,
     n_estimators: int = 100,
     max_depth: int = 6,
     learning_rate: float = 0.1,
@@ -545,6 +638,9 @@ def xgboost_train_tool(
     reg_lambda: float = 1,
     subsample: float = 1.0,
     colsample_bytree: float = 1.0,
+    scale_pos_weight: Optional[float] = None,
+    monotone_constraints: Optional[dict[str, int]] = None,
+    tree_method: Literal["auto", "exact", "approx", "hist"] = "auto",
     early_stopping_rounds: Optional[int] = 10,
     random_state: Optional[int] = 42,
     n_jobs: int = -1,
@@ -581,6 +677,24 @@ def xgboost_train_tool(
     - n_estimators: 100-1000. Use early_stopping to find optimal.
     - subsample/colsample_bytree: 0.7-0.9 adds regularization.
     - min_child_weight: Increase (5-10) if overfitting.
+    - scale_pos_weight: For imbalanced data, set to (negative_count / positive_count).
+      E.g., if 95% negative and 5% positive, set to 19.0.
+    - monotone_constraints: For interpretability, force features to have monotonic
+      relationship with target. E.g., {'income': -1} means higher income → lower default.
+    - tree_method: Use 'hist' for datasets with >10k rows for faster training.
+    
+    FOR IMBALANCED DATA (positive rate < 20%):
+    - ALWAYS use scale_pos_weight = (num_negatives / num_positives)
+    - E.g., 5% positive → scale_pos_weight = 19.0
+    - When switching FROM logistic regression/random forest that used class_weight='balanced',
+      you MUST use scale_pos_weight here
+    
+    FOR OVERFITTING (train_score >> val_score by >0.1):
+    - Increase reg_alpha (try 0.1, 1.0) for L1 regularization
+    - Increase reg_lambda (try 2.0, 5.0) for L2 regularization
+    - Increase gamma (try 0.1, 0.5) for minimum split gain
+    - Reduce learning_rate (try 0.05) with more n_estimators
+    - Reduce max_depth (try 3-4)
 
     LOSS CURVE:
     The output shows loss at each boosting round:
@@ -597,12 +711,15 @@ def xgboost_train_tool(
 
     Args:
         model_name: Unique name for this model
-        data: Training data as list of dictionaries
+        train_dataset_ref: Reference to registered training dataset
         target_column: Target variable column
         task_type: 'classification' or 'regression'
         n_estimators: Maximum boosting rounds
         max_depth: Maximum tree depth
         learning_rate: Step size shrinkage
+        scale_pos_weight: Weight for positive class (imbalanced data)
+        monotone_constraints: Dict of feature constraints {name: 1/-1/0}
+        tree_method: Algorithm ('auto', 'exact', 'approx', 'hist')
         early_stopping_rounds: Stop if no improvement for N rounds
         ... (other regularization and sampling parameters)
 
@@ -626,6 +743,7 @@ def xgboost_train_tool(
                 task_type=task_type,
                 feature_columns=feature_columns,
                 categorical_columns=categorical_columns,
+                sample_weight_column=sample_weight_column,
                 n_estimators=n_estimators,
                 max_depth=max_depth,
                 learning_rate=learning_rate,
@@ -635,6 +753,9 @@ def xgboost_train_tool(
                 reg_lambda=reg_lambda,
                 subsample=subsample,
                 colsample_bytree=colsample_bytree,
+                scale_pos_weight=scale_pos_weight,
+                monotone_constraints=monotone_constraints,
+                tree_method=tree_method,
                 early_stopping_rounds=early_stopping_rounds,
                 random_state=random_state,
                 n_jobs=n_jobs,

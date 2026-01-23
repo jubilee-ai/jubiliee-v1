@@ -15,7 +15,7 @@ import numpy as np
 import pandas as pd
 from langchain.tools import tool
 from model_storage import generate_model_path, register_model
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from sklearn.compose import ColumnTransformer
 from sklearn.linear_model import (GammaRegressor, PoissonRegressor,
                                   TweedieRegressor)
@@ -27,6 +27,7 @@ from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
 class GLMTrainingInput(BaseModel):
     """Input schema for training a Generalized Linear Model."""
+    model_config = ConfigDict(extra="forbid")
 
     # Model identification
     model_name: str = Field(
@@ -61,6 +62,11 @@ class GLMTrainingInput(BaseModel):
         description="Column for exposure/offset (e.g., policy duration, years at risk). "
         "Used in Poisson to model rates instead of counts. "
         "If provided, predictions are per unit of exposure.",
+    )
+    sample_weight_column: Optional[str] = Field(
+        default=None,
+        description="Column with per-row sample weights. Use for recency, confidence, or importance weighting. "
+        "Separate from exposure_column. Excluded from features.",
     )
 
     # Distribution
@@ -162,15 +168,24 @@ def train_glm(input_data: GLMTrainingInput) -> GLMTrainingOutput:
             f"Available: {list(df.columns)}"
         )
 
+    # Extract sample weights if provided
+    sample_weights = None
+    if input_data.sample_weight_column:
+        if input_data.sample_weight_column not in df.columns:
+            raise ValueError(f"Sample weight column '{input_data.sample_weight_column}' not found.")
+        sample_weights = df[input_data.sample_weight_column].values
+    
     # Determine feature columns
     exclude_cols = [input_data.target_column]
     if input_data.exposure_column:
         if input_data.exposure_column not in df.columns:
             raise ValueError(f"Exposure column '{input_data.exposure_column}' not found.")
         exclude_cols.append(input_data.exposure_column)
+    if input_data.sample_weight_column:
+        exclude_cols.append(input_data.sample_weight_column)
 
     if input_data.feature_columns:
-        feature_cols = input_data.feature_columns
+        feature_cols = [c for c in input_data.feature_columns if c not in exclude_cols]
         missing = set(feature_cols) - set(df.columns)
         if missing:
             raise ValueError(f"Feature columns not found: {missing}")
@@ -253,8 +268,13 @@ def train_glm(input_data: GLMTrainingInput) -> GLMTrainingOutput:
         # Fit preprocessor first
         X_processed = preprocessor.fit_transform(X)
         
+        # Combine exposure with sample_weights if both provided
+        combined_weights = exposure
+        if sample_weights is not None:
+            combined_weights = exposure * sample_weights
+        
         # Fit GLM with sample_weight=exposure for rate modeling
-        model.fit(X_processed, y, sample_weight=exposure)
+        model.fit(X_processed, y, sample_weight=combined_weights)
         
         # Create wrapper for predictions
         class GLMWithExposure:
@@ -275,9 +295,12 @@ def train_glm(input_data: GLMTrainingInput) -> GLMTrainingOutput:
         y_pred = model.predict(X_processed)
         
         # Scores
-        train_deviance = model.score(X_processed, y, sample_weight=exposure)
+        train_deviance = model.score(X_processed, y, sample_weight=combined_weights)
     else:
-        pipeline.fit(X, y)
+        if sample_weights is not None:
+            pipeline.fit(X, y, glm__sample_weight=sample_weights)
+        else:
+            pipeline.fit(X, y)
         
         # Predictions on training data
         y_pred = pipeline.predict(X)
@@ -376,6 +399,7 @@ def train_glm(input_data: GLMTrainingInput) -> GLMTrainingOutput:
 
 class SklearnGLMToolInput(BaseModel):
     """Input for training a sklearn GLM model."""
+    model_config = ConfigDict(extra="forbid")
 
     model_name: str = Field(description="Unique model name for storage")
     description: str = Field(default="", description="Model description")
@@ -392,6 +416,10 @@ class SklearnGLMToolInput(BaseModel):
     exposure_column: Optional[str] = Field(
         default=None,
         description="Exposure column for rate modeling (e.g., policy duration)"
+    )
+    sample_weight_column: Optional[str] = Field(
+        default=None,
+        description="Column with per-row weights. Separate from exposure."
     )
     tweedie_power: float = Field(default=1.5, gt=1, lt=2)
     alpha: float = Field(default=1.0, ge=0)
@@ -429,6 +457,7 @@ def sklearn_glm_tool(
     feature_columns: Optional[list[str]] = None,
     categorical_columns: Optional[list[str]] = None,
     exposure_column: Optional[str] = None,
+    sample_weight_column: Optional[str] = None,
     tweedie_power: float = 1.5,
     alpha: float = 1.0,
     solver: Literal["lbfgs", "newton-cholesky"] = "lbfgs",
@@ -539,6 +568,7 @@ def sklearn_glm_tool(
                 feature_columns=feature_columns,
                 categorical_columns=categorical_columns,
                 exposure_column=exposure_column,
+                sample_weight_column=sample_weight_column,
                 tweedie_power=tweedie_power,
                 alpha=alpha,
                 solver=solver,

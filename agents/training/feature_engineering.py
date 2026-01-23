@@ -445,7 +445,7 @@ def run_feature_engineering(
     forbidden_columns: list[str] = None,
     as_of_cutoff: Optional[str] = None,
     prediction_horizon: Optional[str] = None,
-    model: str = "openai:gpt-5.1",
+    model: str = "openai:gpt-5-mini",
     max_iterations: int = 10,
 ) -> dict[str, Any]:
     """

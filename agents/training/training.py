@@ -16,10 +16,13 @@ from typing import Any, Literal, Optional
 
 from dotenv import load_dotenv
 from langchain.agents import create_agent
+from langchain.agents.structured_output import ToolStrategy
 from langchain.chat_models import init_chat_model
 from pydantic import BaseModel, Field
 
 load_dotenv(Path(__file__).parent.parent.parent / ".env")
+
+# TODO: More hyperparameters (e.g. sample weights... and for each model...)
 
 # Add tools path
 _TOOLS_DIR = Path(__file__).parent.parent.parent / "tools" / "models-tools" / "training"
@@ -64,72 +67,77 @@ TRAINING_TOOLS = [
 # SYSTEM PROMPT
 # =============================================================================
 
-TRAINING_SYSTEM_PROMPT = """You are an ML Training Agent responsible for training and evaluating machine learning models.
+# TODO: Add ML standard practice here or as a skill
+# TODO: Only stop when optimized as much as you can... --> if we have blockers from data or features we'll loop back to previous steps
+TRAINING_SYSTEM_PROMPT = """You are an ML Training Agent that strategically trains and tunes models through iterative experimentation.
 
-## Your Task
-Iteratively train and improve a model until validation metrics are acceptable, then evaluate on test data.
+## Workflow
 
-## Available Tools
-- `sklearn_logistic_regression`: Train logistic regression (classification)
-- `sklearn_random_forest`: Train random forest (classification or regression)
-- `xgboost_train`: Train XGBoost model (classification or regression)
-- `sklearn_glm`: Train Generalized Linear Model (regression with Poisson/Gamma/Tweedie)
-- `survival_analysis`: Train survival model (time-to-event prediction)
-- `evaluate_model`: **USE THIS** to evaluate a trained model on validation/test datasets (returns accuracy, ROC-AUC, precision, recall, F1)
-- `get_model_info`: Get details about a trained model
-- `list_trained_models`: List all available models
+Each iteration: **Train → Evaluate → Decide**
 
-## Iterative Training Process
+1. **Train** a model on `train_dataset_ref`
+2. **Evaluate** on validation using `evaluate_model`
+3. **Decide** next action based on the decision logic below
 
-### Iteration Loop (repeat until good or max 3 iterations):
-1. **Analyze** the data info provided (class distribution, features, etc.)
-2. **Decide hyperparameters** based on your analysis:
-   - For imbalanced data: use class_weight="balanced"
-   - Start with moderate regularization (C=1.0), adjust if overfitting/underfitting
-   - For tree models: start with n_estimators=100, max_depth=10
-3. **Train the model** using `train_dataset_ref` parameter:
-   - Use a UNIQUE model_name for each iteration (e.g., model_v1, model_v2, model_v3)
-   - Set train_dataset_ref to the training dataset reference (provided in context)
-4. **Evaluate on validation** using `evaluate_model` tool:
-   - model_name: the model you just trained
-   - dataset_ref: the validation dataset reference (provided in context)
-   - target_column: the target column name
-5. **Analyze validation results**:
-   - Check accuracy, ROC-AUC, precision, recall
-   - Identify issues: overfitting? underfitting? class imbalance problems?
-6. **Decide next action**:
-   - If ROC-AUC >= 0.75 AND accuracy reasonable → STOP iterating, proceed to test
-   - If ROC-AUC < 0.75 OR poor metrics → TRY AGAIN with different hyperparameters:
-     * If overfitting: increase regularization (lower C), reduce max_depth
-     * If underfitting: decrease regularization (higher C), more estimators
-     * If class imbalance issues: ensure class_weight="balanced"
+## Decision Logic
 
-### After iteration loop:
-7. **Evaluate best model on test data** using `evaluate_model` with the test dataset_ref
-8. **Report final results** including:
-   - Best model name and hyperparameters used
-   - Validation metrics that led to selection
-   - Final test metrics
-   - Summary of iterations tried and why this model was chosen
+After each evaluation, analyze results and choose ONE action:
 
-## Important Rules
-- Training tools now use `train_dataset_ref` parameter (NOT raw data)
-- ALWAYS use training data for fitting, validation for tuning, test for final eval
-- NEVER train on validation or test data
-- USE DIFFERENT model_name FOR EACH TRAINING ATTEMPT (append _v1, _v2, etc.)
-- Maximum 3 training iterations to avoid infinite loops
-- Use `evaluate_model` tool to get metrics (NOT predict_with_model)
-- Explain your reasoning for hyperparameter choices
+### → STOP & TEST (metrics are good)
+When: val_roc_auc ≥ 0.75 AND val_accuracy beats baseline (majority class rate)
+Action: Run final `evaluate_model` on test data with best model
 
-## Acceptable Metric Thresholds
-- ROC-AUC >= 0.75 (good ranking ability)
-- Accuracy should beat baseline (majority class rate)
-- For imbalanced data, prioritize recall on minority class
+### → TUNE HYPERPARAMETERS (model shows promise but can improve)
+When: Current model type is working (val_roc_auc > 0.6) but not optimal
+Logic:
+- If OVERFITTING (train_score >> val_score by >0.1):
+  - LR: reduce C (0.1 → 0.01), try l1_ratio=0.5
+  - RF: reduce max_depth (10 → 6 → 4), increase min_samples_leaf
+  - XGB: increase reg_alpha/reg_lambda, reduce learning_rate, reduce max_depth
+- If UNDERFITTING (both train and val scores low):
+  - LR: increase C (1.0 → 10), reduce regularization
+  - RF: increase max_depth, reduce min_samples_leaf
+  - XGB: increase max_depth, reduce regularization
 
-## Data Format
-All datasets are accessed via dataset_ref names (provided in context).
-- train_dataset_ref: for training tools
-- dataset_ref: for evaluate_model tool
+### → SWITCH MODELS (current architecture is inadequate)
+When: val_roc_auc < 0.6 after tuning attempts, OR linear model on non-linear data
+Logic:
+- LR → RF: When LR performance plateaus and you suspect non-linear relationships
+- RF → XGB: When RF overfits badly or you need better regularization control
+- Any → XGB: When you need maximum performance and have tried simpler models
+**Critical:** Carry forward imbalance handling:
+- If previous used class_weight='balanced' → RF must use class_weight='balanced'
+- If switching to XGB with imbalanced data → use scale_pos_weight = (neg_count / pos_count)
+
+## First Iteration Strategy
+
+Before training, analyze the data context:
+1. **Check class balance:** If positive rate < 20%, use class_weight='balanced' or scale_pos_weight
+2. **Check feature count:** If features > 20, consider regularization
+3. **Check dataset size:** If < 500 rows, prefer simpler models (LR, shallow RF)
+
+Start with the model specified in context. Use sensible defaults, but apply imbalance handling if needed.
+
+## Tracking State
+
+Keep mental track of:
+- What you've tried (model types, key hyperparameters)
+- What worked (which changes improved metrics)
+- What didn't work (avoid repeating failed experiments)
+
+Use this history to make informed next decisions. Don't try the same configuration twice.
+
+## Model Naming
+
+Use unique names reflecting the experiment: `{model}_v{n}` (e.g., `lr_v1`, `rf_v2`, `xgb_v1`)
+
+## Output
+
+Provide structured summary:
+- `success`, `best_model_name`, `model_type`
+- `val_accuracy`, `val_roc_auc`, `test_accuracy`, `test_roc_auc`
+- `iterations`: list of attempts with model_name, tool_used, hyperparams, metrics
+- `num_iterations`, `summary`, `recommendations`
 """
 
 
@@ -137,18 +145,33 @@ All datasets are accessed via dataset_ref names (provided in context).
 # TRAINING RESULT SCHEMA
 # =============================================================================
 
+class TrainingIteration(BaseModel):
+    """A single training iteration attempt."""
+    model_name: str = Field(description="Name of the model for this iteration")
+    tool_used: str = Field(description="Training tool used (e.g., sklearn_logistic_regression)")
+    hyperparams: dict = Field(default_factory=dict, description="Hyperparameters used")
+    train_accuracy: Optional[float] = Field(default=None, description="Training accuracy")
+    val_accuracy: Optional[float] = Field(default=None, description="Validation accuracy from evaluate_model")
+    val_roc_auc: Optional[float] = Field(default=None, description="Validation ROC-AUC from evaluate_model")
+    success: bool = Field(description="Whether this iteration succeeded")
+    error: Optional[str] = Field(default=None, description="Error message if failed")
+
+
 class TrainingResult(BaseModel):
     """Structured output for training completion."""
     success: bool = Field(description="Whether training completed successfully")
-    model_name: str = Field(description="Name of the trained model")
-    model_type: str = Field(description="Type of model trained")
+    best_model_name: str = Field(description="Name of the best trained model")
+    model_type: str = Field(description="Type of model trained (e.g., logistic_regression, random_forest)")
     
-    # Metrics
-    train_accuracy: Optional[float] = Field(default=None, description="Training accuracy")
-    val_accuracy: Optional[float] = Field(default=None, description="Validation accuracy")
-    test_accuracy: Optional[float] = Field(default=None, description="Test accuracy")
-    val_roc_auc: Optional[float] = Field(default=None, description="Validation ROC-AUC")
-    test_roc_auc: Optional[float] = Field(default=None, description="Test ROC-AUC")
+    # Best model metrics
+    val_accuracy: Optional[float] = Field(default=None, description="Best model validation accuracy")
+    val_roc_auc: Optional[float] = Field(default=None, description="Best model validation ROC-AUC")
+    test_accuracy: Optional[float] = Field(default=None, description="Best model test accuracy")
+    test_roc_auc: Optional[float] = Field(default=None, description="Best model test ROC-AUC")
+    
+    # Iteration tracking
+    iterations: list[TrainingIteration] = Field(default_factory=list, description="List of all training iterations attempted")
+    num_iterations: int = Field(description="Total number of training iterations attempted")
     
     # Summary
     summary: str = Field(description="Summary of training process and results")
@@ -162,177 +185,6 @@ class TrainingResult(BaseModel):
 def _prepare_data_for_tool(df) -> list[dict]:
     """Convert DataFrame to list of dicts for tool input."""
     return df.to_dict(orient="records")
-
-
-def _extract_metrics_from_messages(messages: list, val_ref: str, test_ref: str) -> dict:
-    """
-    Parse agent messages to extract metrics from tool calls.
-    
-    Looks for:
-    1. evaluate_model tool results (JSON format, preferred)
-    2. Training tool results (text format with metrics, fallback)
-    
-    Returns dict with val_accuracy, val_roc_auc, test_accuracy, test_roc_auc.
-    """
-    import json
-    import re
-    
-    val_metrics = {}
-    test_metrics = {}
-    last_training_metrics = {}
-    training_failed = False
-    
-    training_tools = ["sklearn_logistic_regression", "sklearn_random_forest", 
-                     "xgboost_train", "sklearn_glm", "survival_analysis"]
-    
-    for i, msg in enumerate(messages):
-        msg_name = getattr(msg, "name", None)
-        
-        # Skip non-tool messages
-        if not hasattr(msg, "content") or msg_name is None:
-            continue
-            
-        content = msg.content
-        if not content or not isinstance(content, str):
-            continue
-        
-        # Check for evaluate_model results (JSON format)
-        if msg_name == "evaluate_model":
-            try:
-                data = json.loads(content)
-                if isinstance(data, dict):
-                    # Look at previous AIMessage for tool call args to identify val vs test
-                    if i > 0:
-                        prev_msg = messages[i - 1]
-                        if hasattr(prev_msg, "tool_calls"):
-                            for tc in prev_msg.tool_calls:
-                                if tc.get("name") == "evaluate_model":
-                                    args = tc.get("args", {})
-                                    dataset_ref = args.get("dataset_ref", "")
-                                    
-                                    accuracy = data.get("accuracy")
-                                    roc_auc = data.get("roc_auc")
-                                    
-                                    if dataset_ref == test_ref or "test" in dataset_ref.lower():
-                                        test_metrics = {"accuracy": accuracy, "roc_auc": roc_auc}
-                                    elif dataset_ref == val_ref or "val" in dataset_ref.lower():
-                                        val_metrics = {"accuracy": accuracy, "roc_auc": roc_auc}
-            except (json.JSONDecodeError, TypeError):
-                pass
-        
-        # Check training tool results (text format)
-        if msg_name in training_tools:
-            # Check for training failure
-            if "TRAINING FAILED" in content or "Error:" in content:
-                training_failed = True
-                continue
-            
-            # Parse text format like:
-            # "  Train Accuracy: 0.8914"
-            # "  Test Accuracy:  0.8914"
-            # "  Test ROC-AUC:   0.6123"
-            
-            train_acc_match = re.search(r"Train Accuracy:\s*([\d.]+)", content)
-            test_acc_match = re.search(r"Test Accuracy:\s*([\d.]+)", content)
-            test_roc_match = re.search(r"Test ROC-AUC:\s*([\d.]+)", content)
-            # TODO: LLM extract these from structured output instead
-            
-            if train_acc_match or test_acc_match:
-                training_failed = False  # Found successful training output
-                last_training_metrics = {
-                    "train_accuracy": float(train_acc_match.group(1)) if train_acc_match else None,
-                    "test_accuracy": float(test_acc_match.group(1)) if test_acc_match else None,
-                    "test_roc_auc": float(test_roc_match.group(1)) if test_roc_match else None,
-                }
-    
-    # Use evaluate_model results if available, otherwise fall back to training tool metrics
-    if val_metrics:
-        result_val_accuracy = val_metrics.get("accuracy")
-        result_val_roc_auc = val_metrics.get("roc_auc")
-    else:
-        # Training tools report "Test" metrics but it's really training data (no internal split)
-        # These are the best we have if evaluate_model wasn't called
-        result_val_accuracy = last_training_metrics.get("train_accuracy")
-        result_val_roc_auc = last_training_metrics.get("test_roc_auc")  # ROC-AUC from training
-    
-    if test_metrics:
-        result_test_accuracy = test_metrics.get("accuracy")
-        result_test_roc_auc = test_metrics.get("roc_auc")
-    else:
-        result_test_accuracy = last_training_metrics.get("test_accuracy")
-        result_test_roc_auc = last_training_metrics.get("test_roc_auc")
-    
-    return {
-        "val_accuracy": result_val_accuracy,
-        "val_roc_auc": result_val_roc_auc,
-        "test_accuracy": result_test_accuracy,
-        "test_roc_auc": result_test_roc_auc,
-        "training_failed": training_failed,
-    }
-
-
-def _extract_iterations_from_messages(messages: list) -> list[dict]:
-    """
-    Extract training iteration logs from agent messages.
-    
-    Returns list of iteration dicts with model_name, hyperparams, and metrics.
-    """
-    import re
-    
-    iterations = []
-    training_tools = ["sklearn_logistic_regression", "sklearn_random_forest", 
-                     "xgboost_train", "sklearn_glm", "survival_analysis"]
-    
-    for i, msg in enumerate(messages):
-        # Look for AIMessage with tool_calls
-        if hasattr(msg, "tool_calls") and msg.tool_calls:
-            for tc in msg.tool_calls:
-                if tc.get("name") in training_tools:
-                    args = tc.get("args", {})
-                    iteration = {
-                        "model_name": args.get("model_name", "unknown"),
-                        "tool": tc.get("name"),
-                        "hyperparams": {
-                            "C": args.get("C"),
-                            "class_weight": args.get("class_weight"),
-                            "n_estimators": args.get("n_estimators"),
-                            "max_depth": args.get("max_depth"),
-                            "max_iter": args.get("max_iter"),
-                        },
-                        "metrics": None,  # Will be filled from tool result
-                        "success": False,
-                    }
-                    
-                    # Look for the corresponding ToolMessage result
-                    for j in range(i + 1, min(i + 3, len(messages))):
-                        result_msg = messages[j]
-                        if hasattr(result_msg, "name") and result_msg.name == tc.get("name"):
-                            content = result_msg.content if hasattr(result_msg, "content") else ""
-                            
-                            # Check for failure
-                            if "TRAINING FAILED" in content:
-                                iteration["success"] = False
-                                iteration["error"] = "Training failed"
-                                break
-                            
-                            # Extract metrics from success output
-                            if "TRAINING COMPLETE" in content:
-                                iteration["success"] = True
-                                
-                                train_acc = re.search(r"Train Accuracy:\s*([\d.]+)", content)
-                                test_acc = re.search(r"Test Accuracy:\s*([\d.]+)", content)
-                                test_roc = re.search(r"Test ROC-AUC:\s*([\d.]+)", content)
-                                
-                                iteration["metrics"] = {
-                                    "train_accuracy": float(train_acc.group(1)) if train_acc else None,
-                                    "test_accuracy": float(test_acc.group(1)) if test_acc else None,
-                                    "roc_auc": float(test_roc.group(1)) if test_roc else None,
-                                }
-                            break
-                    
-                    iterations.append(iteration)
-    
-    return iterations
 
 
 def _get_task_type(selected_model: str, goal: str) -> Literal["classification", "regression"]:
@@ -350,11 +202,57 @@ def _get_task_type(selected_model: str, goal: str) -> Literal["classification", 
     return "classification"
 
 
+def _get_alternative_models(selected_model: str, task_type: str) -> list[str]:
+    """
+    Get alternative models that can be tried if the selected model plateaus.
+    
+    Args:
+        selected_model: The initially selected model
+        task_type: Either 'classification' or 'regression'
+    
+    Returns:
+        List of alternative model names (tool names) that are compatible with the task
+    """
+    # Define models by task type
+    classification_models = [
+        "sklearn_logistic_regression",
+        "sklearn_random_forest", 
+        "xgboost_train",
+    ]
+    
+    regression_models = [
+        "sklearn_random_forest",
+        "xgboost_train",
+        "sklearn_glm",
+    ]
+    
+    # Map selected_model to tool name for comparison
+    model_to_tool = {
+        "logistic_regression": "sklearn_logistic_regression",
+        "random_forest": "sklearn_random_forest",
+        "xgboost": "xgboost_train",
+        "glm": "sklearn_glm",
+        "survival": "survival_analysis",
+    }
+    
+    # Get the tool name for the selected model
+    selected_tool = model_to_tool.get(selected_model.lower(), selected_model)
+    
+    # Get all compatible models for this task type
+    if task_type == "classification":
+        all_models = classification_models
+    else:
+        all_models = regression_models
+    
+    # Return alternatives (excluding the selected model)
+    alternatives = [m for m in all_models if m != selected_tool]
+    return alternatives
+
+
 # =============================================================================
 # MAIN TRAINING FUNCTION
 # =============================================================================
 
-# TODO: switch between different models when plateauing
 # TODO: Go back to change feature engineering with comments if need be
 # --> Or just modify features in this loop
 # TODO: More evaluation metrics
@@ -368,7 +266,7 @@ def run_training_agent(
     goal: str,
     model_name: Optional[str] = None,
     max_iterations: int = 6,
-    llm_model: str = "openai:gpt-5.1",
+    llm_model: str = "openai:gpt-5-mini",
 ) -> dict[str, Any]:
     """
     Run the training agent to train and evaluate a model.
@@ -404,8 +302,9 @@ def run_training_agent(
     val_data = _prepare_data_for_tool(val_df)
     test_data = _prepare_data_for_tool(test_df)
     
-    # Get task type
+    # Get task type and alternative models
     task_type = _get_task_type(selected_model, goal)
+    alternative_models = _get_alternative_models(selected_model, task_type)
     
     # Generate model name if not provided
     if not model_name:
@@ -431,6 +330,8 @@ def run_training_agent(
     is_imbalanced = minority_ratio < 0.3
     
     # Build context for the agent
+    alt_models_str = ", ".join(alternative_models) if alternative_models else "None"
+    
     context = f"""
 ## Training Context
 
@@ -441,6 +342,9 @@ def run_training_agent(
 **Target Column:** {target_column}
 **Base Model Name:** {model_name} (append _v1, _v2, _v3 for iterations)
 **Max Iterations:** {max_iterations}
+
+**Alternative Models Available:** {alt_models_str}
+(You may switch to any of these if you think a different model would perform better)
 
 **Dataset Sizes:**
 - Training: {len(train_data)} rows
@@ -460,30 +364,25 @@ def run_training_agent(
 
 ## Iterative Training Instructions
 
-1. **Iteration 1**: Train {selected_model} with reasonable defaults
+1. **Train a model**: Start with {selected_model}
    - model_name="{model_name}_v1"
    - train_dataset_ref="{train_ref}"
    - target_column="{target_column}"
    {"- class_weight='balanced' (data is imbalanced)" if is_imbalanced else ""}
    
 2. **Evaluate on validation** using evaluate_model tool:
-   - model_name="{model_name}_v1"
    - dataset_ref="{val_ref}"
    - target_column="{target_column}"
 
-3. **Check metrics**: 
-   - If ROC-AUC >= 0.75 and accuracy is reasonable → proceed to step 5
-   - If metrics are poor → go to step 4
+3. **Decide next action** based on results:
+   - Proceed to test if metrics are satisfactory
+   - Tune hyperparameters if you think adjustments will help
+   - Switch to a different model ({alt_models_str}) if you think it would perform better
+   - Use unique model names for each attempt (e.g., {model_name}_v2, rf_v1, xgb_v1)
 
-4. **Iterate** (up to {max_iterations} total attempts):
-   - Analyze what went wrong
-   - Adjust hyperparameters (C, n_estimators, max_depth, etc.)
-   - Train again with train_dataset_ref="{train_ref}", model_name="{model_name}_v2" (or _v3)
-   - Re-evaluate on validation using evaluate_model
+4. **Final test evaluation**: Use evaluate_model with dataset_ref="{test_ref}"
 
-5. **Final test evaluation**: Use evaluate_model with dataset_ref="{test_ref}"
-
-6. **Report**: Summarize all iterations, final metrics, and chosen model
+5. **Report**: Summarize all iterations, final metrics, and chosen model
 
 ## Sample Training Data (first 3 rows)
 {train_data[:3]}
@@ -496,6 +395,8 @@ def run_training_agent(
         model=llm,
         tools=TRAINING_TOOLS,
         system_prompt=TRAINING_SYSTEM_PROMPT,
+        # Use ToolStrategy to avoid strict schema requirements on other tools
+        response_format=ToolStrategy(schema=TrainingResult),
     )
     
     # Run the agent
@@ -519,78 +420,114 @@ Begin training now.
     messages.append({"role": "user", "content": instruction_message})
     
     try:
-        # Invoke the agent
+        # Invoke the agent with structured output
         result = agent.invoke({"messages": messages})
-        # TODO: Make this structured output and remove stuff below
         
-        # Extract the final response
+        # Extract the structured TrainingResult from the 'structured_response' key
+        # (as per LangChain ToolStrategy docs)
         final_messages = result.get("messages", [])
-        final_response = ""
-        for msg in reversed(final_messages):
-            if hasattr(msg, "content") and msg.content:
-                final_response = msg.content
-                break
+        training_result: TrainingResult = result.get("structured_response")
         
-        # Extract metrics from tool call results
-        metrics = _extract_metrics_from_messages(final_messages, val_ref, test_ref)
+        # If not in structured_response, try to find in messages
+        if training_result is None:
+            for msg in reversed(final_messages):
+                if hasattr(msg, "content") and isinstance(msg.content, TrainingResult):
+                    training_result = msg.content
+                    break
+                # Handle case where content is a dict (parsed structured output)
+                elif hasattr(msg, "content") and isinstance(msg.content, dict):
+                    try:
+                        training_result = TrainingResult(**msg.content)
+                        break
+                    except Exception:
+                        pass
         
-        # Extract iteration logs
-        iterations = _extract_iterations_from_messages(final_messages)
+        if training_result is None:
+            # Fallback: try to parse from last message content as JSON
+            for msg in reversed(final_messages):
+                if hasattr(msg, "content") and msg.content:
+                    content = msg.content
+                    if isinstance(content, str):
+                        try:
+                            import json
+                            data = json.loads(content)
+                            training_result = TrainingResult(**data)
+                            break
+                        except (json.JSONDecodeError, TypeError, ValueError):
+                            pass
         
-        # Determine success based on whether training actually succeeded
-        training_succeeded = not metrics.get("training_failed", False)
+        if training_result is None:
+            raise ValueError("Failed to extract TrainingResult from agent response")
+        
+        # Log results
+        print(f"\n[training_agent] Training complete!")
+        print(f"  Success: {training_result.success}")
+        print(f"  Iterations: {training_result.num_iterations}")
+        print()
+        print("  ITERATION LOG:")
+        print("  " + "-" * 60)
+        for i, it in enumerate(training_result.iterations, 1):
+            status = "OK" if it.success else "FAIL"
+            hp_str = ", ".join(f"{k}={v}" for k, v in it.hyperparams.items() if v is not None)
+            print(f"  [{status}] Iter {i}: {it.model_name}")
+            print(f"     Tool: {it.tool_used}")
+            print(f"     Hyperparams: {hp_str[:60]}...")
+            if it.val_accuracy is not None or it.val_roc_auc is not None:
+                print(f"     Val Accuracy: {it.val_accuracy}, Val ROC-AUC: {it.val_roc_auc}")
+            if it.error:
+                print(f"     Error: {it.error}")
+        print("  " + "-" * 60)
+        print(f"  Best Model: {training_result.best_model_name}")
+        print(f"  Val Accuracy: {training_result.val_accuracy}")
+        print(f"  Val ROC-AUC: {training_result.val_roc_auc}")
+        print(f"  Test Accuracy: {training_result.test_accuracy}")
+        print(f"  Test ROC-AUC: {training_result.test_roc_auc}")
+        print(f"\n  Summary: {training_result.summary}")
+        if training_result.recommendations:
+            print(f"  Recommendations: {training_result.recommendations}")
+        
+        # Convert iterations to dict format for backward compatibility
+        iterations_dict = [
+            {
+                "model_name": it.model_name,
+                "tool": it.tool_used,
+                "hyperparams": it.hyperparams,
+                "metrics": {
+                    "train_accuracy": it.train_accuracy,
+                    "val_accuracy": it.val_accuracy,
+                    "roc_auc": it.val_roc_auc,
+                },
+                "success": it.success,
+                "error": it.error,
+            }
+            for it in training_result.iterations
+        ]
         
         # Find best iteration (highest ROC-AUC)
         best_iteration = None
-        best_model = model_name
-        for it in iterations:
-            if it.get("success") and it.get("metrics"):
-                if best_iteration is None or (it["metrics"].get("roc_auc") or 0) > (best_iteration["metrics"].get("roc_auc") or 0):
-                    best_iteration = it
-                    best_model = it.get("model_name", model_name)
-        
-        # Log iterations
-        print(f"\n[training_agent] Training complete!")
-        print(f"  Success: {training_succeeded}")
-        print(f"  Iterations: {len(iterations)}")
-        print()
-        print("  📊 ITERATION LOG:")
-        print("  " + "-" * 60)
-        for i, it in enumerate(iterations, 1):
-            status = "✅" if it.get("success") else "❌"
-            m = it.get("metrics") or {}
-            hp = it.get("hyperparams") or {}
-            hp_str = ", ".join(f"{k}={v}" for k, v in hp.items() if v is not None)
-            print(f"  {status} Iter {i}: {it.get('model_name', 'unknown')}")
-            print(f"     Hyperparams: {hp_str[:60]}...")
-            if m:
-                print(f"     Accuracy: {m.get('train_accuracy', 'N/A'):.3f}, ROC-AUC: {m.get('roc_auc', 'N/A'):.3f}" if m.get('train_accuracy') else f"     Metrics: {m}")
-            if it.get("error"):
-                print(f"     Error: {it.get('error')}")
-        print("  " + "-" * 60)
-        print(f"  Best Model: {best_model}")
-        print(f"  Val Accuracy: {metrics.get('val_accuracy')}")
-        print(f"  Val ROC-AUC: {metrics.get('val_roc_auc')}")
-        print(f"  Test Accuracy: {metrics.get('test_accuracy')}")
-        print(f"  Test ROC-AUC: {metrics.get('test_roc_auc')}")
+        for it_dict in iterations_dict:
+            if it_dict.get("success") and it_dict.get("metrics"):
+                if best_iteration is None or (it_dict["metrics"].get("roc_auc") or 0) > (best_iteration["metrics"].get("roc_auc") or 0):
+                    best_iteration = it_dict
         
         return {
-            "success": training_succeeded,
-            "model_name": best_model,
-            "model_type": selected_model,
+            "success": training_result.success,
+            "model_name": training_result.best_model_name,
+            "model_type": training_result.model_type,
             "task_type": task_type,
             "target_column": target_column,
             "train_size": len(train_data),
             "val_size": len(val_data),
             "test_size": len(test_data),
-            "val_accuracy": metrics.get("val_accuracy"),
-            "val_roc_auc": metrics.get("val_roc_auc"),
-            "test_accuracy": metrics.get("test_accuracy"),
-            "test_roc_auc": metrics.get("test_roc_auc"),
-            "iterations": iterations,
-            "num_iterations": len(iterations),
+            "val_accuracy": training_result.val_accuracy,
+            "val_roc_auc": training_result.val_roc_auc,
+            "test_accuracy": training_result.test_accuracy,
+            "test_roc_auc": training_result.test_roc_auc,
+            "iterations": iterations_dict,
+            "num_iterations": training_result.num_iterations,
             "best_iteration": best_iteration,
-            "agent_response": final_response,
+            "summary": training_result.summary,
+            "recommendations": training_result.recommendations,
             "messages": final_messages,
         }
         
@@ -608,147 +545,13 @@ Begin training now.
 # SIMPLE TRAINING FUNCTION (No Agent, Direct Tool Call)
 # =============================================================================
 
-# def run_training_simple(
-#     train_ref: str,
-#     val_ref: Optional[str],
-#     test_ref: Optional[str],
-#     target_column: str,
-#     selected_model: str,
-#     goal: str,
-#     model_name: Optional[str] = None,
-# ) -> dict[str, Any]:
-#     """
-#     Simple training without agent - directly calls the appropriate tool.
-    
-#     This is a simpler alternative that doesn't use an LLM agent,
-#     just directly trains the model using the appropriate tool.
-#     """
-#     # Load datasets
-#     train_df = get_registered_dataset(train_ref)
-    
-#     if train_df is None:
-#         raise ValueError(f"Training dataset not found: {train_ref}")
-    
-#     # Prepare data
-#     train_data = _prepare_data_for_tool(train_df)
-    
-#     # Get task type
-#     task_type = _get_task_type(selected_model, goal)
-    
-#     # Generate model name if not provided
-#     if not model_name:
-#         import time
-#         model_name = f"{selected_model}_{int(time.time())}"
-    
-#     print(f"[training_simple] Training {selected_model} model...")
-#     print(f"  Model name: {model_name}")
-#     print(f"  Target: {target_column}")
-#     print(f"  Train size: {len(train_data)}")
-    
-#     # Call the appropriate training tool
-#     model_lower = selected_model.lower()
-    
-#     try:
-#         if "logistic" in model_lower:
-#             result = sklearn_logistic_regression_tool.invoke({
-#                 "model_name": model_name,
-#                 "data": train_data,
-#                 "target_column": target_column,
-#                 "description": goal,
-#                 "class_weight": "balanced",
-#                 "max_iter": 500,
-#             })
-#         elif "random_forest" in model_lower or "rf" in model_lower:
-#             result = sklearn_random_forest_tool.invoke({
-#                 "model_name": model_name,
-#                 "data": train_data,
-#                 "target_column": target_column,
-#                 "task_type": task_type,
-#                 "description": goal,
-#                 "n_estimators": 100,
-#                 "class_weight": "balanced" if task_type == "classification" else None,
-#             })
-#         elif "xgboost" in model_lower or "xgb" in model_lower:
-#             result = xgboost_train_tool.invoke({
-#                 "model_name": model_name,
-#                 "data": train_data,
-#                 "target_column": target_column,
-#                 "task_type": task_type,
-#                 "description": goal,
-#                 "n_estimators": 100,
-#             })
-#         elif "glm" in model_lower:
-#             result = sklearn_glm_tool.invoke({
-#                 "model_name": model_name,
-#                 "data": train_data,
-#                 "target_column": target_column,
-#                 "distribution": "gamma",  # Default
-#                 "description": goal,
-#             })
-#         else:
-#             # Default to logistic regression for classification
-#             result = sklearn_logistic_regression_tool.invoke({
-#                 "model_name": model_name,
-#                 "data": train_data,
-#                 "target_column": target_column,
-#                 "description": goal,
-#             })
-        
-#         print(f"[training_simple] Training complete!")
-#         print(result)
-        
-#         # Evaluate on validation if provided
-#         val_result = None
-#         if val_ref:
-#             val_df = get_registered_dataset(val_ref)
-#             if val_df is not None:
-#                 val_data = _prepare_data_for_tool(val_df)
-#                 val_result = predict_with_model_tool.invoke({
-#                     "model_name": model_name,
-#                     "data": val_data,
-#                 })
-#                 print(f"\n[training_simple] Validation predictions:")
-#                 print(val_result[:500] + "..." if len(val_result) > 500 else val_result)
-        
-#         # Evaluate on test if provided
-#         test_result = None
-#         if test_ref:
-#             test_df = get_registered_dataset(test_ref)
-#             if test_df is not None:
-#                 test_data = _prepare_data_for_tool(test_df)
-#                 test_result = predict_with_model_tool.invoke({
-#                     "model_name": model_name,
-#                     "data": test_data,
-#                 })
-#                 print(f"\n[training_simple] Test predictions:")
-#                 print(test_result[:500] + "..." if len(test_result) > 500 else test_result)
-        
-#         return {
-#             "success": True,
-#             "model_name": model_name,
-#             "model_type": selected_model,
-#             "training_result": result,
-#             "validation_result": val_result,
-#             "test_result": test_result,
-#         }
-        
-#     except Exception as e:
-#         print(f"[training_simple] Error: {e}")
-#         import traceback
-#         traceback.print_exc()
-#         return {
-#             "success": False,
-#             "error": str(e),
-#             "model_name": model_name,
-#         }
-
-
 # =============================================================================
 # EXPORTS
 # =============================================================================
 
 __all__ = [
     "run_training_agent",
-    "run_training_simple",
+    "TrainingResult",
+    "TrainingIteration",
     "TRAINING_TOOLS",
 ]
