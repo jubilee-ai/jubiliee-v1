@@ -11,6 +11,7 @@ __pycache__/
 
 *.joblib
 *report.json
+*/trained_models/*
 
 # Distribution / packaging
 .Python

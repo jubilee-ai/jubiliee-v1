@@ -18,7 +18,10 @@ from dotenv import load_dotenv
 from langchain.agents import create_agent
 from langchain.agents.structured_output import ToolStrategy
 from langchain.chat_models import init_chat_model
+from langchain_core.tools import tool
 from pydantic import BaseModel, Field
+
+from agents.training.prompts import TRAINING_SYSTEM_PROMPT
 
 load_dotenv(Path(__file__).parent.parent.parent / ".env")
 
@@ -37,15 +40,95 @@ if str(_DATA_TOOLS_DIR) not in sys.path:
 from glm import sklearn_glm_tool
 # Import training tools
 from logistic_regression import sklearn_logistic_regression_tool
-from model_storage import (evaluate_model_tool, get_model_info_tool,
-                           list_trained_models_tool, predict_with_model_tool,
-                           delete_model, list_models)
+from model_storage import (delete_model, evaluate_model_tool,
+                           get_model_info_tool, list_models,
+                           list_trained_models_tool, predict_with_model_tool)
 from random_forest import sklearn_random_forest_tool
 from survival_analysis import survival_analysis_tool
 from utils import get_registered_dataset
 from xgboost_model import xgboost_train_tool
 
 # TODO: Human in the loop
+
+# =============================================================================
+# FEATURE ENGINEERING REDO TOOL
+# =============================================================================
+
+
+class FeatureRedoRequest(BaseModel):
+    """Request to redo feature engineering with specific recommendations."""
+    recommendation: str = Field(
+        description="Specific recommendation for what to change in feature engineering. "
+        "Be specific about which features to add, remove, or modify and why."
+    )
+    reason: str = Field(
+        description="Why you believe the current features are limiting model performance. "
+        "Include evidence from training results (e.g., specific metrics, patterns observed)."
+    )
+    suspected_issues: list[str] = Field(
+        default_factory=list,
+        description="List of suspected feature issues: "
+        "'missing_interactions', 'high_cardinality', 'data_leakage', 'irrelevant_features', "
+        "'missing_transformations', 'scale_issues', 'temporal_issues'"
+    )
+
+
+# Global variable to store feature redo request (set by tool, read by run_training_agent)
+_feature_redo_request: Optional[FeatureRedoRequest] = None
+
+
+def _get_and_clear_feature_redo_request() -> Optional[FeatureRedoRequest]:
+    """Get the feature redo request and clear it."""
+    global _feature_redo_request
+    request = _feature_redo_request
+    _feature_redo_request = None
+    return request
+
+@tool
+def request_feature_engineering_redo_tool(
+    recommendation: str,
+    reason: str,
+    suspected_issues: Optional[list[str]] = None,
+) -> dict[str, Any]:
+    """
+    Request to redo feature engineering with specific recommendations.
+    
+    IMPORTANT: Only call this tool when you have strong evidence that the current features
+    are the bottleneck limiting model performance. You must have tried multiple models
+    and hyperparameter configurations first.
+    
+    Valid reasons to call this tool:
+    - All model types show similar poor performance despite tuning
+    - Feature diagnostics show high correlation or potential leakage
+    - Performance is far below expected baseline for the task
+    - You've exhausted reasonable hyperparameter tuning
+    
+    Args:
+        recommendation: Specific recommendation for what to change in feature engineering.
+        reason: Why you believe features are limiting performance.
+        suspected_issues: List of suspected issues like 'missing_interactions', 
+                         'high_cardinality', 'irrelevant_features', etc.
+    
+    Returns:
+        Confirmation that the request was registered.
+    """
+
+    global _feature_redo_request
+    
+    _feature_redo_request = FeatureRedoRequest(
+        recommendation=recommendation,
+        reason=reason,
+        suspected_issues=suspected_issues or [],
+    )
+    
+    return {
+        "status": "registered",
+        "message": "Feature engineering redo requested. Training will stop after this call.",
+        "recommendation": recommendation,
+        "reason": reason,
+        "suspected_issues": suspected_issues or [],
+    }
+
 
 # =============================================================================
 # TRAINING TOOLS
@@ -61,85 +144,11 @@ TRAINING_TOOLS = [
     predict_with_model_tool,
     get_model_info_tool,
     evaluate_model_tool,
+    request_feature_engineering_redo_tool,
 ]
-
-
-# =============================================================================
-# SYSTEM PROMPT
-# =============================================================================
 
 # TODO: Add ML standard practice here or as a skill
 # TODO: Only stop when optimized as much as you can... --> if we have blockers from data or features we'll loop back to previous steps
-TRAINING_SYSTEM_PROMPT = """You are an ML Training Agent that strategically trains and tunes models through iterative experimentation.
-
-## Workflow
-
-Each iteration: **Train → Evaluate → Decide**
-
-1. **Train** a model on `train_dataset_ref`
-2. **Evaluate** on validation using `evaluate_model`
-3. **Decide** next action based on the decision logic below
-
-## Decision Logic
-
-After each evaluation, analyze results and choose ONE action:
-
-### → STOP & TEST (metrics are good)
-When: val_roc_auc ≥ 0.75 AND val_accuracy beats baseline (majority class rate)
-Action: Run final `evaluate_model` on test data with best model
-
-### → TUNE HYPERPARAMETERS (model shows promise but can improve)
-When: Current model type is working (val_roc_auc > 0.6) but not optimal
-Logic:
-- If OVERFITTING (train_score >> val_score by >0.1):
-  - LR: reduce C (0.1 → 0.01), try l1_ratio=0.5
-  - RF: reduce max_depth (10 → 6 → 4), increase min_samples_leaf
-  - XGB: increase reg_alpha/reg_lambda, reduce learning_rate, reduce max_depth
-- If UNDERFITTING (both train and val scores low):
-  - LR: increase C (1.0 → 10), reduce regularization
-  - RF: increase max_depth, reduce min_samples_leaf
-  - XGB: increase max_depth, reduce regularization
-
-### → SWITCH MODELS (current architecture is inadequate)
-When: val_roc_auc < 0.6 after tuning attempts, OR linear model on non-linear data
-Logic:
-- LR → RF: When LR performance plateaus and you suspect non-linear relationships
-- RF → XGB: When RF overfits badly or you need better regularization control
-- Any → XGB: When you need maximum performance and have tried simpler models
-**Critical:** Carry forward imbalance handling:
-- If previous used class_weight='balanced' → RF must use class_weight='balanced'
-- If switching to XGB with imbalanced data → use scale_pos_weight = (neg_count / pos_count)
-
-## First Iteration Strategy
-
-Before training, analyze the data context:
-1. **Check class balance:** If positive rate < 20%, use class_weight='balanced' or scale_pos_weight
-2. **Check feature count:** If features > 20, consider regularization
-3. **Check dataset size:** If < 500 rows, prefer simpler models (LR, shallow RF)
-
-Start with the model specified in context. Use sensible defaults, but apply imbalance handling if needed.
-
-## Tracking State
-
-Keep mental track of:
-- What you've tried (model types, key hyperparameters)
-- What worked (which changes improved metrics)
-- What didn't work (avoid repeating failed experiments)
-
-Use this history to make informed next decisions. Don't try the same configuration twice.
-
-## Model Naming
-
-Use unique names reflecting the experiment: `{model}_v{n}` (e.g., `lr_v1`, `rf_v2`, `xgb_v1`)
-
-## Output
-
-Provide structured summary:
-- `success`, `best_model_name`, `model_type`
-- `val_accuracy`, `val_roc_auc`, `test_accuracy`, `test_roc_auc`
-- `iterations`: list of attempts with model_name, tool_used, hyperparams, metrics
-- `num_iterations`, `summary`, `recommendations`
-"""
 
 
 # =============================================================================
@@ -177,6 +186,12 @@ class TrainingResult(BaseModel):
     # Summary
     summary: str = Field(description="Summary of training process and results")
     recommendations: Optional[str] = Field(default=None, description="Recommendations for improvement")
+    
+    # Feature engineering redo request
+    feature_redo_requested: bool = Field(
+        default=False, 
+        description="Whether a feature engineering redo was requested via request_feature_engineering_redo tool"
+    )
 
 
 # =============================================================================
@@ -312,7 +327,6 @@ def _get_alternative_models(selected_model: str, task_type: str) -> list[str]:
 # =============================================================================
 
 # TODO: Go back to change feature engineering with comments if need be
-# --> Or just modify features in this loop
 # TODO: More evaluation metrics
 # TODO: Polish the process to match best ML practices
 def run_training_agent(
@@ -517,6 +531,10 @@ Begin training now.
         if training_result is None:
             raise ValueError("Failed to extract TrainingResult from agent response")
         
+        # Check if feature redo was requested via the tool
+        feature_redo_request = _get_and_clear_feature_redo_request()
+        feature_redo_requested = feature_redo_request is not None or training_result.feature_redo_requested
+        
         # Clean up intermediate models - keep only the best
         if training_result.success and training_result.best_model_name:
             # Collect all model names from iterations
@@ -600,6 +618,11 @@ Begin training now.
             "summary": training_result.summary,
             "recommendations": training_result.recommendations,
             "messages": final_messages,
+            # Feature engineering redo request
+            "feature_redo_requested": feature_redo_requested,
+            "feature_redo_recommendation": feature_redo_request.recommendation if feature_redo_request else None,
+            "feature_redo_reason": feature_redo_request.reason if feature_redo_request else None,
+            "feature_redo_suspected_issues": feature_redo_request.suspected_issues if feature_redo_request else None,
         }
         
     except Exception as e:
@@ -625,4 +648,6 @@ __all__ = [
     "TrainingResult",
     "TrainingIteration",
     "TRAINING_TOOLS",
+    "FeatureRedoRequest",
+    "request_feature_engineering_redo_tool",
 ]

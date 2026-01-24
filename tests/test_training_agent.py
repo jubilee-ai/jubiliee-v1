@@ -162,7 +162,7 @@ def test_training_agent_basic():
         "goal": "Predict loan default risk for credit decisioning",
         "model_name": "test_basic",
         "max_iterations": 2,
-        "llm_model": "openai:gpt-5-mini",
+        "llm_model": "openai:gpt-5.1",
     }
     
     print_agent_input(agent_params)
@@ -262,7 +262,7 @@ def test_training_agent_imbalanced():
         "goal": "Predict rare default events",
         "model_name": "test_imbalanced",
         "max_iterations": 2,
-        "llm_model": "openai:gpt-5-mini",
+        "llm_model": "openai:gpt-5.1",
     }
     
     print_agent_input(agent_params)

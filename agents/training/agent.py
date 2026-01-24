@@ -91,6 +91,12 @@ class TrainingAgentState(TypedDict):
     training_metrics: Optional[dict[str, Any]]
     training_iteration: int
     
+    # Feature Engineering Redo (loop back from training)
+    feature_redo_requested: bool
+    feature_redo_recommendation: Optional[str]
+    feature_redo_reason: Optional[str]
+    feature_redo_iteration: int  # Track how many times we've looped back
+    
     # Step 8: Report
     report_path: Optional[str]
     
@@ -267,6 +273,15 @@ def feature_selection_specification(state: TrainingAgentState) -> TrainingAgentS
     if not target_column:
         raise ValueError("No target_column in label_definition - step 3.5 must complete first")
     
+    # Check if this is a feature engineering redo from training
+    feature_redo_requested = state.get("feature_redo_requested", False)
+    feature_redo_recommendation = state.get("feature_redo_recommendation")
+    feature_redo_iteration = state.get("feature_redo_iteration", 0)
+    
+    if feature_redo_requested:
+        print(f"[feature_selection_specification] REDO iteration {feature_redo_iteration + 1}")
+        print(f"[feature_selection_specification] Recommendation from training: {feature_redo_recommendation}")
+    
     print(f"[feature_selection_specification] Running analysis on TRAINING data only ({train_ref})...")
     
     # Run feature engineering - analysis on train only!
@@ -275,6 +290,7 @@ def feature_selection_specification(state: TrainingAgentState) -> TrainingAgentS
         goal=goal,
         target_column=target_column,
         grain=grain,
+        recomendation=feature_redo_recommendation if feature_redo_requested else None,
         val_ref=val_ref,
         test_ref=test_ref,
         task_type=task_type,
@@ -288,12 +304,26 @@ def feature_selection_specification(state: TrainingAgentState) -> TrainingAgentS
     validation = result.get("validation", {})
     analysis_results = result.get("analysis_results", {})
     
-    # Check validation
+    # Check validation and auto-remove invalid features (e.g., leakage)
     if validation and not validation.get("valid", True):
         errors = validation.get("errors", [])
         print(f"[WARNING] Feature spec validation issues: {errors}")
+        
+        # Auto-remove invalid features
+        features_valid = validation.get("features_valid", {})
+        if feature_spec and "features" in feature_spec:
+            original_count = len(feature_spec["features"])
+            feature_spec["features"] = [
+                f for f in feature_spec["features"]
+                if features_valid.get(f.get("name"), {}).get("valid", True)
+            ]
+            removed_count = original_count - len(feature_spec["features"])
+            if removed_count > 0:
+                print(f"[INFO] Auto-removed {removed_count} invalid feature(s)")
     
-    # Update state
+    # Update state - clear redo flags and increment redo iteration if this was a redo
+    new_redo_iteration = feature_redo_iteration + 1 if feature_redo_requested else feature_redo_iteration
+    
     return {
         **state,
         "feature_spec": feature_spec,
@@ -302,8 +332,15 @@ def feature_selection_specification(state: TrainingAgentState) -> TrainingAgentS
                 "step": "feature_selection_specification",
                 "analysis_results": analysis_results,
                 "validation": validation,
+                "is_redo": feature_redo_requested,
+                "redo_recommendation": feature_redo_recommendation,
             }
         ],
+        # Clear redo flags after processing
+        "feature_redo_requested": False,
+        "feature_redo_recommendation": None,
+        "feature_redo_reason": None,
+        "feature_redo_iteration": new_redo_iteration,
     }
 
 
@@ -486,6 +523,16 @@ def training(state: TrainingAgentState) -> TrainingAgentState:
     else:
         print(f"[training] Training failed: {result.get('error')}")
     
+    # Check for feature engineering redo request
+    feature_redo_requested = result.get("feature_redo_requested", False)
+    feature_redo_recommendation = result.get("feature_redo_recommendation")
+    feature_redo_reason = result.get("feature_redo_reason")
+    
+    if feature_redo_requested:
+        print(f"[training] Feature engineering redo requested!")
+        print(f"  Reason: {feature_redo_reason}")
+        print(f"  Recommendation: {feature_redo_recommendation}")
+    
     # Update state with extracted metrics and iteration logs
     return {
         **state,
@@ -503,6 +550,10 @@ def training(state: TrainingAgentState) -> TrainingAgentState:
             "best_iteration": result.get("best_iteration"),
         },
         "training_iteration": state.get("training_iteration", 0) + 1,
+        # Feature engineering redo fields
+        "feature_redo_requested": feature_redo_requested,
+        "feature_redo_recommendation": feature_redo_recommendation,
+        "feature_redo_reason": feature_redo_reason,
         "audit_trace": state.get("audit_trace", []) + [
             {
                 "step": "training",
@@ -514,6 +565,8 @@ def training(state: TrainingAgentState) -> TrainingAgentState:
                 "test_accuracy": result.get("test_accuracy"),
                 "test_roc_auc": result.get("test_roc_auc"),
                 "error": result.get("error"),
+                "feature_redo_requested": feature_redo_requested,
+                "feature_redo_recommendation": feature_redo_recommendation,
             }
         ],
     }
@@ -625,8 +678,19 @@ def human_confirmed_proceed(state: TrainingAgentState) -> Literal["proceed", "ab
     return "proceed"
 
 
-def training_decision(state: TrainingAgentState) -> Literal["iterate", "complete"]:
-    """Check if training should iterate or is complete"""
+def training_decision(state: TrainingAgentState) -> Literal["iterate", "complete", "redo_features"]:
+    """Check if training should iterate, complete, or redo feature engineering."""
+    
+    # Check if feature engineering redo was requested
+    if state.get("feature_redo_requested"):
+        redo_iteration = state.get("feature_redo_iteration", 0)
+        # Limit feature redo iterations to prevent infinite loops
+        if redo_iteration >= 2:
+            print("[training_decision] Max feature redo iterations (2) reached, completing...")
+            return "complete"
+        print("[training_decision] Feature engineering redo requested, routing back...")
+        return "redo_features"
+    
     training_metrics = state.get("training_metrics", {})
     if training_metrics.get("success"):
         return "complete"
@@ -728,13 +792,14 @@ def build_training_agent_graph() -> StateGraph:
         }
     )
     
-    # Step 7 → Step 8 or iterate (training loop with human checkpoints)
+    # Step 7 → Step 8, iterate training, or redo feature engineering
     graph.add_conditional_edges(
         "training",
         training_decision,
         {
             "iterate": "training",  # Back to training for another iteration
-            "complete": "generate_report"
+            "complete": "generate_report",
+            "redo_features": "feature_selection_specification",  # Loop back to feature engineering with recommendation
         }
     )
     
@@ -800,6 +865,10 @@ def invoke_training_agent(
         "model_weights_path": None,
         "training_metrics": None,
         "training_iteration": 0,
+        "feature_redo_requested": False,
+        "feature_redo_recommendation": None,
+        "feature_redo_reason": None,
+        "feature_redo_iteration": 0,
         "report_path": None,
         "audit_trace": [],
         "explanations": [],
