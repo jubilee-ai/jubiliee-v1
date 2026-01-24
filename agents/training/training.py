@@ -38,7 +38,8 @@ from glm import sklearn_glm_tool
 # Import training tools
 from logistic_regression import sklearn_logistic_regression_tool
 from model_storage import (evaluate_model_tool, get_model_info_tool,
-                           list_trained_models_tool, predict_with_model_tool)
+                           list_trained_models_tool, predict_with_model_tool,
+                           delete_model, list_models)
 from random_forest import sklearn_random_forest_tool
 from survival_analysis import survival_analysis_tool
 from utils import get_registered_dataset
@@ -185,6 +186,63 @@ class TrainingResult(BaseModel):
 def _prepare_data_for_tool(df) -> list[dict]:
     """Convert DataFrame to list of dicts for tool input."""
     return df.to_dict(orient="records")
+
+
+def _cleanup_intermediate_models(
+    best_model_name: str,
+    base_model_name: str,
+    iteration_model_names: Optional[list[str]] = None,
+) -> list[str]:
+    """
+    Clean up intermediate model versions, keeping only the best model.
+    
+    Deletes all models that:
+    1. Match the base_model_name pattern (e.g., 'model_v1', 'model_v2')
+    2. Are listed in iteration_model_names (models created during this training run)
+    
+    Args:
+        best_model_name: The model to keep (e.g., 'logistic_regression_123_v2')
+        base_model_name: The base name used for this training run (e.g., 'logistic_regression_123')
+        iteration_model_names: Optional list of all model names created during training iterations
+    
+    Returns:
+        List of deleted model names
+    """
+    import re
+    
+    deleted = []
+    all_models = list_models()
+    
+    # Pattern to match versioned models: base_name_vN
+    base_pattern = re.escape(base_model_name)
+    version_pattern = rf"^{base_pattern}_v\d+$"
+    
+    # Set of models to potentially delete (from iterations, if provided)
+    iteration_models_set = set(iteration_model_names) if iteration_model_names else set()
+    
+    for model_info in all_models:
+        model_name = model_info["model_name"]
+        
+        # Skip the best model - never delete it
+        if model_name == best_model_name:
+            continue
+        
+        should_delete = False
+        
+        # Check if this model matches our base pattern (versioned)
+        if re.match(version_pattern, model_name):
+            should_delete = True
+        
+        # Check if this model was created during this training run
+        if model_name in iteration_models_set:
+            should_delete = True
+        
+        if should_delete:
+            if delete_model(model_name):
+                deleted.append(model_name)
+                print(f"[training_agent] Cleaned up intermediate model: {model_name}")
+    
+    return deleted
 
 
 def _get_task_type(selected_model: str, goal: str) -> Literal["classification", "regression"]:
@@ -458,6 +516,19 @@ Begin training now.
         
         if training_result is None:
             raise ValueError("Failed to extract TrainingResult from agent response")
+        
+        # Clean up intermediate models - keep only the best
+        if training_result.success and training_result.best_model_name:
+            # Collect all model names from iterations
+            iteration_model_names = [it.model_name for it in training_result.iterations if it.model_name]
+            
+            deleted_models = _cleanup_intermediate_models(
+                best_model_name=training_result.best_model_name,
+                base_model_name=model_name,
+                iteration_model_names=iteration_model_names,
+            )
+            if deleted_models:
+                print(f"\n[training_agent] Cleaned up {len(deleted_models)} intermediate models")
         
         # Log results
         print(f"\n[training_agent] Training complete!")
