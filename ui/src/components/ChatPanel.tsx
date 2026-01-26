@@ -1,0 +1,455 @@
+import { useState, useRef, useEffect, useCallback, useImperativeHandle, forwardRef } from "react"
+import ReactMarkdown from "react-markdown"
+import { ScrollArea } from "@/components/ui/scroll-area"
+import { Button } from "@/components/ui/button"
+import { Textarea } from "@/components/ui/textarea"
+import { Badge } from "@/components/ui/badge"
+import type { ChatMessage, ConfirmationRequest, ConfirmationAction, Dataset } from "@/types/agent"
+import { cn } from "@/lib/utils"
+import { AVAILABLE_DATASETS, AVAILABLE_MODELS } from "@/lib/mockAgent"
+import type { Dataset as ApiDataset, ModelType } from "@/lib/api"
+import {
+  Send,
+  User,
+  Bot,
+  Database,
+  Cpu,
+  Check,
+  RotateCcw,
+  FastForward,
+  X,
+  FileText,
+} from "lucide-react"
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog"
+
+interface ChatPanelProps {
+  messages: ChatMessage[]
+  confirmationRequest: ConfirmationRequest | null
+  isRunning: boolean
+  onSendMessage: (content: string) => void
+  onConfirmation: (action: ConfirmationAction, comment?: string) => void
+  onStartAgent: (goal: string, datasets?: string[], modelPreference?: string) => void
+  datasets?: ApiDataset[]
+  modelTypes?: ModelType[]
+  highlightedMessageId?: string | null
+  onClearHighlight?: () => void
+  onViewReport?: () => void
+}
+
+export interface ChatPanelRef {
+  scrollToMessage: (messageId: string) => void
+  findMessageByStepName: (stepName: string) => string | null
+}
+
+export const ChatPanel = forwardRef<ChatPanelRef, ChatPanelProps>(function ChatPanel({
+  messages,
+  confirmationRequest,
+  isRunning,
+  onSendMessage,
+  onConfirmation,
+  onStartAgent,
+  datasets: propDatasets,
+  modelTypes: propModelTypes,
+  highlightedMessageId,
+  onClearHighlight,
+  onViewReport,
+}, ref) {
+  const availableDatasets = propDatasets && propDatasets.length > 0 
+    ? propDatasets 
+    : AVAILABLE_DATASETS
+  const availableModels = propModelTypes && propModelTypes.length > 0
+    ? propModelTypes
+    : AVAILABLE_MODELS
+    
+  const [draft, setDraft] = useState("")
+  const [redoComment, setRedoComment] = useState("")
+  const [showDatasetPicker, setShowDatasetPicker] = useState(false)
+  const messageRefs = useRef<Map<string, HTMLDivElement>>(new Map())
+
+  // Expose methods to parent via ref
+  useImperativeHandle(ref, () => ({
+    scrollToMessage: (messageId: string) => {
+      const el = messageRefs.current.get(messageId)
+      if (el) {
+        el.scrollIntoView({ behavior: "smooth", block: "center" })
+      }
+    },
+    findMessageByStepName: (stepName: string) => {
+      // Find a message that mentions this step
+      const stepKeywords: Record<string, string[]> = {
+        "select_model": ["Model Selection", "selected model", "xgboost", "random_forest", "logistic_regression"],
+        "data_collection": ["Data Collection", "Dataset loaded", "dataset"],
+        "cleaning": ["Cleaning", "cleaned", "transformations"],
+        "label_split_definition": ["Label", "Split", "target column"],
+        "feature_selection_specification": ["Feature Selection", "features specified"],
+        "feature_engineering_executor": ["Feature Engineering", "features created"],
+        "human_confirmation": ["Confirmation", "confirmed"],
+        "training": ["Training", "trained", "R²", "accuracy", "RMSE"],
+        "generate_report": ["Report", "complete"],
+      }
+      const keywords = stepKeywords[stepName] || [stepName]
+      
+      for (let i = messages.length - 1; i >= 0; i--) {
+        const msg = messages[i]
+        if (msg.role === "agent") {
+          const content = msg.content.toLowerCase()
+          if (keywords.some(kw => content.includes(kw.toLowerCase()))) {
+            return msg.id
+          }
+        }
+      }
+      return null
+    }
+  }), [messages])
+  const [showModelPicker, setShowModelPicker] = useState(false)
+  const [selectedDatasets, setSelectedDatasets] = useState<string[]>([])
+  const [selectedModel, setSelectedModel] = useState<string | null>(null)
+  const messagesEndRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" })
+  }, [messages.length])
+
+  const handleSend = () => {
+    const text = draft.trim()
+    if (!text) return
+
+    // Check if this is starting a new training
+    if (messages.length === 0 || text.toLowerCase().includes("train")) {
+      onStartAgent(text, selectedDatasets.length > 0 ? selectedDatasets : undefined, selectedModel || undefined)
+      // Clear selections after starting
+      setSelectedDatasets([])
+      setSelectedModel(null)
+    } else {
+      onSendMessage(text)
+    }
+    setDraft("")
+  }
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+      e.preventDefault()
+      handleSend()
+    }
+  }
+
+  const handleAtMention = (type: "dataset" | "model") => {
+    if (type === "dataset") {
+      setShowDatasetPicker(true)
+    } else {
+      setShowModelPicker(true)
+    }
+  }
+
+  const selectDataset = (dataset: Dataset) => {
+    if (!selectedDatasets.includes(dataset.file)) {
+      setSelectedDatasets([...selectedDatasets, dataset.file])
+    }
+    setShowDatasetPicker(false)
+  }
+
+  const selectModel = (modelId: string) => {
+    setSelectedModel(modelId)
+    setShowModelPicker(false)
+  }
+
+  // Clear highlight on click
+  const handleContainerClick = useCallback(() => {
+    if (highlightedMessageId && onClearHighlight) {
+      onClearHighlight()
+    }
+  }, [highlightedMessageId, onClearHighlight])
+
+  return (
+    <div className="h-full flex flex-col overflow-hidden bg-background" onClick={handleContainerClick}>
+      {/* Messages */}
+      <ScrollArea className="flex-1 min-h-0">
+        <div className="space-y-5 max-w-3xl mx-auto px-6 py-8">
+          {messages.length === 0 && (
+            <div className="text-center py-16">
+              <h2 className="text-xl font-medium tracking-tight mb-3">What would you like to train?</h2>
+              <p className="text-muted-foreground mb-8">
+                Describe your goal and I'll handle the rest.
+              </p>
+              <div className="flex flex-wrap gap-3 justify-center">
+                <SuggestionChip
+                  label="Predict loan defaults"
+                  onClick={() => setDraft("Train a model to predict loan defaults")}
+                />
+                <SuggestionChip
+                  label="Predict insurance costs"
+                  onClick={() => setDraft("Train a model to predict insurance costs")}
+                />
+              </div>
+            </div>
+          )}
+
+          {messages.map((msg) => (
+            <MessageBubble 
+              key={msg.id} 
+              message={msg} 
+              isHighlighted={highlightedMessageId === msg.id}
+              onViewReport={onViewReport}
+              ref={(el) => {
+                if (el) messageRefs.current.set(msg.id, el)
+                else messageRefs.current.delete(msg.id)
+              }}
+            />
+          ))}
+
+          {/* Confirmation Panel */}
+          {confirmationRequest && (
+            <div className="rounded-lg border bg-muted/30 p-4">
+              <h3 className="font-semibold flex items-center gap-2 mb-2">
+                <Badge variant="warning">Awaiting Confirmation</Badge>
+                {confirmationRequest.stepName}
+              </h3>
+              <p className="text-sm text-muted-foreground mb-4">
+                {confirmationRequest.summary}
+              </p>
+
+              <div className="space-y-3">
+                {/* Redo with comment */}
+                <div className="flex gap-2">
+                  <Textarea
+                    value={redoComment}
+                    onChange={(e) => setRedoComment(e.target.value)}
+                    placeholder="Add feedback for redo (optional)..."
+                    className="min-h-[60px] text-sm"
+                  />
+                </div>
+
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      onConfirmation("redo", redoComment || undefined)
+                      setRedoComment("")
+                    }}
+                  >
+                    <RotateCcw className="h-4 w-4 mr-2" />
+                    Redo
+                  </Button>
+                  <Button
+                    variant="default"
+                    size="sm"
+                    onClick={() => onConfirmation("accept")}
+                  >
+                    <Check className="h-4 w-4 mr-2" />
+                    Accept
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => onConfirmation("accept_all")}
+                  >
+                    <FastForward className="h-4 w-4 mr-2" />
+                    Accept All
+                  </Button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          <div ref={messagesEndRef} />
+        </div>
+      </ScrollArea>
+
+      {/* Input - always visible at bottom */}
+      <div className="flex-shrink-0 px-6 py-4 max-w-3xl mx-auto w-full">
+        <div className="rounded-2xl border border-border bg-card shadow-sm">
+          {/* Selected items */}
+          {(selectedDatasets.length > 0 || selectedModel) && (
+            <div className="flex items-center gap-2 px-4 pt-3 flex-wrap">
+              {selectedDatasets.map((ds) => (
+                <Badge key={ds} variant="secondary" className="gap-1.5 h-7 text-xs font-normal rounded-full pl-3 pr-2">
+                  <Database className="h-3 w-3 text-muted-foreground" />
+                  {ds.split("/").pop()}
+                  <button
+                    onClick={() => setSelectedDatasets(selectedDatasets.filter((d) => d !== ds))}
+                    className="ml-0.5 hover:text-foreground text-muted-foreground"
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                </Badge>
+              ))}
+              {selectedModel && (
+                <Badge variant="secondary" className="gap-1.5 h-7 text-xs font-normal rounded-full pl-3 pr-2">
+                  <Cpu className="h-3 w-3 text-muted-foreground" />
+                  {selectedModel}
+                  <button
+                    onClick={() => setSelectedModel(null)}
+                    className="ml-0.5 hover:text-foreground text-muted-foreground"
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                </Badge>
+              )}
+            </div>
+          )}
+
+          {/* Textarea */}
+          <Textarea
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={handleKeyDown}
+            placeholder={messages.length === 0 ? "Describe what you want to train..." : "Send a message..."}
+            className="min-h-[56px] max-h-[200px] resize-none border-0 shadow-none focus-visible:ring-0 px-4 py-3 text-[15px] placeholder:text-muted-foreground/60"
+            disabled={isRunning && !confirmationRequest}
+          />
+
+          {/* Actions bar */}
+          <div className="flex items-center justify-between px-3 pb-3">
+            <div className="flex items-center gap-1">
+              <Dialog open={showDatasetPicker} onOpenChange={setShowDatasetPicker}>
+                <DialogTrigger asChild>
+                  <Button variant="ghost" size="sm" className="h-8 px-3 text-muted-foreground hover:text-foreground" onClick={() => handleAtMention("dataset")}>
+                    <Database className="h-4 w-4" />
+                  </Button>
+                </DialogTrigger>
+                <DialogContent className="sm:max-w-md">
+                  <DialogHeader>
+                    <DialogTitle className="text-lg font-medium">Select Dataset</DialogTitle>
+                  </DialogHeader>
+                  <div className="space-y-1 max-h-[350px] overflow-y-auto -mx-2">
+                    {availableDatasets.map((ds) => (
+                      <button
+                        key={ds.file}
+                        className="w-full text-left px-4 py-3 rounded-xl hover:bg-muted/60 transition-colors"
+                        onClick={() => selectDataset(ds as Dataset)}
+                      >
+                        <div className="font-medium">{ds.name}</div>
+                        <div className="text-sm text-muted-foreground mt-0.5">{ds.rows?.toLocaleString()} rows</div>
+                      </button>
+                    ))}
+                  </div>
+                </DialogContent>
+              </Dialog>
+
+              <Dialog open={showModelPicker} onOpenChange={setShowModelPicker}>
+                <DialogTrigger asChild>
+                  <Button variant="ghost" size="sm" className="h-8 px-3 text-muted-foreground hover:text-foreground" onClick={() => handleAtMention("model")}>
+                    <Cpu className="h-4 w-4" />
+                  </Button>
+                </DialogTrigger>
+                <DialogContent className="sm:max-w-md">
+                  <DialogHeader>
+                    <DialogTitle className="text-lg font-medium">Select Model</DialogTitle>
+                  </DialogHeader>
+                  <div className="space-y-1 -mx-2">
+                    {availableModels.map((model) => (
+                      <button
+                        key={model.id}
+                        className="w-full text-left px-4 py-3 rounded-xl hover:bg-muted/60 transition-colors"
+                        onClick={() => selectModel(model.id)}
+                      >
+                        <div className="font-medium">{model.name}</div>
+                        <div className="text-sm text-muted-foreground mt-0.5">{model.description}</div>
+                      </button>
+                    ))}
+                  </div>
+                </DialogContent>
+              </Dialog>
+            </div>
+
+            <Button
+              size="sm"
+              className="h-8 px-3 rounded-lg"
+              onClick={handleSend}
+              disabled={(isRunning && !confirmationRequest) || !draft.trim()}
+            >
+              <Send className="h-4 w-4" />
+            </Button>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+})
+
+const MessageBubble = forwardRef<HTMLDivElement, { message: ChatMessage; isHighlighted?: boolean; onViewReport?: () => void }>(
+  function MessageBubble({ message, isHighlighted, onViewReport }, ref) {
+    const isUser = message.role === "user"
+    const isSystem = message.role === "system"
+    
+    // Check if this message mentions "View Report" - show a clickable button
+    const hasViewReport = !isUser && !isSystem && 
+      (message.content.toLowerCase().includes("view report") || 
+       message.content.toLowerCase().includes("training completed"))
+
+    if (isSystem) {
+      return (
+        <div ref={ref} className="text-xs text-muted-foreground/70 text-center py-2">
+          {message.content}
+        </div>
+      )
+    }
+
+    return (
+      <div 
+        ref={ref}
+        className={cn(
+          "flex gap-3 transition-all duration-300",
+          isUser && "flex-row-reverse",
+          isHighlighted && "scale-[1.02]"
+        )}
+      >
+        <div
+          className={cn(
+            "flex-shrink-0 w-7 h-7 rounded-full flex items-center justify-center",
+            isUser ? "bg-foreground text-background" : "bg-muted"
+          )}
+        >
+          {isUser ? <User className="h-3.5 w-3.5" /> : <Bot className="h-3.5 w-3.5 text-muted-foreground" />}
+        </div>
+        <div
+          className={cn(
+            "flex-1 max-w-[92%] rounded-2xl px-4 py-3 transition-all duration-300",
+            isUser ? "bg-foreground text-background" : "bg-muted/50",
+            isHighlighted && "ring-2 ring-foreground/20 shadow-lg"
+          )}
+        >
+          <div className="text-[15px] leading-relaxed prose prose-sm dark:prose-invert max-w-none prose-p:my-1 prose-p:leading-relaxed prose-headings:my-2 prose-headings:font-medium prose-ul:my-1 prose-ol:my-1 prose-li:my-0 prose-code:bg-black/5 prose-code:dark:bg-white/10 prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded-md prose-code:text-[13px] prose-code:font-normal prose-code:before:content-none prose-code:after:content-none prose-strong:font-semibold">
+            <ReactMarkdown>{message.content}</ReactMarkdown>
+          </div>
+          {hasViewReport && onViewReport && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation()
+                onViewReport()
+              }}
+              className="mt-3 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-foreground text-background text-sm font-medium hover:bg-foreground/90 transition-colors"
+            >
+              <FileText className="h-3.5 w-3.5" />
+              View Report
+            </button>
+          )}
+        </div>
+      </div>
+    )
+  }
+)
+
+function SuggestionChip({
+  label,
+  onClick,
+}: {
+  label: string
+  onClick: () => void
+}) {
+  return (
+    <button
+      className="px-5 py-2.5 rounded-full border border-border bg-background hover:bg-muted/50 text-sm font-medium transition-all hover:border-muted-foreground/20"
+      onClick={onClick}
+    >
+      {label}
+    </button>
+  )
+}

@@ -89,7 +89,7 @@ _llm = None
 def _get_llm():
     global _llm
     if _llm is None:
-        _llm = init_chat_model(model="gpt-5-mini").bind_tools(CLEANING_TOOLS)
+        _llm = init_chat_model(model="gpt-5.1").bind_tools(CLEANING_TOOLS)
     return _llm
 
 # =============================================================================

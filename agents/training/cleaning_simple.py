@@ -203,12 +203,12 @@ When you call `mark_cleaning_complete`, you MUST stop immediately:
 # AGENT CREATION
 # =============================================================================
 
-def create_cleaning_agent(model: str = "openai:gpt-5-mini"):
+def create_cleaning_agent(model: str = "openai:gpt-5.1"):
     """
     Create the cleaning agent using LangChain's create_agent.
     
     Args:
-        model: Model identifier (default: openai:gpt-5-mini)
+        model: Model identifier (default: openai:gpt-5.1)
     
     Returns:
         Compiled agent graph
@@ -227,7 +227,7 @@ def create_cleaning_agent(model: str = "openai:gpt-5-mini"):
 def run_cleaning_simple(
     dataset_ref: str,
     goal: str = "Clean the dataset for machine learning",
-    model: str = "openai:gpt-5-mini",
+    model: str = "openai:gpt-5.1",
     max_iterations: int = 10,
 ):
     """
@@ -261,22 +261,58 @@ Start by calling `run_clean_tests` to analyze the dataset."""
         {"recursion_limit": max_iterations},
     )
     
-    # Extract the cleaned dataset reference from tool output
+    # Extract the cleaned dataset reference, summary, and transformations from tool output
     cleaned_ref = None
+    cleaning_summary = None
+    cleaning_reason = None
+    transformations = []
+    
+    # Tools that are actual transformations (not analysis tools)
+    transformation_tools = {
+        "drop_columns_tool", "drop_nulls", "fill_null", "impute", 
+        "clip", "replace_values", "regex_replace", "cast_tool",
+        "dedupe_tool", "filter_rows_tool", "drop_columns", "cast", "dedupe", "filter_rows"
+    }
+    
     for msg in result.get("messages", []):
+        # Check for tool calls (AIMessage with tool_calls)
+        if hasattr(msg, "tool_calls") and msg.tool_calls:
+            for tool_call in msg.tool_calls:
+                tool_name = tool_call.get("name", "")
+                tool_args = tool_call.get("args", {})
+                if tool_name in transformation_tools or tool_name.startswith("drop_") or tool_name.startswith("fill_"):
+                    transformations.append({
+                        "tool": tool_name,
+                        "args": tool_args,
+                    })
+        
         # Check for tool message with cleaning complete
         if hasattr(msg, "content") and isinstance(msg.content, str):
+            # Check if this is a transformation tool result
+            if hasattr(msg, "name") and msg.name in transformation_tools:
+                # Update the last transformation with its result
+                if transformations and transformations[-1].get("tool") == msg.name:
+                    transformations[-1]["result"] = msg.content
+            
             if "CLEANING COMPLETE" in msg.content and "Cleaned dataset:" in msg.content:
+                # Store the full cleaning summary message
+                cleaning_summary = msg.content
+                
                 # Extract the dataset ref from the tool output
                 for line in msg.content.split("\n"):
                     if "Cleaned dataset:" in line:
                         # Format: "Cleaned dataset: `cleaned_xxx`"
                         cleaned_ref = line.split("`")[1] if "`" in line else None
-                        break
+                    if "Reason:" in line:
+                        # Extract the reasoning
+                        cleaning_reason = line.replace("Reason:", "").strip()
     
     return {
         "cleaned_ref": cleaned_ref,
         "messages": result.get("messages", []),
+        "cleaning_summary": cleaning_summary,
+        "cleaning_reason": cleaning_reason,
+        "transformations": transformations,
     }
 
 

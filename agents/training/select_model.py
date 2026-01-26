@@ -200,7 +200,7 @@ def select_model(state: "TrainingAgentState") -> "TrainingAgentState":
         }
     
     # Use LLM to select model based on goal
-    llm = init_chat_model(model="gpt-5-mini", temperature=0)
+    llm = init_chat_model(model="gpt-5.1", temperature=0)
     structured_llm = llm.with_structured_output(ModelSelectionOutput)
     
     # TODO: Let the model choose from more and do it's thing more

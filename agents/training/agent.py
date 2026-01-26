@@ -63,6 +63,7 @@ class TrainingAgentState(TypedDict):
     # Step 3: Cleaning & Standardization
     cleaned_dataset_ref: Optional[str]
     cleaning_transformations: list[dict[str, Any]]
+    cleaning_summary: Optional[str]  # Summary message from cleaning agent
     
     # Step 3.5: Label & Split Definition
     label_definition: Optional[LabelDefinition]
@@ -143,9 +144,14 @@ def cleaning_node(state: TrainingAgentState) -> TrainingAgentState:
         max_iterations=max_iters,
     )
     
+    # Extract transformations from the cleaning result
+    transformations = result.get("transformations", [])
+    
     return {
         **state,
         "cleaned_dataset_ref": result["cleaned_ref"],
+        "cleaning_summary": result.get("cleaning_summary"),
+        "cleaning_transformations": transformations,
         "current_step": "label_split_definition",
     }
 
@@ -541,13 +547,28 @@ def training(state: TrainingAgentState) -> TrainingAgentState:
             "success": result.get("success"),
             "model_name": result.get("model_name"),
             "model_type": result.get("model_type"),
+            # Classification metrics
             "val_accuracy": result.get("val_accuracy"),
             "val_roc_auc": result.get("val_roc_auc"),
             "test_accuracy": result.get("test_accuracy"),
             "test_roc_auc": result.get("test_roc_auc"),
+            # Regression metrics
+            "train_r2": result.get("train_r2"),
+            "val_r2": result.get("val_r2"),
+            "val_rmse": result.get("val_rmse"),
+            "val_mae": result.get("val_mae"),
+            "test_r2": result.get("test_r2"),
+            "test_rmse": result.get("test_rmse"),
+            "test_mae": result.get("test_mae"),
+            # Iteration logs
             "iterations": result.get("iterations", []),
             "num_iterations": result.get("num_iterations", 0),
             "best_iteration": result.get("best_iteration"),
+            # Summary and recommendations (important for regression results)
+            "summary": result.get("summary"),
+            "recommendations": result.get("recommendations"),
+            # Feature engineering redo
+            "feature_redo_requested": result.get("feature_redo_requested", False),
         },
         "training_iteration": state.get("training_iteration", 0) + 1,
         # Feature engineering redo fields
@@ -820,29 +841,13 @@ def create_training_agent():
     return graph.compile()
 
 
-def invoke_training_agent(
+def _create_initial_state(
     goal: str,
     linked_datasets: Optional[list[str]] = None,
     user_model_preference: Optional[str] = None
 ) -> TrainingAgentState:
-    """
-    Invoke the training agent with the given inputs.
-    
-    Args:
-        goal: The training goal/objective from user
-        linked_datasets: Optional list of dataset references to use
-        user_model_preference: Optional model type preference from user
-        
-    Returns:
-        Final state containing:
-        - audit_trace: Full lineage trace
-        - explanations: Explanations of what was done
-        - model_weights_path: Path to the trained weights file
-        - report_path: Path to the generated report
-    """
-    agent = create_training_agent()
-    
-    initial_state: TrainingAgentState = {
+    """Create the initial state for the training agent."""
+    return {
         # Inputs
         "goal": goal,
         "linked_datasets": linked_datasets,
@@ -855,6 +860,7 @@ def invoke_training_agent(
         "collected_dataset_ref": None,
         "cleaned_dataset_ref": None,
         "cleaning_transformations": [],
+        "cleaning_summary": None,
         "label_definition": None,
         "feature_spec": None,
         "analysis_trace": [],
@@ -875,5 +881,371 @@ def invoke_training_agent(
         "current_step": "select_model",
         "error": None,
     }
+
+
+def invoke_training_agent(
+    goal: str,
+    linked_datasets: Optional[list[str]] = None,
+    user_model_preference: Optional[str] = None
+) -> TrainingAgentState:
+    """
+    Invoke the training agent with the given inputs (non-streaming).
     
+    Args:
+        goal: The training goal/objective from user
+        linked_datasets: Optional list of dataset references to use
+        user_model_preference: Optional model type preference from user
+        
+    Returns:
+        Final state containing:
+        - audit_trace: Full lineage trace
+        - explanations: Explanations of what was done
+        - model_weights_path: Path to the trained weights file
+        - report_path: Path to the generated report
+    """
+    agent = create_training_agent()
+    initial_state = _create_initial_state(goal, linked_datasets, user_model_preference)
     return agent.invoke(initial_state)
+
+
+from typing import Generator, Any
+
+def stream_training_agent(
+    goal: str,
+    linked_datasets: Optional[list[str]] = None,
+    user_model_preference: Optional[str] = None
+) -> Generator[dict[str, Any], None, TrainingAgentState]:
+    """
+    Stream the training agent with the given inputs.
+    
+    Yields state updates after each node completes, allowing real-time
+    progress tracking in the UI.
+    
+    Args:
+        goal: The training goal/objective from user
+        linked_datasets: Optional list of dataset references to use
+        user_model_preference: Optional model type preference from user
+        
+    Yields:
+        Dict with:
+        - node: Name of the node that just completed
+        - state: Current state after this node
+        
+    Returns:
+        Final state (accessible via generator's return value)
+    """
+    agent = create_training_agent()
+    initial_state = _create_initial_state(goal, linked_datasets, user_model_preference)
+    
+    final_state = None
+    
+    # Stream with "values" mode to get full state after each node
+    for event in agent.stream(initial_state, stream_mode="values"):
+        # event is the full state after each node
+        current_step = event.get("current_step", "unknown")
+        
+        yield {
+            "type": "state_update",
+            "node": current_step,
+            "state": event,
+        }
+        
+        final_state = event
+    
+    return final_state
+
+
+def stream_training_agent_with_updates(
+    goal: str,
+    linked_datasets: Optional[list[str]] = None,
+    user_model_preference: Optional[str] = None
+) -> Generator[dict[str, Any], None, None]:
+    """
+    Stream the training agent and yield structured updates.
+    
+    This is a simpler version that yields update dicts suitable for SSE.
+    
+    Args:
+        goal: The training goal/objective from user
+        linked_datasets: Optional list of dataset references to use
+        user_model_preference: Optional model type preference from user
+        
+    Yields:
+        Update dicts with type, node, progress, and relevant state fields
+    """
+    agent = create_training_agent()
+    initial_state = _create_initial_state(goal, linked_datasets, user_model_preference)
+    
+    # Define step order for progress calculation
+    step_order = [
+        "select_model",
+        "data_collection", 
+        "cleaning_and_standardization",
+        "label_split_definition",
+        "feature_selection_specification",
+        "feature_engineering_executor",
+        "human_confirmation",
+        "training",
+        "generate_report",
+    ]
+    
+    yield {
+        "type": "started",
+        "node": "init",
+        "progress": 0,
+        "message": "Training agent started",
+    }
+    
+    # Stream with "updates" mode to see which node produced what
+    for event in agent.stream(initial_state, stream_mode="updates"):
+        # event is a dict like {node_name: node_output}
+        for node_name, node_output in event.items():
+            # Calculate progress
+            try:
+                step_idx = step_order.index(node_name)
+                progress = int(((step_idx + 1) / len(step_order)) * 100)
+            except ValueError:
+                progress = 50
+            
+            # Extract key info from the node output
+            update = {
+                "type": "node_complete",
+                "node": node_name,
+                "progress": progress,
+                "state": node_output,  # Full state after this node
+            }
+            
+            # Add step-specific detailed info
+            if node_name == "select_model":
+                update["summary"] = {
+                    "selected_model": node_output.get("selected_model"),
+                    "explanation": node_output.get("model_explanation"),
+                }
+                update["details"] = {
+                    "title": "Model Selection Complete",
+                    "description": f"Selected **{node_output.get('selected_model', 'unknown')}** as the optimal model for this task.",
+                    "reasoning": node_output.get("model_explanation", "No explanation provided."),
+                }
+                
+            elif node_name == "data_collection":
+                # Get audit trace entry for data collection details
+                audit = next((t for t in node_output.get("audit_trace", []) if t.get("step") == "data_collection"), {})
+                update["summary"] = {
+                    "dataset": node_output.get("collected_dataset_ref"),
+                    "rows": audit.get("rows"),
+                    "columns": audit.get("columns"),
+                    "source": audit.get("source", "collected"),
+                }
+                update["details"] = {
+                    "title": "Data Collection Complete",
+                    "description": f"Loaded dataset: **{node_output.get('collected_dataset_ref', 'unknown')}**",
+                    "stats": {
+                        "rows": audit.get("rows", "unknown"),
+                        "columns": len(audit.get("columns", [])) if audit.get("columns") else "unknown",
+                        "column_names": audit.get("columns", []),
+                    },
+                }
+                
+            elif node_name == "cleaning_and_standardization":
+                transformations = node_output.get("cleaning_transformations", [])
+                cleaning_summary = node_output.get("cleaning_summary") or ""
+                
+                # Parse cleaning summary for key info
+                rows_cleaned = "unknown"
+                cols_cleaned = "unknown" 
+                reason = ""
+                if cleaning_summary:
+                    for line in cleaning_summary.split("\n"):
+                        if "Rows:" in line:
+                            rows_cleaned = line.split("Rows:")[1].strip().split()[0] if "Rows:" in line else "unknown"
+                        if "Columns:" in line:
+                            cols_cleaned = line.split("Columns:")[1].strip().split()[0] if "Columns:" in line else "unknown"
+                        if "Reason:" in line:
+                            reason = line.split("Reason:")[1].strip() if "Reason:" in line else ""
+                
+                update["summary"] = {
+                    "cleaned_dataset": node_output.get("cleaned_dataset_ref"),
+                    "num_transformations": len(transformations),
+                    "transformations": transformations[:10],  # First 10 for chat preview
+                    "cleaning_message": cleaning_summary,  # Full message from agent
+                    "rows": rows_cleaned,
+                    "columns": cols_cleaned,
+                    "reason": reason,
+                }
+                update["details"] = {
+                    "title": "Data Cleaning Complete",
+                    "description": reason or f"Applied {len(transformations)} transformations to clean the data.",
+                    "output_dataset": node_output.get("cleaned_dataset_ref"),
+                    "all_transformations": transformations,  # Full list for report
+                    "cleaning_summary": cleaning_summary,
+                    "transformations_applied": [
+                        t if isinstance(t, dict) else {"op": str(t)} for t in transformations
+                    ],
+                }
+                
+            elif node_name == "label_split_definition":
+                label_def = node_output.get("label_definition", {}) or {}
+                update["summary"] = {
+                    "target_column": label_def.get("target_column"),
+                    "split_strategy": label_def.get("split_strategy"),
+                    "grain": label_def.get("grain"),
+                    "train_ref": node_output.get("train_dataset_ref"),
+                    "val_ref": node_output.get("val_dataset_ref"),
+                    "test_ref": node_output.get("test_dataset_ref"),
+                }
+                update["details"] = {
+                    "title": "Label & Split Definition Complete",
+                    "description": f"Target column: **{label_def.get('target_column', 'unknown')}** with {label_def.get('split_strategy', 'random')} split.",
+                    "label_definition": {
+                        "target": label_def.get("target_column"),
+                        "strategy": label_def.get("split_strategy"),
+                        "grain": label_def.get("grain"),
+                        "forbidden_columns": label_def.get("forbidden_columns", []),
+                    },
+                    "datasets": {
+                        "train": node_output.get("train_dataset_ref"),
+                        "validation": node_output.get("val_dataset_ref"),
+                        "test": node_output.get("test_dataset_ref"),
+                    },
+                }
+                
+            elif node_name == "feature_selection_specification":
+                feature_spec = node_output.get("feature_spec", {}) or {}
+                features = feature_spec.get("features", [])
+                update["summary"] = {
+                    "num_features": len(features),
+                    "feature_names": [f.get("name") for f in features[:10]],  # First 10
+                }
+                update["details"] = {
+                    "title": "Feature Selection Complete",
+                    "description": f"Specified {len(features)} features for the model.",
+                    "features": [
+                        {
+                            "name": f.get("name"),
+                            "encoding": f.get("encoding"),
+                            "formula": str(f.get("formula")) if f.get("formula") else None,
+                        }
+                        for f in features
+                    ],
+                    "analysis_trace": node_output.get("analysis_trace", [])[:3],  # First 3 analysis items
+                }
+                
+            elif node_name == "feature_engineering_executor":
+                # Get audit trace entry for feature engineering details
+                audit = next((t for t in node_output.get("audit_trace", []) if t.get("step") == "feature_engineering_executor"), {})
+                shapes = audit.get("shapes", {})
+                update["summary"] = {
+                    "train_ref": node_output.get("transformed_train_ref"),
+                    "val_ref": node_output.get("transformed_val_ref"),
+                    "test_ref": node_output.get("transformed_test_ref"),
+                    "validation_passed": node_output.get("feature_validation_passed"),
+                    "features_created": audit.get("features_created", []),
+                    "shapes": shapes,
+                }
+                update["details"] = {
+                    "title": "Feature Engineering Complete",
+                    "description": f"Created {len(audit.get('features_created', []))} features.",
+                    "features_created": audit.get("features_created", []),
+                    "dataset_shapes": {
+                        "train": f"{shapes.get('train', ['?', '?'])[0]} rows × {shapes.get('train', ['?', '?'])[1]} cols" if shapes.get('train') else "unknown",
+                        "validation": f"{shapes.get('val', ['?', '?'])[0]} rows × {shapes.get('val', ['?', '?'])[1]} cols" if shapes.get('val') else "unknown",
+                        "test": f"{shapes.get('test', ['?', '?'])[0]} rows × {shapes.get('test', ['?', '?'])[1]} cols" if shapes.get('test') else "unknown",
+                    },
+                    "errors": audit.get("errors", []),
+                }
+                
+            elif node_name == "human_confirmation":
+                # Get audit trace entry for confirmation details
+                audit = next((t for t in node_output.get("audit_trace", []) if t.get("step") == "human_confirmation"), {})
+                update["summary"] = {
+                    "confirmed": node_output.get("human_confirmed"),
+                    "mode": audit.get("mode", "auto"),
+                }
+                update["details"] = {
+                    "title": "Confirmation Checkpoint",
+                    "description": "Ready to proceed with training." if node_output.get("human_confirmed") else "Awaiting confirmation.",
+                    "confirmed": node_output.get("human_confirmed"),
+                    "selected_model": node_output.get("selected_model"),
+                    "target_column": node_output.get("label_definition", {}).get("target_column") if node_output.get("label_definition") else None,
+                }
+                
+            elif node_name == "training":
+                metrics = node_output.get("training_metrics", {}) or {}
+                iterations = metrics.get("iterations", [])
+                update["summary"] = {
+                    "success": metrics.get("success"),
+                    "model_name": metrics.get("model_name"),
+                    "model_type": metrics.get("model_type"),
+                    "num_iterations": metrics.get("num_iterations"),
+                    # Classification metrics
+                    "val_accuracy": metrics.get("val_accuracy"),
+                    "val_roc_auc": metrics.get("val_roc_auc"),
+                    "test_accuracy": metrics.get("test_accuracy"),
+                    "test_roc_auc": metrics.get("test_roc_auc"),
+                    # Regression metrics
+                    "val_r2": metrics.get("val_r2"),
+                    "val_rmse": metrics.get("val_rmse"),
+                    "test_r2": metrics.get("test_r2"),
+                    "test_rmse": metrics.get("test_rmse"),
+                    "test_mae": metrics.get("test_mae"),
+                }
+                update["details"] = {
+                    "title": "Training Complete",
+                    "description": f"Trained **{metrics.get('model_name', 'model')}** successfully." if metrics.get("success") else "Training completed with issues.",
+                    "model": {
+                        "name": metrics.get("model_name"),
+                        "type": metrics.get("model_type"),
+                        "path": node_output.get("model_weights_path"),
+                    },
+                    "metrics": {
+                        # Include both classification and regression metrics
+                        "validation": {
+                            "accuracy": metrics.get("val_accuracy"),
+                            "roc_auc": metrics.get("val_roc_auc"),
+                            "r2": metrics.get("val_r2"),
+                            "rmse": metrics.get("val_rmse"),
+                            "mae": metrics.get("val_mae"),
+                        },
+                        "test": {
+                            "accuracy": metrics.get("test_accuracy"),
+                            "roc_auc": metrics.get("test_roc_auc"),
+                            "r2": metrics.get("test_r2"),
+                            "rmse": metrics.get("test_rmse"),
+                            "mae": metrics.get("test_mae"),
+                        },
+                    },
+                    "iterations": [
+                        {
+                            "model_name": it.get("model_name"),
+                            "tool": it.get("tool"),
+                            "success": it.get("success"),
+                            "val_r2": it.get("val_r2"),
+                            "test_r2": it.get("test_r2"),
+                        }
+                        for it in iterations
+                    ],
+                    "summary": metrics.get("summary"),
+                    "recommendations": metrics.get("recommendations"),
+                }
+                
+            elif node_name == "generate_report":
+                update["summary"] = {
+                    "report_path": node_output.get("report_path"),
+                    "model_path": node_output.get("model_weights_path"),
+                }
+                update["details"] = {
+                    "title": "Report Generated",
+                    "description": f"Final report saved to: **{node_output.get('report_path', 'unknown')}**",
+                    "report_path": node_output.get("report_path"),
+                    "model_weights_path": node_output.get("model_weights_path"),
+                    "audit_trace_length": len(node_output.get("audit_trace", [])),
+                }
+            
+            yield update
+    
+    yield {
+        "type": "completed",
+        "node": "end",
+        "progress": 100,
+        "message": "Training completed",
+    }

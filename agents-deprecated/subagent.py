@@ -30,7 +30,7 @@ from .prompts import (prepare_data_prompt, reflect_prompt, select_model_prompt,
 # LLM Setup
 # =============================================================================
 
-llm = ChatOpenAI(model="gpt-5-mini", temperature=0)
+llm = ChatOpenAI(model="gpt-5.1", temperature=0)
 
 
 # =============================================================================
