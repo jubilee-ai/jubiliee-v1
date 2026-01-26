@@ -74,7 +74,7 @@ def create_statistical_analysis_agent():
         Compiled agent graph ready for invocation
     """
     agent = create_agent(
-        model="openai:gpt-5.1",
+        model="openai:gpt-5-mini",
         tools=ALL_TOOLS,
         system_prompt=SYSTEM_PROMPT,
     )

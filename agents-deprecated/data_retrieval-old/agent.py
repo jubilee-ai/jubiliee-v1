@@ -73,7 +73,7 @@ If the request cannot be fulfilled, explain why and suggest alternatives.
 # LLM Setup
 # =============================================================================
 
-llm = ChatOpenAI(model="gpt-5.1", temperature=0)
+llm = ChatOpenAI(model="gpt-5-mini", temperature=0)
 
 # =============================================================================
 # Tools

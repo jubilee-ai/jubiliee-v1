@@ -1,14 +1,27 @@
 # ML Model Training Agent
-Input:
-- Goal/objective --> user input
-- Optional linked datasets
-- Optional model type (via a list selector that we handle)
 
-Output:
-- Audit/lineage trace
-- Explanations of what was done
-- Weights file
-- Follow up questions??
+## Entry Point
+```python
+from agents.training.agent import invoke_training_agent
+
+result = invoke_training_agent(
+    goal="Build a model to predict loan default risk",
+    linked_datasets=["my_dataset"],  # Optional pre-registered datasets
+    user_model_preference="logistic_regression"  # Optional: glm, logistic_regression, random_forest, survival_analysis, xgboost
+)
+```
+
+## Input
+- **goal**: Goal/objective from user (required)
+- **linked_datasets**: Optional list of pre-registered dataset references
+- **user_model_preference**: Optional model type (if not provided, LLM selects based on goal)
+
+## Output (TrainingAgentState)
+- **audit_trace**: Full lineage trace of all steps
+- **explanations**: List of explanations of what was done at each step
+- **model_weights_path**: Name of the trained model in registry
+- **report_path**: Path to generated JSON report
+- **training_metrics**: Validation and test metrics
 
 ## Architecture
 1. Select model
@@ -149,31 +162,80 @@ TODO: Look into multi agent
 - Failures are spec failures, not execution failures
 - **CRITICAL**: Fit-on-train prevents data leakage from val/test into feature computation → blame is clear
 
-6. Show a trace of everything and get human to confirm we can proceed (HUMAN IN THE LOOP)
+6. Human Confirmation Checkpoint (`human_confirmation` in `agent.py`)
+- Shows full audit trace of steps 1-5
+- Displays: goal, selected model, target column, train/val/test dataset refs
+- **Automated runs**: Auto-confirms (for testing)
+- **Production**: Would await user input to proceed or abort
 
-7. Iterative training subagent
+7. Iterative Training Subagent (`run_training_agent` in `training.py`)
 - **Inputs from 5**: train_ref, val_ref, test_ref (already transformed with features)
 - **Inputs from 3.5**: label_definition (target_column, etc.)
-**Tools:** glm + logistic_regression + random_forest + survival_analysis + xgboost_model + model_storage
-i. Run an LLM analysis on the data and goal to decide: parameters, model architecture, type of learning and learning params...
-ii. Training:
-    a. Load train/val/test datasets (already split and feature-engineered)
-    b. Train on the training set
-    c. Evaluate on the validation set
-    d. LLM looks at results and decides to either:
-        --> Go back to i (HUMAN IN THE LOOP)
-        --> Continue to testing (HUMAN IN THE LOOP)
-    e. Run the model on the test set
-    f. Review the test results and either: (BASED ON USER DEFINED CRITERIA IDEALLY)
-        --> Go back to i (HUMAN IN THE LOOP)
-        --> Complete (HUMAN IN THE LOOP)
-iii. Complete and output the weights file + audit trace, explanations of what happened...
+- **Tools:** `sklearn_logistic_regression`, `sklearn_random_forest`, `xgboost_train`, `sklearn_glm`, `survival_analysis`, `evaluate_model`, `get_model_info`, `list_trained_models`
+
+```python
+from agents.training.training import run_training_agent
+
+result = run_training_agent(
+    train_ref="my_dataset_train_features",
+    val_ref="my_dataset_val_features", 
+    test_ref="my_dataset_test_features",
+    target_column="default",
+    selected_model="logistic_regression",
+    goal="Predict loan default",
+    model_name="my_model",
+    max_iterations=3,
+)
+```
+
+**Iteration Loop (max 3 iterations by default):**
+1. LLM analyzes data info (class distribution, features) and decides hyperparameters
+2. Train model using `train_dataset_ref` parameter (NOT raw data)
+3. Evaluate on validation using `evaluate_model` tool
+4. LLM analyzes validation metrics:
+   - If ROC-AUC >= 0.75 AND accuracy reasonable → proceed to test
+   - If poor metrics → iterate with different hyperparameters
+5. Final evaluation on test set
+6. Output model name (saved in registry) + metrics
+
+**Key Implementation Details:**
+- All tools use `dataset_ref` parameters (no raw data passed)
+- Models train on ALL provided training data (no internal splits)
+- Validation/test evaluation via `evaluate_model` tool
+- Each iteration uses unique model name (model_v1, model_v2, model_v3)
+- Agent explains reasoning for hyperparameter choices
 --> TODO: Down the line we want to think of it as being able to spin up multiple 'training' agents in parallel
 --> Essentially running x experiments at the same time and then testing them against each other (e.g. different parameters, types of models, learning rates...). Where each also will reflect on what went wrong and try to course correct.
 
-8. Generate a report on everything to accompany the weigths file
+8. Generate Report (`generate_report` in `agent.py`)
+- Generates JSON report saved to `trained_models/{model_name}_report.json`
+- Includes: goal, model info, data lineage, label definition, training metrics, full audit trace
+- Report accompanies the model weights file for reproducibility
 
+---
 
+## Available Models
+
+| Model | Tool Name | Use Case |
+|-------|-----------|----------|
+| Logistic Regression | `sklearn_logistic_regression` | Binary/multiclass classification, interpretable |
+| Random Forest | `sklearn_random_forest` | Classification/regression, feature importance |
+| XGBoost | `xgboost_train` | High-performance tabular data |
+| GLM | `sklearn_glm` | Poisson/Gamma/Tweedie regression |
+| Survival Analysis | `survival_analysis` | Time-to-event prediction with censoring |
+
+## Test Status
+
+Tests in `tests/test_training_agent.py`:
+- ✅ Basic Training Flow (logistic regression)
+- ✅ Imbalanced Data Handling (class_weight='balanced')
+- ✅ Random Forest Training
+- ✅ XGBoost Training
+- ✅ Model Saved and Usable
+- ✅ Iteration Behavior (poor metrics trigger retry)
+- ✅ Full Pipeline Integration
+
+---
 
 NEXT STEP IMPROVEMENT IDEAS:
 - All todos above (e.g. taking multiple approaches in parallel)

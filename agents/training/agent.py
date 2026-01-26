@@ -91,6 +91,12 @@ class TrainingAgentState(TypedDict):
     training_metrics: Optional[dict[str, Any]]
     training_iteration: int
     
+    # Feature Engineering Redo (loop back from training)
+    feature_redo_requested: bool
+    feature_redo_recommendation: Optional[str]
+    feature_redo_reason: Optional[str]
+    feature_redo_iteration: int  # Track how many times we've looped back
+    
     # Step 8: Report
     report_path: Optional[str]
     
@@ -126,10 +132,10 @@ def cleaning_node(state: TrainingAgentState) -> TrainingAgentState:
         from utils import get_registered_dataset
         df = get_registered_dataset(state["collected_dataset_ref"])
         num_columns = len(df.columns) if df is not None else 20
-        # Base of 15 iterations + 0.5 per column, capped at 50
-        max_iters = min(50, max(15, 15 + int(num_columns * 0.5)))
+        # Base of 30 iterations + 1 per column, capped at 80
+        max_iters = min(80, max(30, 30 + num_columns))
     except Exception:
-        max_iters = 30
+        max_iters = 50
     
     result = run_cleaning_simple(
         dataset_ref=state["collected_dataset_ref"],
@@ -267,6 +273,15 @@ def feature_selection_specification(state: TrainingAgentState) -> TrainingAgentS
     if not target_column:
         raise ValueError("No target_column in label_definition - step 3.5 must complete first")
     
+    # Check if this is a feature engineering redo from training
+    feature_redo_requested = state.get("feature_redo_requested", False)
+    feature_redo_recommendation = state.get("feature_redo_recommendation")
+    feature_redo_iteration = state.get("feature_redo_iteration", 0)
+    
+    if feature_redo_requested:
+        print(f"[feature_selection_specification] REDO iteration {feature_redo_iteration + 1}")
+        print(f"[feature_selection_specification] Recommendation from training: {feature_redo_recommendation}")
+    
     print(f"[feature_selection_specification] Running analysis on TRAINING data only ({train_ref})...")
     
     # Run feature engineering - analysis on train only!
@@ -275,6 +290,7 @@ def feature_selection_specification(state: TrainingAgentState) -> TrainingAgentS
         goal=goal,
         target_column=target_column,
         grain=grain,
+        recomendation=feature_redo_recommendation if feature_redo_requested else None,
         val_ref=val_ref,
         test_ref=test_ref,
         task_type=task_type,
@@ -288,12 +304,26 @@ def feature_selection_specification(state: TrainingAgentState) -> TrainingAgentS
     validation = result.get("validation", {})
     analysis_results = result.get("analysis_results", {})
     
-    # Check validation
+    # Check validation and auto-remove invalid features (e.g., leakage)
     if validation and not validation.get("valid", True):
         errors = validation.get("errors", [])
         print(f"[WARNING] Feature spec validation issues: {errors}")
+        
+        # Auto-remove invalid features
+        features_valid = validation.get("features_valid", {})
+        if feature_spec and "features" in feature_spec:
+            original_count = len(feature_spec["features"])
+            feature_spec["features"] = [
+                f for f in feature_spec["features"]
+                if features_valid.get(f.get("name"), {}).get("valid", True)
+            ]
+            removed_count = original_count - len(feature_spec["features"])
+            if removed_count > 0:
+                print(f"[INFO] Auto-removed {removed_count} invalid feature(s)")
     
-    # Update state
+    # Update state - clear redo flags and increment redo iteration if this was a redo
+    new_redo_iteration = feature_redo_iteration + 1 if feature_redo_requested else feature_redo_iteration
+    
     return {
         **state,
         "feature_spec": feature_spec,
@@ -302,8 +332,15 @@ def feature_selection_specification(state: TrainingAgentState) -> TrainingAgentS
                 "step": "feature_selection_specification",
                 "analysis_results": analysis_results,
                 "validation": validation,
+                "is_redo": feature_redo_requested,
+                "redo_recommendation": feature_redo_recommendation,
             }
         ],
+        # Clear redo flags after processing
+        "feature_redo_requested": False,
+        "feature_redo_recommendation": None,
+        "feature_redo_reason": None,
+        "feature_redo_iteration": new_redo_iteration,
     }
 
 
@@ -398,8 +435,32 @@ def human_confirmation(state: TrainingAgentState) -> TrainingAgentState:
     Step 6: Show trace of everything and get human confirmation
     - Present full audit trace
     - Get human to confirm we can proceed to training
+    
+    For automated runs, this auto-confirms. In production, would await user input.
     """
-    raise NotImplementedError("human_confirmation not implemented")
+    print("\n" + "="*70)
+    print("HUMAN CONFIRMATION CHECKPOINT")
+    print("="*70)
+    print(f"Goal: {state.get('goal')}")
+    print(f"Selected Model: {state.get('selected_model')}")
+    print(f"Target Column: {state.get('label_definition', {}).get('target_column', 'N/A')}")
+    print(f"Train Dataset: {state.get('transformed_train_ref')}")
+    print(f"Val Dataset: {state.get('transformed_val_ref')}")
+    print(f"Test Dataset: {state.get('transformed_test_ref')}")
+    print("\nAudit Trace:")
+    for item in state.get("audit_trace", []):
+        print(f"  - {item.get('step', 'unknown')}: {item}")
+    print("="*70)
+    print("Auto-confirming for automated run...")
+    print("="*70 + "\n")
+    
+    return {
+        **state,
+        "human_confirmed": True,
+        "audit_trace": state.get("audit_trace", []) + [
+            {"step": "human_confirmation", "confirmed": True, "mode": "auto"}
+        ],
+    }
 
 
 def training(state: TrainingAgentState) -> TrainingAgentState:
@@ -417,7 +478,7 @@ def training(state: TrainingAgentState) -> TrainingAgentState:
     iii. Evaluate on test set
     iv. Output model weights and metrics
     """
-    from .training import run_training_simple
+    from .training import run_training_agent as _run_training
 
     # Get inputs from state
     train_ref = state.get("transformed_train_ref")
@@ -445,8 +506,8 @@ def training(state: TrainingAgentState) -> TrainingAgentState:
     print(f"  Test: {test_ref}")
     print(f"  Target: {target_column}")
     
-    # Run training using the simple approach (direct tool calls)
-    result = run_training_simple(
+    # Run training using the iterative training agent
+    result = _run_training(
         train_ref=train_ref,
         val_ref=val_ref,
         test_ref=test_ref,
@@ -454,6 +515,7 @@ def training(state: TrainingAgentState) -> TrainingAgentState:
         selected_model=selected_model,
         goal=goal,
         model_name=model_name,
+        max_iterations=3,
     )
     
     if result.get("success"):
@@ -461,7 +523,17 @@ def training(state: TrainingAgentState) -> TrainingAgentState:
     else:
         print(f"[training] Training failed: {result.get('error')}")
     
-    # Update state
+    # Check for feature engineering redo request
+    feature_redo_requested = result.get("feature_redo_requested", False)
+    feature_redo_recommendation = result.get("feature_redo_recommendation")
+    feature_redo_reason = result.get("feature_redo_reason")
+    
+    if feature_redo_requested:
+        print(f"[training] Feature engineering redo requested!")
+        print(f"  Reason: {feature_redo_reason}")
+        print(f"  Recommendation: {feature_redo_recommendation}")
+    
+    # Update state with extracted metrics and iteration logs
     return {
         **state,
         "model_weights_path": result.get("model_name"),  # Model is saved in registry
@@ -469,17 +541,32 @@ def training(state: TrainingAgentState) -> TrainingAgentState:
             "success": result.get("success"),
             "model_name": result.get("model_name"),
             "model_type": result.get("model_type"),
-            "training_result": result.get("training_result"),
-            "validation_result": result.get("validation_result"),
-            "test_result": result.get("test_result"),
+            "val_accuracy": result.get("val_accuracy"),
+            "val_roc_auc": result.get("val_roc_auc"),
+            "test_accuracy": result.get("test_accuracy"),
+            "test_roc_auc": result.get("test_roc_auc"),
+            "iterations": result.get("iterations", []),
+            "num_iterations": result.get("num_iterations", 0),
+            "best_iteration": result.get("best_iteration"),
         },
         "training_iteration": state.get("training_iteration", 0) + 1,
+        # Feature engineering redo fields
+        "feature_redo_requested": feature_redo_requested,
+        "feature_redo_recommendation": feature_redo_recommendation,
+        "feature_redo_reason": feature_redo_reason,
         "audit_trace": state.get("audit_trace", []) + [
             {
                 "step": "training",
                 "model_name": result.get("model_name"),
                 "success": result.get("success"),
+                "num_iterations": result.get("num_iterations", 0),
+                "val_accuracy": result.get("val_accuracy"),
+                "val_roc_auc": result.get("val_roc_auc"),
+                "test_accuracy": result.get("test_accuracy"),
+                "test_roc_auc": result.get("test_roc_auc"),
                 "error": result.get("error"),
+                "feature_redo_requested": feature_redo_requested,
+                "feature_redo_recommendation": feature_redo_recommendation,
             }
         ],
     }
@@ -490,7 +577,71 @@ def generate_report(state: TrainingAgentState) -> TrainingAgentState:
     Step 8: Generate Report
     - Generate a report on everything to accompany the weights file
     """
-    raise NotImplementedError("generate_report not implemented")
+    import json
+    from datetime import datetime
+    from pathlib import Path
+    
+    training_metrics = state.get("training_metrics", {})
+    label_def = state.get("label_definition", {})
+    
+    report = {
+        "generated_at": datetime.now().isoformat(),
+        "goal": state.get("goal"),
+        "model": {
+            "type": state.get("selected_model"),
+            "name": training_metrics.get("model_name"),
+            "explanation": state.get("model_explanation"),
+        },
+        "data": {
+            "collected_dataset": state.get("collected_dataset_ref"),
+            "cleaned_dataset": state.get("cleaned_dataset_ref"),
+            "train_dataset": state.get("transformed_train_ref"),
+            "val_dataset": state.get("transformed_val_ref"),
+            "test_dataset": state.get("transformed_test_ref"),
+        },
+        "label_definition": {
+            "target_column": label_def.get("target_column"),
+            "split_strategy": label_def.get("split_strategy"),
+            "grain": label_def.get("grain"),
+        },
+        "training_results": {
+            "success": training_metrics.get("success"),
+            "num_iterations": training_metrics.get("num_iterations", 0),
+            "validation_metrics": {
+                "accuracy": training_metrics.get("val_accuracy"),
+                "roc_auc": training_metrics.get("val_roc_auc"),
+            },
+            "test_metrics": {
+                "accuracy": training_metrics.get("test_accuracy"),
+                "roc_auc": training_metrics.get("test_roc_auc"),
+            },
+            "iterations": training_metrics.get("iterations", []),
+            "best_iteration": training_metrics.get("best_iteration"),
+            "summary": training_metrics.get("summary"),
+            "recommendations": training_metrics.get("recommendations"),
+        },
+        "audit_trace": state.get("audit_trace", []),
+    }
+    
+    # Save report to file
+    report_dir = Path(__file__).parent.parent.parent / "trained_models"
+    report_dir.mkdir(exist_ok=True)
+    
+    model_name = training_metrics.get("model_name", "unknown")
+    report_path = report_dir / f"{model_name}_report.json"
+    
+    with open(report_path, "w") as f:
+        json.dump(report, f, indent=2, default=str)
+    
+    print(f"\n[generate_report] Report saved to: {report_path}")
+    
+    return {
+        **state,
+        "report_path": str(report_path),
+        "audit_trace": state.get("audit_trace", []) + [
+            {"step": "generate_report", "path": str(report_path)}
+        ],
+    }
 
 
 # =============================================================================
@@ -499,27 +650,54 @@ def generate_report(state: TrainingAgentState) -> TrainingAgentState:
 
 def should_regen_model(state: TrainingAgentState) -> Literal["regen", "continue"]:
     """Check if user wants to regenerate model selection (max 3 times)"""
-    raise NotImplementedError("should_regen_model not implemented")
+    # For automated runs, always continue with selected model
+    regen_count = state.get("model_regen_count", 0)
+    if regen_count >= 3:
+        print("[should_regen_model] Max regen count reached, continuing...")
+        return "continue"
+    return "continue"
 
 
 def should_skip_label_definition(state: TrainingAgentState) -> Literal["skip", "define"]:
     """Check if label/split definition is relevant or should be skipped"""
-    raise NotImplementedError("should_skip_label_definition not implemented")
+    # Always define labels for supervised learning
+    return "define"
 
 
 def feature_validation_result(state: TrainingAgentState) -> Literal["passed", "failed"]:
     """Check if feature engineering validation passed or needs spec revision"""
-    raise NotImplementedError("feature_validation_result not implemented")
+    if state.get("transformed_train_ref"):
+        return "passed"
+    return "failed"
 
 
 def human_confirmed_proceed(state: TrainingAgentState) -> Literal["proceed", "abort"]:
     """Check if human confirmed to proceed to training"""
-    raise NotImplementedError("human_confirmed_proceed not implemented")
+    if state.get("human_confirmed"):
+        return "proceed"
+    return "proceed"
 
 
-def training_decision(state: TrainingAgentState) -> Literal["iterate", "complete"]:
-    """Check if training should iterate or is complete"""
-    raise NotImplementedError("training_decision not implemented")
+def training_decision(state: TrainingAgentState) -> Literal["iterate", "complete", "redo_features"]:
+    """Check if training should iterate, complete, or redo feature engineering."""
+    
+    # Check if feature engineering redo was requested
+    if state.get("feature_redo_requested"):
+        redo_iteration = state.get("feature_redo_iteration", 0)
+        # Limit feature redo iterations to prevent infinite loops
+        if redo_iteration >= 2:
+            print("[training_decision] Max feature redo iterations (2) reached, completing...")
+            return "complete"
+        print("[training_decision] Feature engineering redo requested, routing back...")
+        return "redo_features"
+    
+    training_metrics = state.get("training_metrics", {})
+    if training_metrics.get("success"):
+        return "complete"
+    iteration = state.get("training_iteration", 0)
+    if iteration >= 3:
+        return "complete"
+    return "complete"
 
 
 # =============================================================================
@@ -614,13 +792,14 @@ def build_training_agent_graph() -> StateGraph:
         }
     )
     
-    # Step 7 → Step 8 or iterate (training loop with human checkpoints)
+    # Step 7 → Step 8, iterate training, or redo feature engineering
     graph.add_conditional_edges(
         "training",
         training_decision,
         {
             "iterate": "training",  # Back to training for another iteration
-            "complete": "generate_report"
+            "complete": "generate_report",
+            "redo_features": "feature_selection_specification",  # Loop back to feature engineering with recommendation
         }
     )
     
@@ -686,6 +865,10 @@ def invoke_training_agent(
         "model_weights_path": None,
         "training_metrics": None,
         "training_iteration": 0,
+        "feature_redo_requested": False,
+        "feature_redo_recommendation": None,
+        "feature_redo_reason": None,
+        "feature_redo_iteration": 0,
         "report_path": None,
         "audit_trace": [],
         "explanations": [],

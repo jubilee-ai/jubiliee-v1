@@ -92,7 +92,7 @@ for tool in ALL_TOOLS:
 print("\n🤖 Initializing OpenAI model with bound tools...")
 
 model = init_chat_model(
-    model="gpt-5.1",
+    model="gpt-5-mini",
     temperature=0,
 )
 

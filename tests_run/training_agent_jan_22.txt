@@ -1,0 +1,114 @@
+# Training Agent Evaluation - January 22, 2026
+
+## Critical Evaluation: Hyperparameter Gaps
+
+Based on analyzing all 7 tests, here are the key observations and gaps.
+
+---
+
+## What's Working Well
+
+| Model              | Hyperparameters Used Effectively                                    |
+|--------------------|---------------------------------------------------------------------|
+| Logistic Regression| `class_weight="balanced"` (detected imbalance), varied `C` (0.3, 0.5, 1.0) |
+| Random Forest      | `n_estimators` (150-200), `max_depth` (4-6), `max_features="sqrt"`  |
+| XGBoost            | `tree_method="hist"`, `early_stopping_rounds=10`, varied `max_depth`|
+
+---
+
+## Critical Gaps Identified
+
+### 1. Logistic Regression: L1/Elastic Net Never Used
+
+```
+l1_ratio: 0.0   (always)
+solver: lbfgs   (always)
+```
+
+**Problem:** The agent never tries L1 regularization or elastic net, even though it could help with feature selection in high-dimensional datasets.
+
+**Recommendation:** When features > 10, agent should try `l1_ratio=0.5` with `solver="saga"`.
+
+---
+
+### 2. Random Forest: class_weight Not Used When Appropriate
+
+```
+test_rf_v1:  class_weight: None
+rf_v1:       class_weight: None
+```
+
+**Problem:** Even when switching from logistic regression (which used `class_weight="balanced"`) to Random Forest, the agent forgot to use `class_weight="balanced"`.
+
+**Recommendation:** Update system prompt to remind agent to carry imbalance handling across model switches.
+
+---
+
+### 3. XGBoost: scale_pos_weight Never Used for Imbalanced Data
+
+```
+test_xgb_v1:  scale_pos_weight: None
+xgb_v1:       scale_pos_weight: None
+```
+
+**Problem:** Even though we added `scale_pos_weight` for imbalanced data, the agent never used it (even when it switched to XGBoost on imbalanced/noisy data in Test 6).
+
+**Recommendation:** System prompt should explicitly guide: "For XGBoost with imbalanced data, use `scale_pos_weight = negative_count / positive_count`".
+
+---
+
+### 4. XGBoost: Regularization Parameters Not Varied
+
+```
+reg_alpha: 0.0    (always)
+reg_lambda: 1.0   (always)
+gamma: 0.0        (always)
+```
+
+**Problem:** The agent never experimented with L1/L2 regularization or minimum split gain, which are key for preventing overfitting.
+
+**Recommendation:** When overfitting detected (train >> val), agent should try `reg_alpha=0.1`, `reg_lambda=2.0`, `gamma=0.1`.
+
+---
+
+### 5. New Parameters Never Exercised
+
+```
+sample_weight_column:   (never used in any test)
+monotone_constraints:   (never used)
+optimize_threshold:     (recommended but never actually called)
+```
+
+**Problem:** The newly implemented features were never actually used by the agent during tests.
+
+**Why:** The test data didn't have sample weight columns, and the agent only recommended threshold optimization rather than calling it.
+
+---
+
+### 6. Learning Rate Not Varied
+
+```
+learning_rate: 0.1  (always)
+```
+
+**Problem:** XGBoost learning rate was never adjusted. Lower values (0.01-0.05) with more estimators often work better.
+
+**Recommendation:** Add to system prompt: "If XGBoost overfits, try `learning_rate=0.05` with higher `n_estimators`".
+
+---
+
+## Summary: Priority Fixes
+
+| Priority | Gap                                    | Fix Location              |
+|----------|----------------------------------------|---------------------------|
+| HIGH     | RF drops `class_weight` on model switch| `training.py` system prompt |
+| HIGH     | XGBoost never uses `scale_pos_weight`  | `training.py` system prompt |
+| MEDIUM   | L1 regularization never tried          | `training.py` system prompt |
+| MEDIUM   | XGBoost regularization static          | `training.py` system prompt |
+| LOW      | New params need test coverage          | Test files                |
+
+---
+
+## Conclusion
+
+The main remaining gap is **carrying forward imbalance handling when switching from LR to RF/XGB**. The agent correctly uses `class_weight='balanced'` for LR but doesn't always apply `class_weight='balanced'` to RF or `scale_pos_weight` to XGB.

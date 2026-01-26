@@ -20,6 +20,8 @@ from langchain.chat_models import init_chat_model
 from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel, Field
 
+from agents.training.prompts import FEATURE_ENGINEERING_SIMPLE_SYSTEM_PROMPT
+
 load_dotenv(Path(__file__).parent.parent.parent / ".env")
 
 # Add data-tools to path
@@ -174,42 +176,6 @@ def _format_analysis_results(results: dict[str, Any]) -> str:
 
 
 # =============================================================================
-# SYSTEM PROMPT (simplified - no tool instructions needed)
-# =============================================================================
-
-SIMPLE_SYSTEM_PROMPT = """You are a data scientist selecting features for a machine learning model.
-
-You have been provided with complete analysis results from multiple tools. Use this information to decide which features to include.
-
-## Feature Formula DSL
-Specify each feature using one of these operations:
-
-| Op | Example |
-|----|---------|
-| passthrough | `{"op": "passthrough", "column": "credit_score"}` |
-| expression | `{"op": "expression", "expression": "loan_amount / income", "source_columns": ["loan_amount", "income"]}` |
-| bin | `{"op": "bin", "column": "age", "bins": 5, "strategy": "quantile"}` |
-| one_hot | `{"op": "one_hot", "column": "region", "drop_first": true}` |
-| ordinal | `{"op": "ordinal", "column": "education", "order": ["hs", "bs", "ms", "phd"]}` |
-| group_agg | `{"op": "group_agg", "column": "amount", "agg": "mean", "group_by": ["zip"]}` |
-| rolling | `{"op": "rolling", "column": "amount", "agg": "sum", "window": 30, "order_by": "date", "partition_by": ["customer_id"]}` |
-| date_extract | `{"op": "date_extract", "column": "signup_date", "part": "month"}` |
-| date_diff | `{"op": "date_diff", "start_column": "start", "end_column": "end", "unit": "days"}` |
-
-## Temporal Constraints
-For time-sensitive features, set `as_of_constraint`:
-```json
-{"source_date_column": "transaction_date", "operator": "<"}
-```
-For static features, set `as_of_constraint` to null.
-
-## Rules
-- Never use forbidden columns
-- Explain your reasoning based on the analysis results
-- List excluded columns and why"""
-
-
-# =============================================================================
 # MAIN ENTRY POINT
 # =============================================================================
 
@@ -221,13 +187,14 @@ def run_feature_engineering_simple(
     goal: str,
     target_column: str,
     grain: str,
+    recomendation: Optional[str] = None, # This is if we need to go back to the feature engineering to regenerate the features from training
     val_ref: Optional[str] = None,
     test_ref: Optional[str] = None,
     task_type: TaskType = "classification",
     forbidden_columns: list[str] = None,
     as_of_cutoff: Optional[str] = None,
     prediction_horizon: Optional[str] = None,
-    model: str = "openai:gpt-5.1",
+    model: str = "openai:gpt-5-mini",
 ) -> dict[str, Any]:
     """
     Run feature engineering with all analysis upfront, then one LLM call.
@@ -299,6 +266,25 @@ def run_feature_engineering_simple(
         context_parts.append(f"## Prediction Horizon\n{prediction_horizon}")
     
     context_parts.append(f"## Analysis Results (Training Data)\n{analysis_context}")
+    
+    # Include recommendation from training agent if this is a redo iteration
+    if recomendation:
+        context_parts.append(f"""
+## IMPORTANT: Feature Engineering Redo Request
+
+This is a REDO of feature engineering based on feedback from the training agent.
+The previous feature set did not produce satisfactory model performance.
+
+**Recommendation from training agent:**
+{recomendation}
+
+**Action Required:**
+- Carefully consider the recommendation above
+- Modify your feature selection and engineering approach accordingly
+- Focus on addressing the specific issues mentioned
+- Generate an IMPROVED feature specification that addresses the feedback
+""")
+    
     context_parts.append("\n## Instructions\nBased on the analysis above, select features and specify how to build them using the formula DSL.")
     
     user_message = "\n\n".join(context_parts)
@@ -309,7 +295,7 @@ def run_feature_engineering_simple(
     llm_with_structure = llm.with_structured_output(FeatureSpec)
     
     messages = [
-        SystemMessage(content=SIMPLE_SYSTEM_PROMPT),
+        SystemMessage(content=FEATURE_ENGINEERING_SIMPLE_SYSTEM_PROMPT),
         HumanMessage(content=user_message),
     ]
     

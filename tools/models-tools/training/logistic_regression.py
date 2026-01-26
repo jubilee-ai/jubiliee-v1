@@ -15,7 +15,7 @@ import numpy as np
 import pandas as pd
 from langchain.tools import tool
 from model_storage import generate_model_path, register_model
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from sklearn.compose import ColumnTransformer
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (accuracy_score, classification_report,
@@ -27,6 +27,7 @@ from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
 class LogisticRegressionTrainingInput(BaseModel):
     """Input schema for training a logistic regression model."""
+    model_config = ConfigDict(extra="forbid")
     
     # Model identification
     model_name: str = Field(
@@ -56,6 +57,10 @@ class LogisticRegressionTrainingInput(BaseModel):
         default=None,
         description="List of column names that are categorical (will be one-hot encoded). "
                     "Numeric columns will be standardized."
+    )
+    sample_weight_column: Optional[str] = Field(
+        default=None,
+        description="Column containing per-row sample weights. Excluded from features."
     )
     
     # Model hyperparameters
@@ -155,14 +160,25 @@ def train_logistic_regression(input_data: LogisticRegressionTrainingInput) -> Lo
         raise ValueError(f"Target column '{input_data.target_column}' not found in data. "
                         f"Available columns: {list(df.columns)}")
     
-    # Determine feature columns
+    # Extract sample weights if provided
+    sample_weights = None
+    if input_data.sample_weight_column:
+        if input_data.sample_weight_column not in df.columns:
+            raise ValueError(f"Sample weight column '{input_data.sample_weight_column}' not found in data.")
+        sample_weights = df[input_data.sample_weight_column].values
+    
+    # Determine feature columns (exclude target and sample_weight_column)
+    exclude_cols = [input_data.target_column]
+    if input_data.sample_weight_column:
+        exclude_cols.append(input_data.sample_weight_column)
+    
     if input_data.feature_columns:
-        feature_cols = input_data.feature_columns
+        feature_cols = [c for c in input_data.feature_columns if c not in exclude_cols]
         missing = set(feature_cols) - set(df.columns)
         if missing:
             raise ValueError(f"Feature columns not found in data: {missing}")
     else:
-        feature_cols = [c for c in df.columns if c != input_data.target_column]
+        feature_cols = [c for c in df.columns if c not in exclude_cols]
     
     # Separate features and target
     X = df[feature_cols]
@@ -222,7 +238,10 @@ def train_logistic_regression(input_data: LogisticRegressionTrainingInput) -> Lo
     # Validation/test evaluation happens via evaluate_model tool
     
     # Fit pipeline on ALL provided data (it's already the training set)
-    pipeline.fit(X, y)
+    if sample_weights is not None:
+        pipeline.fit(X, y, classifier__sample_weight=sample_weights)
+    else:
+        pipeline.fit(X, y)
     
     # Predictions on training data (for sanity check metrics)
     y_pred = pipeline.predict(X)
@@ -362,6 +381,11 @@ class SklearnLogisticRegressionToolInput(BaseModel):
         default=None,
         description="Columns to one-hot encode. If None, auto-detects from dtypes."
     )
+    sample_weight_column: Optional[str] = Field(
+        default=None,
+        description="Column containing per-row sample weights. Use for: weighting recent data more, "
+                    "weighting by policy size, or confidence in labels. Column is excluded from features."
+    )
     C: float = Field(
         default=1.0,
         description="Regularization strength (inverse). Lower = stronger regularization. Default: 1.0",
@@ -429,6 +453,7 @@ def sklearn_logistic_regression_tool(
     description: str = "",
     feature_columns: Optional[list[str]] = None,
     categorical_columns: Optional[list[str]] = None,
+    sample_weight_column: Optional[str] = None,
     C: float = 1.0,
     l1_ratio: float = 0.0,
     solver: Literal["lbfgs", "liblinear", "newton-cg", "newton-cholesky", "sag", "saga"] = "lbfgs",
@@ -464,9 +489,17 @@ def sklearn_logistic_regression_tool(
     HYPERPARAMETER GUIDANCE:
     - C: Start with 1.0. If overfitting, try 0.1 or 0.01. If underfitting, try 10 or 100.
     - l1_ratio: Use 0.0 (L2) by default. Use 1.0 (L1) for feature selection/sparsity.
+      Try l1_ratio=0.5 (ElasticNet) with solver='saga' when features > 10.
     - solver: 'lbfgs' works for most cases. Switch to 'saga' if using L1 or ElasticNet.
     - class_weight: Set to 'balanced' if classes are imbalanced (e.g., 95% negative, 5% positive).
     - max_iter: Increase to 500-1000 if you see convergence warnings.
+    
+    FOR IMBALANCED DATA (positive rate < 20%):
+    - ALWAYS use class_weight='balanced'
+    
+    FOR OVERFITTING (train_score >> val_score by >0.1):
+    - Reduce C (try 0.1 or 0.01 for stronger regularization)
+    - Try l1_ratio=0.5 with solver='saga' for feature selection
     
     OUTPUT INTERPRETATION:
     - test_accuracy: Primary metric. Compare to baseline (majority class rate).
@@ -528,6 +561,7 @@ def sklearn_logistic_regression_tool(
             target_column=target_column,
             feature_columns=feature_columns,
             categorical_columns=categorical_columns,
+            sample_weight_column=sample_weight_column,
             C=C,
             l1_ratio=l1_ratio,
             solver=solver,

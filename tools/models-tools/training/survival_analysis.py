@@ -20,7 +20,7 @@ import numpy as np
 import pandas as pd
 from langchain.tools import tool
 from model_storage import generate_model_path, register_model
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 # Survival analysis imports
 try:
@@ -78,6 +78,7 @@ class SurvivalModelWrapper:
 
 class SurvivalTrainingInput(BaseModel):
     """Input schema for training a Survival Analysis model."""
+    model_config = ConfigDict(extra="forbid")
 
     # Model identification
     model_name: str = Field(
@@ -392,6 +393,7 @@ def train_survival_model(input_data: SurvivalTrainingInput) -> SurvivalTrainingO
 
 class SurvivalAnalysisToolInput(BaseModel):
     """Input for training a Survival Analysis model."""
+    model_config = ConfigDict(extra="forbid")
 
     model_name: str = Field(description="Unique model name for storage")
     description: str = Field(default="", description="Model description")

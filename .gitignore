@@ -9,6 +9,10 @@ __pycache__/
 # Sql files
 *.sql
 
+*.joblib
+*report.json
+*/trained_models/*
+
 # Distribution / packaging
 .Python
 build/

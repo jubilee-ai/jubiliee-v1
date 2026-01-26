@@ -56,17 +56,37 @@ def print_agent_output(result):
     print(f"  train_size: {result.get('train_size')}")
     print(f"  val_size: {result.get('val_size')}")
     print(f"  test_size: {result.get('test_size')}")
+    print(f"  val_accuracy: {result.get('val_accuracy')}")
+    print(f"  val_roc_auc: {result.get('val_roc_auc')}")
+    print(f"  test_accuracy: {result.get('test_accuracy')}")
+    print(f"  test_roc_auc: {result.get('test_roc_auc')}")
+    print(f"  num_iterations: {result.get('num_iterations')}")
     
     if result.get('error'):
-        print(f"\n  ❌ ERROR: {result.get('error')}")
+        print(f"\n  ERROR: {result.get('error')}")
     
     print("-" * 40)
     
-    if result.get('agent_response'):
-        print("\n[FULL AGENT RESPONSE]")
+    # Print iterations
+    if result.get('iterations'):
+        print("\n[ITERATIONS]")
+        for i, it in enumerate(result['iterations'], 1):
+            status = "OK" if it.get('success') else "FAIL"
+            print(f"  [{status}] {i}. {it.get('model_name')} - {it.get('tool')}")
+            if it.get('metrics'):
+                m = it['metrics']
+                print(f"       Accuracy: {m.get('val_accuracy')}, ROC-AUC: {m.get('roc_auc')}")
+    
+    # Print summary (replaces agent_response)
+    if result.get('summary'):
+        print("\n[SUMMARY]")
         print("=" * 60)
-        print(result['agent_response'])
+        print(result['summary'])
         print("=" * 60)
+    
+    if result.get('recommendations'):
+        print("\n[RECOMMENDATIONS]")
+        print(result['recommendations'])
 
 
 # =============================================================================
@@ -257,18 +277,18 @@ def test_training_agent_imbalanced():
     print(f"  Success: {result.get('success')}")
     print(f"  Model name: {result.get('model_name')}")
     
-    if result.get('agent_response'):
-        response = result['agent_response']
-        print(f"\n[AGENT RESPONSE] (first 1500 chars)")
+    if result.get('summary'):
+        response = result['summary']
+        print(f"\n[SUMMARY]")
         print("-" * 50)
-        print(response[:1500])
+        print(response)
         print("-" * 50)
         
         # Check if agent mentioned class imbalance
         if 'balanced' in response.lower() or 'imbalance' in response.lower():
-            print("\n✅ Agent recognized class imbalance!")
+            print("\nAgent recognized class imbalance!")
         else:
-            print("\n⚠️  Agent may not have addressed class imbalance")
+            print("\nAgent may not have addressed class imbalance (check iterations)")
     
     assert result.get('success'), f"Training failed: {result.get('error')}"
     
@@ -358,10 +378,10 @@ def test_training_agent_random_forest():
     print(f"  Success: {result.get('success')}")
     print(f"  Model type: {result.get('model_type')}")
     
-    if result.get('agent_response'):
-        print(f"\n[AGENT RESPONSE] (first 1500 chars)")
+    if result.get('summary'):
+        print(f"\n[SUMMARY]")
         print("-" * 50)
-        print(result['agent_response'][:1500])
+        print(result['summary'])
     
     assert result.get('success'), f"Training failed: {result.get('error')}"
     
@@ -440,10 +460,10 @@ def test_training_agent_xgboost():
     print(f"  Success: {result.get('success')}")
     print(f"  Model type: {result.get('model_type')}")
     
-    if result.get('agent_response'):
-        print(f"\n[AGENT RESPONSE] (first 1000 chars)")
+    if result.get('summary'):
+        print(f"\n[SUMMARY]")
         print("-" * 50)
-        print(result['agent_response'][:1000])
+        print(result['summary'])
     
     assert result.get('success'), f"Training failed: {result.get('error')}"
     
@@ -613,19 +633,20 @@ def test_iteration_behavior():
     )
     
     print(f"\n[RESULT] Success: {result.get('success')}")
+    print(f"  Num iterations: {result.get('num_iterations')}")
     
-    if result.get('agent_response'):
-        response = result['agent_response']
-        print(f"\n[AGENT RESPONSE] (first 2000 chars)")
+    if result.get('summary'):
+        print(f"\n[SUMMARY]")
         print("-" * 50)
-        print(response[:2000])
+        print(result['summary'])
         print("-" * 50)
-        
-        # Check for signs of iteration
-        if '_v2' in response or '_v3' in response or 'iteration 2' in response.lower():
-            print("\n✅ Agent performed multiple iterations!")
-        else:
-            print("\n⚠️ Agent may have stopped after first iteration (acceptable if metrics were okay)")
+    
+    # Check for signs of iteration
+    num_iterations = result.get('num_iterations', 0)
+    if num_iterations > 1:
+        print(f"\nAgent performed {num_iterations} iterations!")
+    else:
+        print("\nAgent stopped after first iteration (acceptable if metrics were okay)")
     
     print("\n✅ TEST 6 PASSED")
     return result
@@ -709,11 +730,13 @@ def test_full_pipeline_integration():
     print(f"  Train size: {result.get('train_size')}")
     print(f"  Val size: {result.get('val_size')}")
     print(f"  Test size: {result.get('test_size')}")
+    print(f"  Val accuracy: {result.get('val_accuracy')}")
+    print(f"  Test accuracy: {result.get('test_accuracy')}")
     
-    if result.get('agent_response'):
-        print(f"\n[AGENT RESPONSE] (first 1500 chars)")
+    if result.get('summary'):
+        print(f"\n[SUMMARY]")
         print("-" * 50)
-        print(result['agent_response'][:1500])
+        print(result['summary'])
     
     assert result.get('success'), f"Pipeline integration failed: {result.get('error')}"
     

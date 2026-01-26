@@ -55,7 +55,7 @@ from agents.statistical_analysis_agent import statistical_analysis_tool
 # LLM Setup
 # =============================================================================
 
-llm = ChatOpenAI(model="gpt-5.1", temperature=0)
+llm = ChatOpenAI(model="gpt-5-mini", temperature=0)
 
 # =============================================================================
 # Model Registry - Maps model names to their tool functions
