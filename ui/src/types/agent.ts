@@ -79,6 +79,157 @@ export interface TrainingMetrics {
   feature_redo_requested?: boolean
 }
 
+// Feature Analysis Types
+export interface FeatureCorrelation {
+  feature: string
+  correlation: number
+}
+
+export interface HighCorrelationPair {
+  feature1: string
+  feature2: string
+  correlation: number
+}
+
+export interface NumericSummary {
+  column: string
+  mean?: number
+  median?: number
+  std?: number
+  min?: number
+  max?: number
+  p5?: number
+  p95?: number
+  skew?: number
+  outliers_pct?: number
+}
+
+export interface HistogramBin {
+  range: string
+  count: number
+  pct: number
+}
+
+export interface DistributionStat {
+  column: string
+  n?: number
+  n_missing?: number
+  mean?: number
+  std?: number
+  min?: number
+  max?: number
+  skewness?: number
+  kurtosis?: number
+  is_normal?: string
+  shape?: string
+  modality?: string
+  histogram?: HistogramBin[]
+  percentiles?: Record<string, number>
+}
+
+export interface GroupData {
+  value: string
+  count?: number
+  mean?: number
+}
+
+export interface GroupSummary {
+  column: string
+  n_groups: number
+  total_rows?: number
+  groups: GroupData[]
+  overall_mean?: number
+}
+
+export interface LorenzPoint {
+  pct_entities: number
+  pct_value: number
+}
+
+export interface ConcentrationStat {
+  column: string
+  gini?: number
+  gini_interpretation?: string
+  mean?: number
+  median?: number
+  top_1pct_share?: number
+  top_10pct_share?: number
+  top_50pct_share?: number
+  pareto_80pct?: number
+  lorenz_curve?: LorenzPoint[]
+}
+
+export interface FeatureHealth {
+  column: string
+  null_pct?: number
+  skew?: number
+  leakage_risk?: string
+  redundancy_group?: string
+}
+
+export interface CorrelationMatrix {
+  columns: string[]
+  matrix: Record<string, Record<string, number>>
+}
+
+export interface KeyStats {
+  dataset_overview: {
+    rows?: number
+    columns?: number
+    numeric_columns?: number
+    categorical_columns?: number
+  }
+  target_analysis: {
+    type?: "numeric" | "categorical"
+    column?: string
+    mean?: number
+    std?: number
+    min?: number
+    max?: number
+    median?: number
+    unique_values?: number
+    top_value?: string
+    top_freq?: number
+  }
+  schema?: Array<{
+    column: string
+    dtype: string
+    null_pct: number
+    unique?: number
+  }>
+  numeric_summaries: NumericSummary[]
+  feature_correlations: FeatureCorrelation[]
+  correlation_matrix?: CorrelationMatrix
+  high_correlation_pairs: HighCorrelationPair[]
+  distribution_stats: DistributionStat[]
+  feature_health?: FeatureHealth[]
+  diagnostics_summary?: {
+    features_checked: number
+    drop: number
+    transform: number
+    keep_as_is: number
+  }
+  leakage_warnings: string[]
+  categorical_summaries: Array<{
+    column: string
+    groups: string[]
+    group_count: number
+  }>
+  group_summaries?: GroupSummary[]
+  concentration_analysis: ConcentrationStat[]
+  feature_importances?: Array<{feature: string; importance: number}>
+  summary_text: string
+}
+
+export interface FeatureAnalysisTrace {
+  step: string
+  analysis_results?: Record<string, unknown>
+  key_stats?: KeyStats
+  validation?: Record<string, unknown>
+  is_redo?: boolean
+  redo_recommendation?: string
+}
+
 export interface AuditTraceItem {
   step: string
   [key: string]: unknown

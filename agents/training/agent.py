@@ -305,10 +305,23 @@ def feature_selection_specification(state: TrainingAgentState) -> TrainingAgentS
         prediction_horizon=prediction_horizon,
     )
     
-    # Extract feature_spec
+    # Extract feature_spec and key statistics
     feature_spec = result.get("feature_spec")
     validation = result.get("validation", {})
     analysis_results = result.get("analysis_results", {})
+    key_stats = result.get("key_stats", {})
+    
+    # Log key statistics for visibility
+    if key_stats:
+        print(f"[feature_selection_specification] Key statistics extracted:")
+        print(f"  - Dataset: {key_stats.get('dataset_overview', {}).get('rows', '?')} rows, {key_stats.get('dataset_overview', {}).get('columns', '?')} columns")
+        if key_stats.get("feature_correlations"):
+            top_corr = key_stats["feature_correlations"][0]
+            print(f"  - Top correlation: {top_corr.get('feature')} (r={top_corr.get('correlation')})")
+        if key_stats.get("leakage_warnings"):
+            print(f"  - ⚠️ Leakage warnings: {len(key_stats['leakage_warnings'])} features")
+        if key_stats.get("high_correlation_pairs"):
+            print(f"  - High correlation pairs: {len(key_stats['high_correlation_pairs'])}")
     
     # Check validation and auto-remove invalid features (e.g., leakage)
     if validation and not validation.get("valid", True):
@@ -337,6 +350,7 @@ def feature_selection_specification(state: TrainingAgentState) -> TrainingAgentS
             {
                 "step": "feature_selection_specification",
                 "analysis_results": analysis_results,
+                "key_stats": key_stats,  # Structured stats for frontend display
                 "validation": validation,
                 "is_redo": feature_redo_requested,
                 "redo_recommendation": feature_redo_recommendation,
@@ -1112,9 +1126,31 @@ def stream_training_agent_with_updates(
             elif node_name == "feature_selection_specification":
                 feature_spec = node_output.get("feature_spec", {}) or {}
                 features = feature_spec.get("features", [])
+                analysis_trace = node_output.get("analysis_trace", [])
+                
+                # Extract key_stats from analysis_trace
+                key_stats = {}
+                if analysis_trace:
+                    key_stats = analysis_trace[0].get("key_stats", {}) if len(analysis_trace) > 0 else {}
+                
                 update["summary"] = {
                     "num_features": len(features),
                     "feature_names": [f.get("name") for f in features[:10]],  # First 10
+                    # Include all key statistics in summary for chat display
+                    "dataset_overview": key_stats.get("dataset_overview", {}),
+                    "target_analysis": key_stats.get("target_analysis", {}),
+                    "numeric_summaries": key_stats.get("numeric_summaries", []),  # Full numeric stats
+                    "feature_correlations": key_stats.get("feature_correlations", []),  # All correlations
+                    "correlation_matrix": key_stats.get("correlation_matrix", {}),
+                    "high_correlation_pairs": key_stats.get("high_correlation_pairs", []),
+                    "leakage_warnings": key_stats.get("leakage_warnings", []),
+                    "feature_health": key_stats.get("feature_health", []),
+                    "distribution_stats": key_stats.get("distribution_stats", []),  # With histograms
+                    "group_summaries": key_stats.get("group_summaries", []),  # Categorical analysis
+                    "concentration_analysis": key_stats.get("concentration_analysis", []),  # With Lorenz curves
+                    "categorical_summaries": key_stats.get("categorical_summaries", []),
+                    "schema": key_stats.get("schema", []),
+                    "summary_text": key_stats.get("summary_text", ""),
                 }
                 update["details"] = {
                     "title": "Feature Selection Complete",
@@ -1127,7 +1163,9 @@ def stream_training_agent_with_updates(
                         }
                         for f in features
                     ],
-                    "analysis_trace": node_output.get("analysis_trace", [])[:3],  # First 3 analysis items
+                    # Full analysis data for report display
+                    "key_stats": key_stats,
+                    "analysis_trace": analysis_trace,
                 }
                 
             elif node_name == "feature_engineering_executor":

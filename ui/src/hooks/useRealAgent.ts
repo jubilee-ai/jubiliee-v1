@@ -256,13 +256,15 @@ export function useRealAgent(): UseRealAgentReturn {
     const details = event.details as Record<string, unknown> | undefined
     const summary = event.summary as Record<string, unknown> | undefined
     
+    console.log("[formatStreamDetails] node:", event.node, "details:", !!details, "summary:", !!summary)
+    
     if (!details && !summary) return ""
     
     const lines: string[] = []
     
     // Use details.title and description if available
     if (details?.title) {
-      lines.push(`**${details.title}**`)
+      lines.push(`**${String(details.title)}**`)
     }
     if (details?.description) {
       lines.push(String(details.description))
@@ -346,9 +348,132 @@ export function useRealAgent(): UseRealAgentReturn {
       if (summary.val_ref) lines.push(`Validation: \`${summary.val_ref}\``)
       if (summary.test_ref) lines.push(`Test: \`${summary.test_ref}\``)
     } else if (nodeName === "feature_selection_specification" && summary) {
-      if (summary.num_features) lines.push(`Features specified: ${summary.num_features}`)
-      if (summary.feature_names && Array.isArray(summary.feature_names)) {
-        lines.push(`Features: ${summary.feature_names.slice(0, 6).join(", ")}${summary.feature_names.length > 6 ? "..." : ""}`)
+      try {
+        // Summary text
+        if (summary.summary_text) {
+          lines.push(`**Summary:** ${String(summary.summary_text)}`)
+          lines.push("")
+        }
+        
+        // Dataset overview
+        const overview = summary.dataset_overview
+        if (overview && typeof overview === "object") {
+          const ov = overview as Record<string, unknown>
+          if (ov.rows) {
+            lines.push(`📊 **Dataset Overview**`)
+            lines.push(`- Rows: ${String(ov.rows).replace(/\B(?=(\d{3})+(?!\d))/g, ",")}`)
+            lines.push(`- Columns: ${ov.columns || "N/A"}`)
+            if (ov.numeric_columns != null || ov.categorical_columns != null) {
+              lines.push(`- Numeric: ${ov.numeric_columns || 0}, Categorical: ${ov.categorical_columns || 0}`)
+            }
+            lines.push("")
+          }
+        }
+        
+        // Target analysis
+        const target = summary.target_analysis
+        if (target && typeof target === "object") {
+          const t = target as Record<string, unknown>
+          if (t.type) {
+            lines.push(`🎯 **Target Column Analysis**`)
+            if (t.type === "numeric") {
+              lines.push(`- Type: Numeric`)
+              if (t.mean != null) lines.push(`- Mean: ${Number(t.mean).toFixed(4)}`)
+              if (t.std != null) lines.push(`- Std Dev: ${Number(t.std).toFixed(4)}`)
+              if (t.min != null && t.max != null) lines.push(`- Range: [${Number(t.min).toFixed(2)}, ${Number(t.max).toFixed(2)}]`)
+            } else if (t.type === "categorical") {
+              lines.push(`- Type: Categorical`)
+              if (t.unique_values) lines.push(`- Unique values: ${t.unique_values}`)
+              if (t.top_value) lines.push(`- Most common: "${t.top_value}" (${t.top_freq} occurrences)`)
+            }
+            lines.push("")
+          }
+        }
+        
+        // Feature correlations with target
+        const correlations = summary.feature_correlations
+        if (correlations && Array.isArray(correlations) && correlations.length > 0) {
+          lines.push(`📈 **Top Feature Correlations with Target**`)
+          correlations.slice(0, 5).forEach((c: unknown, i: number) => {
+            if (c && typeof c === "object") {
+              const corr = c as {feature?: string; correlation?: number}
+              const corrValue = Number(corr.correlation || 0)
+              const bar = corrValue >= 0 ? "▓".repeat(Math.min(10, Math.round(Math.abs(corrValue) * 10))) : "░".repeat(Math.min(10, Math.round(Math.abs(corrValue) * 10)))
+              lines.push(`${i + 1}. **${corr.feature || "unknown"}**: ${corrValue >= 0 ? '+' : ''}${corrValue.toFixed(4)} ${bar}`)
+            }
+          })
+          lines.push("")
+        }
+        
+        // High correlation pairs (multicollinearity)
+        const highCorr = summary.high_correlation_pairs
+        if (highCorr && Array.isArray(highCorr) && highCorr.length > 0) {
+          lines.push(`⚠️ **High Correlation Pairs** (potential multicollinearity)`)
+          highCorr.slice(0, 3).forEach((p: unknown) => {
+            if (p && typeof p === "object") {
+              const pair = p as {feature1?: string; feature2?: string; correlation?: number}
+              lines.push(`- ${pair.feature1 || "?"} ↔ ${pair.feature2 || "?"}: ${Number(pair.correlation || 0).toFixed(4)}`)
+            }
+          })
+          lines.push("")
+        }
+        
+        // Leakage warnings
+        const leakage = summary.leakage_warnings
+        if (leakage && Array.isArray(leakage) && leakage.length > 0) {
+          lines.push(`🚨 **Leakage Warnings**`)
+          leakage.forEach((f: unknown) => {
+            lines.push(`- ⚠️ ${String(f)}`)
+          })
+          lines.push("")
+        }
+        
+        // Distribution stats
+        const distStats = summary.distribution_stats
+        if (distStats && Array.isArray(distStats) && distStats.length > 0) {
+          const skewedCols = distStats.filter((d: unknown) => {
+            if (d && typeof d === "object") {
+              const stat = d as {skewness?: number}
+              return stat.skewness != null && Math.abs(stat.skewness) > 1
+            }
+            return false
+          })
+          const outlierCols = distStats.filter((d: unknown) => {
+            if (d && typeof d === "object") {
+              const stat = d as {outlier_pct?: number}
+              return stat.outlier_pct != null && stat.outlier_pct > 5
+            }
+            return false
+          })
+          if (skewedCols.length > 0 || outlierCols.length > 0) {
+            lines.push(`📉 **Distribution Insights**`)
+            if (skewedCols.length > 0) {
+              lines.push(`- Highly skewed columns: ${skewedCols.map((d: unknown) => {
+                const stat = d as {column?: string; skewness?: number}
+                return `${stat.column || "?"} (${stat.skewness?.toFixed(2) || "?"})`
+              }).join(", ")}`)
+            }
+            if (outlierCols.length > 0) {
+              lines.push(`- Columns with outliers: ${outlierCols.map((d: unknown) => {
+                const stat = d as {column?: string; outlier_pct?: number}
+                return `${stat.column || "?"} (${stat.outlier_pct?.toFixed(1) || "?"}%)`
+              }).join(", ")}`)
+            }
+            lines.push("")
+          }
+        }
+        
+        // Features specified - always show this
+        if (summary.num_features) {
+          lines.push(`✅ **Features Specified: ${summary.num_features}**`)
+          if (summary.feature_names && Array.isArray(summary.feature_names)) {
+            const names = summary.feature_names.map((n: unknown) => String(n))
+            lines.push(`\`${names.slice(0, 8).join("\`, \`")}\`${names.length > 8 ? ` ... +${names.length - 8} more` : ""}`)
+          }
+        }
+      } catch (err) {
+        console.error("[formatStreamDetails] Error formatting feature_selection_specification:", err)
+        lines.push(`Feature selection completed with ${summary.num_features || "?"} features`)
       }
     } else if (nodeName === "feature_engineering_executor" && summary) {
       if (summary.features_created && Array.isArray(summary.features_created)) {
@@ -459,8 +584,141 @@ export function useRealAgent(): UseRealAgentReturn {
       }
       
       // Format and show detailed info in chat
-      const formattedDetails = formatStreamDetails(event)
-      if (formattedDetails) {
+      let formattedDetails = ""
+      try {
+        formattedDetails = formatStreamDetails(event)
+      } catch (err) {
+        console.error("[stream] Error formatting details:", err)
+      }
+      
+      console.log("[stream] formattedDetails for", nodeName, "length:", formattedDetails?.length || 0)
+      
+      // For feature_selection_specification, always create a detailed message
+      if (nodeName === "feature_selection_specification") {
+        const summary = event.summary as Record<string, unknown> | undefined
+        const details = event.details as Record<string, unknown> | undefined
+        const messageLines: string[] = []
+        
+        messageLines.push("## ✅ Feature Selection Complete")
+        messageLines.push("")
+        
+        if (details?.description) {
+          messageLines.push(`> ${String(details.description)}`)
+          messageLines.push("")
+        }
+        
+        if (summary) {
+          // Dataset overview - compact inline format
+          const overview = summary.dataset_overview as Record<string, unknown> | undefined
+          if (overview?.rows) {
+            messageLines.push("### 📊 Dataset Overview")
+            messageLines.push("")
+            messageLines.push(`**${String(overview.rows).replace(/\B(?=(\d{3})+(?!\d))/g, ",")} rows** × **${overview.columns} columns** • ${overview.numeric_columns || 0} numeric • ${overview.categorical_columns || 0} categorical`)
+            messageLines.push("")
+          }
+          
+          // Numeric summaries - compact card style
+          const numericSummaries = summary.numeric_summaries as Array<{column?: string; mean?: number; std?: number; min?: number; max?: number; skew?: number}> | undefined
+          if (numericSummaries && Array.isArray(numericSummaries) && numericSummaries.length > 0) {
+            messageLines.push("### 📈 Numeric Features")
+            messageLines.push("")
+            numericSummaries.slice(0, 6).forEach((s) => {
+              if (s && typeof s === "object") {
+                const skewWarning = s.skew && Math.abs(s.skew) > 1 ? " ⚠️" : ""
+                messageLines.push(`**${s.column}**${skewWarning}`)
+                messageLines.push(`Mean: \`${s.mean?.toLocaleString() ?? "N/A"}\` • Std: \`${s.std?.toLocaleString() ?? "N/A"}\` • Range: \`${s.min?.toLocaleString() ?? "?"}\` → \`${s.max?.toLocaleString() ?? "?"}\``)
+                messageLines.push("")
+              }
+            })
+            if (numericSummaries.length > 6) {
+              messageLines.push(`*+ ${numericSummaries.length - 6} more numeric features*`)
+              messageLines.push("")
+            }
+          }
+          
+          // Feature correlations - visual bar representation
+          const correlations = summary.feature_correlations as Array<{feature?: string; correlation?: number}> | undefined
+          if (correlations && Array.isArray(correlations) && correlations.length > 0) {
+            messageLines.push("### 🎯 Target Correlations")
+            messageLines.push("")
+            correlations.slice(0, 6).forEach((c) => {
+              if (c && typeof c === "object") {
+                const corrValue = Number(c.correlation || 0)
+                const absCorr = Math.abs(corrValue)
+                const barLength = Math.round(absCorr * 20) // max 20 chars
+                const bar = corrValue >= 0 ? "█".repeat(barLength) : "▓".repeat(barLength)
+                const sign = corrValue >= 0 ? "+" : ""
+                const color = corrValue >= 0 ? "🟢" : "🔴"
+                messageLines.push(`${color} \`${c.feature?.padEnd(16) || "unknown".padEnd(16)}\` ${bar.padEnd(4)} **${sign}${corrValue.toFixed(3)}**`)
+              }
+            })
+            messageLines.push("")
+          }
+          
+          // Leakage warnings
+          const leakage = summary.leakage_warnings as string[] | undefined
+          if (leakage && Array.isArray(leakage) && leakage.length > 0) {
+            messageLines.push("### 🚨 Leakage Warnings")
+            messageLines.push("")
+            leakage.forEach((f) => {
+              messageLines.push(`> ⚠️ **${String(f)}** may cause data leakage`)
+            })
+            messageLines.push("")
+          }
+          
+          // High correlation pairs
+          const highCorr = summary.high_correlation_pairs as Array<{feature1?: string; feature2?: string; correlation?: number}> | undefined
+          if (highCorr && Array.isArray(highCorr) && highCorr.length > 0) {
+            messageLines.push("### ⚠️ Multicollinearity")
+            messageLines.push("")
+            highCorr.slice(0, 3).forEach((p) => {
+              if (p && typeof p === "object") {
+                messageLines.push(`\`${p.feature1 || "?"}\` ↔ \`${p.feature2 || "?"}\` = **${Number(p.correlation || 0).toFixed(3)}**`)
+              }
+            })
+            messageLines.push("")
+          }
+          
+          // Group summaries (categorical analysis) - compact horizontal
+          const groupSummaries = summary.group_summaries as Array<{column?: string; n_groups?: number; groups?: Array<{value?: string; mean?: number}>}> | undefined
+          if (groupSummaries && Array.isArray(groupSummaries) && groupSummaries.length > 0) {
+            messageLines.push("### 📋 Categorical Feature Breakdown")
+            messageLines.push("")
+            groupSummaries.slice(0, 4).forEach((g) => {
+              if (g && typeof g === "object" && g.groups && Array.isArray(g.groups)) {
+                const groupStr = g.groups.slice(0, 4).map((grp) => {
+                  if (grp && typeof grp === "object") {
+                    return `${grp.value}: **${((grp.mean || 0) * 100).toFixed(0)}%**`
+                  }
+                  return ""
+                }).filter(Boolean).join(" • ")
+                messageLines.push(`**${g.column}** → ${groupStr}`)
+              }
+            })
+            messageLines.push("")
+          }
+          
+          // Features specified - clean list
+          if (summary.num_features) {
+            messageLines.push("---")
+            messageLines.push("")
+            messageLines.push(`### ✅ ${summary.num_features} Features Selected`)
+            messageLines.push("")
+            if (summary.feature_names && Array.isArray(summary.feature_names)) {
+              const names = summary.feature_names.map((n: unknown) => String(n))
+              messageLines.push(`\`${names.slice(0, 10).join("\` • \`")}\`${names.length > 10 ? ` *+${names.length - 10} more*` : ""}`)
+            }
+          }
+          
+          messageLines.push("")
+          messageLines.push("---")
+          messageLines.push("*📊 View the **Analysis** tab in the report for histograms, Lorenz curves, and more.*")
+        }
+        
+        const finalMessage = messageLines.join("\n")
+        console.log("[stream] feature_selection message:", finalMessage.substring(0, 500))
+        addMessage("agent", finalMessage)
+      } else if (formattedDetails && formattedDetails.trim()) {
         addMessage("agent", formattedDetails)
       } else {
         // Fallback to simple message

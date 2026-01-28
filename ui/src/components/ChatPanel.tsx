@@ -374,8 +374,11 @@ export const ChatPanel = forwardRef<ChatPanelRef, ChatPanelProps>(function ChatP
   )
 })
 
+const MAX_CONTENT_LENGTH = 400 // Characters before truncation
+
 const MessageBubble = forwardRef<HTMLDivElement, { message: ChatMessage; isHighlighted?: boolean; onViewReport?: () => void }>(
   function MessageBubble({ message, isHighlighted, onViewReport }, ref) {
+    const [isExpanded, setIsExpanded] = useState(false)
     const isUser = message.role === "user"
     const isSystem = message.role === "system"
     
@@ -383,6 +386,11 @@ const MessageBubble = forwardRef<HTMLDivElement, { message: ChatMessage; isHighl
     const hasViewReport = !isUser && !isSystem && 
       (message.content.toLowerCase().includes("view report") || 
        message.content.toLowerCase().includes("training completed"))
+
+    const shouldTruncate = message.content.length > MAX_CONTENT_LENGTH
+    const displayContent = shouldTruncate && !isExpanded
+      ? message.content.slice(0, MAX_CONTENT_LENGTH) + "..."
+      : message.content
 
     if (isSystem) {
       return (
@@ -417,8 +425,19 @@ const MessageBubble = forwardRef<HTMLDivElement, { message: ChatMessage; isHighl
           )}
         >
           <div className="text-[15px] leading-relaxed prose prose-sm dark:prose-invert max-w-none prose-p:my-1 prose-p:leading-relaxed prose-headings:my-2 prose-headings:font-medium prose-ul:my-1 prose-ol:my-1 prose-li:my-0 prose-code:bg-black/5 prose-code:dark:bg-white/10 prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded-md prose-code:text-[13px] prose-code:font-normal prose-code:before:content-none prose-code:after:content-none prose-strong:font-semibold">
-            <ReactMarkdown>{message.content}</ReactMarkdown>
+            <ReactMarkdown>{displayContent}</ReactMarkdown>
           </div>
+          {shouldTruncate && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation()
+                setIsExpanded(!isExpanded)
+              }}
+              className="mt-2 text-sm text-muted-foreground hover:text-foreground transition-colors font-medium"
+            >
+              {isExpanded ? "Show less" : "Show more"}
+            </button>
+          )}
           {hasViewReport && onViewReport && (
             <button
               onClick={(e) => {
