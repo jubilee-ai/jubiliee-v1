@@ -4,10 +4,11 @@ import { ScrollArea } from "@/components/ui/scroll-area"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
 import { Badge } from "@/components/ui/badge"
-import type { ChatMessage, ConfirmationRequest, ConfirmationAction, Dataset } from "@/types/agent"
+import type { ChatMessage, ConfirmationRequest, ConfirmationAction, Dataset, TrainingAgentState, StepInfo } from "@/types/agent"
 import { cn } from "@/lib/utils"
 import { AVAILABLE_DATASETS, AVAILABLE_MODELS } from "@/lib/mockAgent"
 import type { Dataset as ApiDataset, ModelType } from "@/lib/api"
+import { StepDetailModal } from "@/components/StepDetailModal"
 import {
   Send,
   User,
@@ -19,6 +20,7 @@ import {
   FastForward,
   X,
   FileText,
+  ChevronRight,
 } from "lucide-react"
 import {
   Dialog,
@@ -40,11 +42,128 @@ interface ChatPanelProps {
   highlightedMessageId?: string | null
   onClearHighlight?: () => void
   onViewReport?: () => void
+  agentState?: TrainingAgentState
+  steps?: StepInfo[]
 }
 
 export interface ChatPanelRef {
   scrollToMessage: (messageId: string) => void
   findMessageByStepName: (stepName: string) => string | null
+}
+
+// Step detection - ordered from most specific to least specific
+// Each entry has keywords that should be unique to that step
+const STEP_PATTERNS: Array<{ stepId: string; patterns: RegExp[] }> = [
+  // Report - check first, very specific phrases
+  {
+    stepId: "generate_report",
+    patterns: [
+      /training pipeline complete/i,
+      /report generated/i,
+      /generate_report/i,
+      /pipeline complete.*view report/i,
+    ]
+  },
+  // Training - specific training result patterns
+  {
+    stepId: "training",
+    patterns: [
+      /training complete/i,
+      /model trained/i,
+      /test accuracy[:\s]/i,
+      /test r[²2][:\s]/i,
+      /roc-auc[:\s]/i,
+      /training iteration/i,
+      /model performance/i,
+      /val_accuracy/i,
+      /test_accuracy/i,
+    ]
+  },
+  // Feature Engineering - specific to execution
+  {
+    stepId: "feature_engineering_executor",
+    patterns: [
+      /feature engineering complete/i,
+      /features created/i,
+      /features engineered/i,
+      /feature engineering executor/i,
+      /transformed dataset/i,
+    ]
+  },
+  // Feature Selection - analysis phase
+  {
+    stepId: "feature_selection_specification",
+    patterns: [
+      /feature selection complete/i,
+      /feature selection specification/i,
+      /features specified/i,
+      /feature analysis/i,
+      /analyzing features/i,
+      /correlation analysis/i,
+    ]
+  },
+  // Label/Split Definition
+  {
+    stepId: "label_split_definition",
+    patterns: [
+      /label definition/i,
+      /label.+split/i,
+      /split definition/i,
+      /target column[:\s]/i,
+      /train\/val\/test/i,
+      /split strategy/i,
+      /70\/15\/15/i,
+    ]
+  },
+  // Cleaning
+  {
+    stepId: "cleaning",
+    patterns: [
+      /cleaning complete/i,
+      /data cleaning/i,
+      /cleaning.+standardization/i,
+      /transformations applied/i,
+      /cleaned dataset/i,
+      /missing values (filled|imputed|handled)/i,
+    ]
+  },
+  // Data Collection
+  {
+    stepId: "data_collection",
+    patterns: [
+      /data collection complete/i,
+      /dataset loaded/i,
+      /loading dataset/i,
+      /loaded.*rows/i,
+      /\d+\s+rows.*\d+\s+columns/i,
+    ]
+  },
+  // Model Selection - last because "model" is common
+  {
+    stepId: "select_model",
+    patterns: [
+      /model selection complete/i,
+      /selected.*as the optimal model/i,
+      /selected model[:\s]/i,
+      /model:\s*(logistic_regression|random_forest|xgboost|gradient_boost)/i,
+      /choosing.*model/i,
+    ]
+  },
+]
+
+function detectStepFromMessage(content: string): string | null {
+  // Don't make messages clickable if they already have "View Report" CTA
+  // These are final completion messages that have the View Report button
+  if (/view report/i.test(content) || /click.*report/i.test(content)) {
+    return null
+  }
+  
+  for (const { stepId, patterns } of STEP_PATTERNS) {
+    if (patterns.some(pattern => pattern.test(content))) {
+      return stepId
+    }
+  }
+  return null
 }
 
 export const ChatPanel = forwardRef<ChatPanelRef, ChatPanelProps>(function ChatPanel({
@@ -59,6 +178,8 @@ export const ChatPanel = forwardRef<ChatPanelRef, ChatPanelProps>(function ChatP
   highlightedMessageId,
   onClearHighlight,
   onViewReport,
+  agentState,
+  steps,
 }, ref) {
   const availableDatasets = propDatasets && propDatasets.length > 0 
     ? propDatasets 
@@ -70,6 +191,7 @@ export const ChatPanel = forwardRef<ChatPanelRef, ChatPanelProps>(function ChatP
   const [draft, setDraft] = useState("")
   const [redoComment, setRedoComment] = useState("")
   const [showDatasetPicker, setShowDatasetPicker] = useState(false)
+  const [selectedStepId, setSelectedStepId] = useState<string | null>(null)
   const messageRefs = useRef<Map<string, HTMLDivElement>>(new Map())
 
   // Expose methods to parent via ref
@@ -190,18 +312,27 @@ export const ChatPanel = forwardRef<ChatPanelRef, ChatPanelProps>(function ChatP
             </div>
           )}
 
-          {messages.map((msg) => (
-            <MessageBubble 
-              key={msg.id} 
-              message={msg} 
-              isHighlighted={highlightedMessageId === msg.id}
-              onViewReport={onViewReport}
-              ref={(el) => {
-                if (el) messageRefs.current.set(msg.id, el)
-                else messageRefs.current.delete(msg.id)
-              }}
-            />
-          ))}
+          {messages.map((msg) => {
+            const detectedStep = msg.role === "agent" ? detectStepFromMessage(msg.content) : null
+            const stepInfo = detectedStep && steps ? steps.find(s => s.id === detectedStep) : null
+            const isClickable = !!detectedStep && !!agentState && !!steps && stepInfo?.status === "completed"
+            
+            return (
+              <MessageBubble 
+                key={msg.id} 
+                message={msg} 
+                isHighlighted={highlightedMessageId === msg.id}
+                onViewReport={onViewReport}
+                stepId={detectedStep}
+                isClickable={isClickable}
+                onStepClick={isClickable ? () => setSelectedStepId(detectedStep) : undefined}
+                ref={(el) => {
+                  if (el) messageRefs.current.set(msg.id, el)
+                  else messageRefs.current.delete(msg.id)
+                }}
+              />
+            )
+          })}
 
           {/* Confirmation Panel */}
           {confirmationRequest && (
@@ -370,14 +501,33 @@ export const ChatPanel = forwardRef<ChatPanelRef, ChatPanelProps>(function ChatP
           </div>
         </div>
       </div>
+
+      {/* Step Detail Modal */}
+      {selectedStepId && agentState && steps && (
+        <StepDetailModal
+          stepId={selectedStepId}
+          agentState={agentState}
+          steps={steps}
+          onClose={() => setSelectedStepId(null)}
+        />
+      )}
     </div>
   )
 })
 
 const MAX_CONTENT_LENGTH = 400 // Characters before truncation
 
-const MessageBubble = forwardRef<HTMLDivElement, { message: ChatMessage; isHighlighted?: boolean; onViewReport?: () => void }>(
-  function MessageBubble({ message, isHighlighted, onViewReport }, ref) {
+interface MessageBubbleProps {
+  message: ChatMessage
+  isHighlighted?: boolean
+  onViewReport?: () => void
+  stepId?: string | null
+  isClickable?: boolean
+  onStepClick?: () => void
+}
+
+const MessageBubble = forwardRef<HTMLDivElement, MessageBubbleProps>(
+  function MessageBubble({ message, isHighlighted, onViewReport, stepId, isClickable, onStepClick }, ref) {
     const [isExpanded, setIsExpanded] = useState(false)
     const isUser = message.role === "user"
     const isSystem = message.role === "system"
@@ -400,6 +550,12 @@ const MessageBubble = forwardRef<HTMLDivElement, { message: ChatMessage; isHighl
       )
     }
 
+    const handleBubbleClick = () => {
+      if (isClickable && onStepClick) {
+        onStepClick()
+      }
+    }
+
     return (
       <div 
         ref={ref}
@@ -418,15 +574,19 @@ const MessageBubble = forwardRef<HTMLDivElement, { message: ChatMessage; isHighl
           {isUser ? <User className="h-3.5 w-3.5" /> : <Bot className="h-3.5 w-3.5 text-muted-foreground" />}
         </div>
         <div
+          onClick={handleBubbleClick}
           className={cn(
             "flex-1 max-w-[92%] rounded-2xl px-4 py-3 transition-all duration-300",
             isUser ? "bg-foreground text-background" : "bg-muted/50",
-            isHighlighted && "ring-2 ring-foreground/20 shadow-lg"
+            isHighlighted && "ring-2 ring-foreground/20 shadow-lg",
+            isClickable && "cursor-pointer hover:bg-muted/70 hover:shadow-md group"
           )}
         >
           <div className="text-[15px] leading-relaxed prose prose-sm dark:prose-invert max-w-none prose-p:my-1 prose-p:leading-relaxed prose-headings:my-2 prose-headings:font-medium prose-ul:my-1 prose-ol:my-1 prose-li:my-0 prose-code:bg-black/5 prose-code:dark:bg-white/10 prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded-md prose-code:text-[13px] prose-code:font-normal prose-code:before:content-none prose-code:after:content-none prose-strong:font-semibold">
             <ReactMarkdown>{displayContent}</ReactMarkdown>
           </div>
+          
+          {/* Show more/less button */}
           {shouldTruncate && (
             <button
               onClick={(e) => {
@@ -438,6 +598,16 @@ const MessageBubble = forwardRef<HTMLDivElement, { message: ChatMessage; isHighl
               {isExpanded ? "Show less" : "Show more"}
             </button>
           )}
+          
+          {/* View Details hint for clickable messages */}
+          {isClickable && (
+            <div className="mt-3 flex items-center gap-1.5 text-xs text-muted-foreground group-hover:text-foreground transition-colors">
+              <span>Click for details</span>
+              <ChevronRight className="h-3 w-3 group-hover:translate-x-0.5 transition-transform" />
+            </div>
+          )}
+          
+          {/* View Report button */}
           {hasViewReport && onViewReport && (
             <button
               onClick={(e) => {

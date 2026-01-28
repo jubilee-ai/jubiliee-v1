@@ -124,6 +124,8 @@ export default function App() {
                 highlightedMessageId={highlightedMessageId}
                 onClearHighlight={handleClearHighlight}
                 onViewReport={() => setShowReport(true)}
+                agentState={agent.agentState}
+                steps={agent.steps}
               />
             </div>
           </div>
