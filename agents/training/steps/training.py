@@ -21,19 +21,20 @@ from langchain.chat_models import init_chat_model
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 
-from agents.training.prompts import TRAINING_SYSTEM_PROMPT
+from ..utils.prompts import TRAINING_SYSTEM_PROMPT
 
-load_dotenv(Path(__file__).parent.parent.parent / ".env")
+load_dotenv(Path(__file__).parent.parent.parent.parent / ".env")
 
 # TODO: More hyperparameters (e.g. sample weights... and for each model...)
 
 # Add tools path
-_TOOLS_DIR = Path(__file__).parent.parent.parent / "tools" / "models-tools" / "training"
+# Path: steps -> training -> agents -> root -> tools/models-tools/training
+_TOOLS_DIR = Path(__file__).parent.parent.parent.parent / "tools" / "models-tools" / "training"
 if str(_TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(_TOOLS_DIR))
 
 # Add data-tools path for utils
-_DATA_TOOLS_DIR = Path(__file__).parent.parent.parent / "tools" / "data-tools"
+_DATA_TOOLS_DIR = Path(__file__).parent.parent.parent.parent / "tools" / "data-tools"
 if str(_DATA_TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(_DATA_TOOLS_DIR))
 
@@ -600,11 +601,15 @@ Begin training now.
                 "tool": it.tool_used,
                 "hyperparams": it.hyperparams,
                 "metrics": {
-                    # Classification
+                    # Classification (kept for backward compat)
                     "train_accuracy": it.train_accuracy,
                     "val_accuracy": it.val_accuracy,
                     "roc_auc": it.val_roc_auc,
                 },
+                # Classification metrics (top level for UI access)
+                "train_accuracy": it.train_accuracy,
+                "val_accuracy": it.val_accuracy,
+                "val_roc_auc": it.val_roc_auc,
                 # Regression metrics (top level for easier access)
                 "train_r2": it.train_r2,
                 "val_r2": it.val_r2,

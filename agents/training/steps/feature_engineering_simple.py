@@ -20,12 +20,13 @@ from langchain.chat_models import init_chat_model
 from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel, Field
 
-from agents.training.prompts import FEATURE_ENGINEERING_SIMPLE_SYSTEM_PROMPT
+from ..utils.prompts import FEATURE_ENGINEERING_SIMPLE_SYSTEM_PROMPT
 
-load_dotenv(Path(__file__).parent.parent.parent / ".env")
+load_dotenv(Path(__file__).parent.parent.parent.parent / ".env")
 
 # Add data-tools to path
-_DATA_TOOLS_DIR = Path(__file__).parent.parent.parent / "tools" / "data-tools"
+# Path: steps -> training -> agents -> root -> tools/data-tools
+_DATA_TOOLS_DIR = Path(__file__).parent.parent.parent.parent / "tools" / "data-tools"
 if str(_DATA_TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(_DATA_TOOLS_DIR))
 
@@ -34,11 +35,11 @@ from analysis import (analyze_concentration, analyze_distribution,
                       run_eda_report, run_feature_diagnostics)
 from transformations.tool_utils import resolve_dataset
 
-from agents.training.feature_engineering import (AsOfConstraint,
-                                                 FeatureDefinition,
-                                                 FeatureSpec, FormulaOp,
-                                                 _extract_columns_from_formula,
-                                                 validate_feature_spec)
+from .feature_engineering import (AsOfConstraint,
+                                  FeatureDefinition,
+                                  FeatureSpec, FormulaOp,
+                                  _extract_columns_from_formula,
+                                  validate_feature_spec)
 
 # =============================================================================
 # IMPORT SHARED TYPES FROM MAIN MODULE

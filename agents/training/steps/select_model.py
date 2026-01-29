@@ -11,10 +11,11 @@ from langchain.chat_models import init_chat_model
 from pydantic import BaseModel, Field
 
 # Load environment variables
-load_dotenv(Path(__file__).parent.parent.parent / ".env")
+# Path: steps -> training -> agents -> root
+load_dotenv(Path(__file__).parent.parent.parent.parent / ".env")
 
 if TYPE_CHECKING:
-    from .agent import TrainingAgentState
+    from ..core.state import TrainingAgentState
 
 
 # =============================================================================
@@ -206,7 +207,7 @@ def select_model(state: "TrainingAgentState") -> "TrainingAgentState":
     # TODO: Let the model choose from more and do it's thing more
     prompt = MODEL_SELECTION_PROMPT.format(
         models=format_training_models_for_prompt(),
-        goal=state["goal"],
+        goal=state.get("goal", ""),
     )
     
     result: ModelSelectionOutput = structured_llm.invoke(prompt)

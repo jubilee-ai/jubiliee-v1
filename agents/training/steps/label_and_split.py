@@ -27,10 +27,11 @@ from dotenv import load_dotenv
 from langchain.chat_models import init_chat_model
 from sklearn.model_selection import train_test_split
 
-load_dotenv(Path(__file__).parent.parent.parent / ".env")
+load_dotenv(Path(__file__).parent.parent.parent.parent / ".env")
 
 # Add data-tools to path
-_DATA_TOOLS_DIR = Path(__file__).parent.parent.parent / "tools" / "data-tools"
+# Path: steps -> training -> agents -> root -> tools/data-tools
+_DATA_TOOLS_DIR = Path(__file__).parent.parent.parent.parent / "tools" / "data-tools"
 if str(_DATA_TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(_DATA_TOOLS_DIR))
 

@@ -17,15 +17,16 @@ from langchain_core.tools import tool
 from langgraph.graph import END, StateGraph
 from pydantic import BaseModel, Field
 
-load_dotenv(Path(__file__).parent.parent.parent / ".env")
+load_dotenv(Path(__file__).parent.parent.parent.parent / ".env")
 
 # Add data-tools to path
-_DATA_TOOLS_DIR = Path(__file__).parent.parent.parent / "tools" / "data-tools"
+# Path: steps -> training -> agents -> root -> tools/data-tools
+_DATA_TOOLS_DIR = Path(__file__).parent.parent.parent.parent / "tools" / "data-tools"
 if str(_DATA_TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(_DATA_TOOLS_DIR))
 
 if TYPE_CHECKING:
-    from .agent import TrainingAgentState
+    from ..core.state import TrainingAgentState
 
 from analysis.data_validation import validate_dataset
 from analysis.eda_report import EdaReportType, run_eda_report
@@ -187,7 +188,7 @@ def run_analysis_node(state: CleaningGraphState) -> CleaningGraphState:
 def llm_decide_node(state: CleaningGraphState) -> CleaningGraphState:
     """LLM reviews analysis and decides what tools to call."""
     prompt = CLEANING_PROMPT.format(
-        goal=state["goal"],
+        goal=state.get("goal", ""),
         eda_report=json.dumps(state["eda_result"], indent=1),
         validation_results=json.dumps(state["validation_result"], indent=1),
     )
