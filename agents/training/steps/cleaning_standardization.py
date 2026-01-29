@@ -40,7 +40,7 @@ from utils import generate_unique_id, get_registered_dataset, register_dataset
 # CONSTANTS
 # =============================================================================
 
-MAX_CLEANING_ITERATIONS = 10
+MAX_CLEANING_ITERATIONS = 20
 DATASET_REF_PATTERN = re.compile(r"→ `([^`]+)`")
 
 # =============================================================================

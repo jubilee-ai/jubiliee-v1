@@ -89,6 +89,7 @@ def apply_transformations(
     dataset_ref: str,
     transformations: list[dict[str, Any]],
     output_prefix: str = "transformed",
+    verbose: bool = True,
 ) -> dict[str, Any]:
     """
     Apply multiple transformations in sequence.
@@ -97,6 +98,7 @@ def apply_transformations(
         dataset_ref: Initial dataset reference
         transformations: List of {"tool": <tool>, "params": {...}}
         output_prefix: Prefix for final dataset ref
+        verbose: If True, print detailed logs
     
     Returns:
         {"dataset_ref": str, "outputs": list, "errors": list|None}
@@ -105,10 +107,30 @@ def apply_transformations(
     outputs = []
     errors = []
     
+    if verbose:
+        print(f"\n{'='*60}")
+        print(f"[BATCH] Applying {len(transformations)} transformations")
+        print(f"[BATCH] Starting dataset: {dataset_ref}")
+        # Get initial shape
+        try:
+            init_df = resolve_dataset(dataset_ref)
+            print(f"[BATCH] Initial shape: {init_df.shape[0]} rows × {init_df.shape[1]} cols")
+            print(f"[BATCH] Initial nulls: {init_df.isna().sum().sum()}")
+        except Exception:
+            pass
+        print(f"{'='*60}")
+    
     for i, transform in enumerate(transformations):
         tool_fn = transform.get("tool")
         params = transform.get("params", {}).copy()
         params["dataset_ref"] = current_ref
+        
+        tool_name = getattr(tool_fn, "name", str(tool_fn)) if tool_fn else "None"
+        
+        if verbose:
+            print(f"\n[STEP {i+1}/{len(transformations)}] {tool_name}")
+            print(f"  Input: {current_ref}")
+            print(f"  Params: {params}")
         
         if tool_fn is None:
             errors.append(f"Step {i+1}: Missing 'tool'")
@@ -123,23 +145,42 @@ def apply_transformations(
                 errors.append(f"Step {i+1}: Invalid tool type")
                 continue
             
-            outputs.append({"step": i + 1, "tool": getattr(tool_fn, "name", str(tool_fn)), "output": output})
+            outputs.append({"step": i + 1, "tool": tool_name, "output": output})
+            
+            if verbose:
+                print(f"  Output: {output[:200] if len(str(output)) > 200 else output}")
             
             if isinstance(output, str) and output.startswith("✗"):
                 errors.append(f"Step {i+1}: {output}")
+                if verbose:
+                    print(f"  ⚠️ Error - continuing to next step")
                 continue
             
             new_ref = _extract_dataset_ref(str(output))
             if new_ref:
                 current_ref = new_ref
+                if verbose:
+                    print(f"  New ref: {new_ref}")
                 
         except Exception as e:
             errors.append(f"Step {i+1}: {e}")
+            if verbose:
+                print(f"  ⚠️ Exception: {e}")
     
     # Re-register final result
     try:
         df = resolve_dataset(current_ref)
         final_ref = save_result(df, output_prefix)
+        if verbose:
+            print(f"\n{'='*60}")
+            print(f"[BATCH COMPLETE]")
+            print(f"  Final dataset: {final_ref}")
+            print(f"  Final shape: {df.shape[0]} rows × {df.shape[1]} cols")
+            print(f"  Final nulls: {df.isna().sum().sum()}")
+            print(f"  Transformations applied: {len(outputs)}/{len(transformations)}")
+            if errors:
+                print(f"  Errors: {errors}")
+            print(f"{'='*60}\n")
     except Exception:
         final_ref = current_ref
     

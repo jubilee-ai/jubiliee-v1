@@ -12,14 +12,70 @@ import sys
 from pathlib import Path
 
 # Add paths
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-sys.path.insert(0, str(Path(__file__).parent.parent.parent / "tools" / "data-tools"))
+sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).parent.parent / "tools" / "data-tools"))
 
 import pandas as pd
 import numpy as np
 from utils import register_dataset, get_registered_dataset
 
-from agents.training.agent import invoke_training_agent
+from agents.training.agent import invoke_training_agent, resume_training_agent
+
+
+def run_agent_to_completion(
+    goal: str,
+    linked_datasets: list[str] = None,
+    user_model_preference: str = None,
+    max_steps: int = 20,
+) -> dict:
+    """
+    Run the training agent to completion, auto-approving all HITL checkpoints.
+    
+    The agent uses human-in-the-loop and pauses at each step. This function
+    automatically approves each step to run the full pipeline end-to-end.
+    """
+    # Initial invocation
+    result = invoke_training_agent(
+        goal=goal,
+        linked_datasets=linked_datasets,
+        user_model_preference=user_model_preference,
+    )
+    
+    thread_id = result.get("_thread_id")
+    steps_completed = 0
+    
+    # Keep resuming until no more interrupts or we hit max steps
+    while steps_completed < max_steps:
+        # Check if there's an interrupt
+        interrupt = result.get("__interrupt__")
+        if not interrupt:
+            # No interrupt means agent completed or errored
+            print(f"  [HITL] Agent completed after {steps_completed} steps")
+            break
+        
+        # Extract interrupt info
+        if isinstance(interrupt, list) and len(interrupt) > 0:
+            interrupt_info = interrupt[0]
+            if hasattr(interrupt_info, 'value'):
+                node_name = interrupt_info.value.get('node', 'unknown')
+            else:
+                node_name = interrupt_info.get('node', 'unknown') if isinstance(interrupt_info, dict) else 'unknown'
+        else:
+            node_name = 'unknown'
+        
+        steps_completed += 1
+        print(f"  [HITL] Step {steps_completed}: {node_name} - auto-approving...")
+        
+        # Resume with approval
+        result = resume_training_agent(
+            decision=True,  # Approve
+            thread_id=thread_id,
+        )
+    
+    if steps_completed >= max_steps:
+        print(f"  [HITL] WARNING: Hit max steps ({max_steps})")
+    
+    return result
 
 
 def print_header(test_num: int, title: str):
@@ -122,7 +178,7 @@ def print_result(result: dict):
     print("=" * 60)
     print(f"  Error: {result.get('error')}")
     print(f"  Selected Model: {result.get('selected_model')}")
-    print(f"  Model Explanation: {result.get('model_explanation', '')[:100]}...")
+    print(f"  Model Explanation: {(result.get('model_explanation') or '')[:100]}...")
     print(f"  Collected Dataset: {result.get('collected_dataset_ref')}")
     print(f"  Cleaned Dataset: {result.get('cleaned_dataset_ref')}")
     print(f"  Train Dataset: {result.get('transformed_train_ref')}")
@@ -168,7 +224,7 @@ def print_result(result: dict):
 
 def check_success(result: dict, test_name: str) -> bool:
     """Check if the test succeeded."""
-    training_metrics = result.get("training_metrics", {})
+    training_metrics = result.get("training_metrics") or {}
     success = training_metrics.get("success", False)
     
     if success:
@@ -190,7 +246,7 @@ def test_1_loan_default_logistic():
     
     # Load and register dataset
     print_step("SETUP", "Loading Loan_default.csv")
-    df = pd.read_csv(Path(__file__).parent.parent.parent / "datasets" / "csv" / "Loan_default.csv")
+    df = pd.read_csv(Path(__file__).parent.parent / "datasets" / "csv" / "Loan_default.csv")
     
     # Sample for speed
     df_sample = df.sample(n=min(500, len(df)), random_state=42)
@@ -204,9 +260,9 @@ def test_1_loan_default_logistic():
     register_dataset("loan_default_full", df_sample)
     print(f"\n  ✅ Registered as: loan_default_full")
     
-    # Run agent
-    print_step("INVOKE", "Calling invoke_training_agent...")
-    result = invoke_training_agent(
+    # Run agent with auto-approval for HITL checkpoints
+    print_step("INVOKE", "Calling run_agent_to_completion (auto-approving HITL steps)...")
+    result = run_agent_to_completion(
         goal="Predict loan default risk based on borrower characteristics for credit decisioning",
         linked_datasets=["loan_default_full"],
         user_model_preference="logistic_regression"
@@ -222,7 +278,7 @@ def test_2_loan_default_random_forest():
     
     # Load and register dataset
     print_step("SETUP", "Loading Loan_default.csv")
-    df = pd.read_csv(Path(__file__).parent.parent.parent / "datasets" / "csv" / "Loan_default.csv")
+    df = pd.read_csv(Path(__file__).parent.parent / "datasets" / "csv" / "Loan_default.csv")
     df_sample = df.sample(n=min(500, len(df)), random_state=123)
     
     print_step("INPUT DATASET", "")
@@ -233,9 +289,9 @@ def test_2_loan_default_random_forest():
     register_dataset("loan_default_rf", df_sample)
     print(f"\n  ✅ Registered as: loan_default_rf")
     
-    # Run agent
-    print_step("INVOKE", "Calling invoke_training_agent with random_forest...")
-    result = invoke_training_agent(
+    # Run agent with auto-approval for HITL checkpoints
+    print_step("INVOKE", "Calling run_agent_to_completion with random_forest...")
+    result = run_agent_to_completion(
         goal="Build a random forest model to predict loan defaults with high recall",
         linked_datasets=["loan_default_rf"],
         user_model_preference="random_forest"
@@ -251,7 +307,7 @@ def test_3_insurance_regression():
     
     # Load and register dataset
     print_step("SETUP", "Loading insurance.csv")
-    df = pd.read_csv(Path(__file__).parent.parent.parent / "datasets" / "csv" / "insurance.csv")
+    df = pd.read_csv(Path(__file__).parent.parent / "datasets" / "csv" / "insurance.csv")
     
     print_step("INPUT DATASET", "")
     print_dataset_preview(df, "insurance_full")
@@ -262,9 +318,9 @@ def test_3_insurance_regression():
     register_dataset("insurance_full", df)
     print(f"\n  ✅ Registered as: insurance_full")
     
-    # Run agent - note: GLM for regression
-    print_step("INVOKE", "Calling invoke_training_agent with glm...")
-    result = invoke_training_agent(
+    # Run agent with auto-approval - note: GLM for regression
+    print_step("INVOKE", "Calling run_agent_to_completion with glm...")
+    result = run_agent_to_completion(
         goal="Predict insurance charges based on customer demographics and health factors",
         linked_datasets=["insurance_full"],
         user_model_preference="glm"
@@ -286,7 +342,7 @@ def test_4_financial_distress():
     
     # Load and register dataset
     print_step("SETUP", "Loading Financial Distress.csv")
-    df = pd.read_csv(Path(__file__).parent.parent.parent / "datasets" / "csv" / "Financial Distress.csv")
+    df = pd.read_csv(Path(__file__).parent.parent / "datasets" / "csv" / "Financial Distress.csv")
     
     # Create binary target (distressed = Financial Distress < 0)
     df["is_distressed"] = (df["Financial Distress"] < 0).astype(int)
@@ -308,9 +364,9 @@ def test_4_financial_distress():
     register_dataset("financial_distress", df_sample)
     print(f"\n  ✅ Registered as: financial_distress")
     
-    # Run agent
-    print_step("INVOKE", "Calling invoke_training_agent with xgboost...")
-    result = invoke_training_agent(
+    # Run agent with auto-approval for HITL checkpoints
+    print_step("INVOKE", "Calling run_agent_to_completion with xgboost...")
+    result = run_agent_to_completion(
         goal="Predict company financial distress using financial ratios",
         linked_datasets=["financial_distress"],
         user_model_preference="xgboost"
@@ -326,7 +382,7 @@ def test_5_loan_default_auto_model():
     
     # Load and register dataset
     print_step("SETUP", "Loading Loan_default.csv")
-    df = pd.read_csv(Path(__file__).parent.parent.parent / "datasets" / "csv" / "Loan_default.csv")
+    df = pd.read_csv(Path(__file__).parent.parent / "datasets" / "csv" / "Loan_default.csv")
     df_sample = df.sample(n=min(400, len(df)), random_state=456)
     
     print_step("INPUT DATASET", "")
@@ -339,9 +395,9 @@ def test_5_loan_default_auto_model():
     print(f"\n  ✅ Registered as: loan_auto_model")
     
     # Run agent WITHOUT user_model_preference - LLM will choose
-    print_step("INVOKE", "Calling invoke_training_agent WITHOUT model preference...")
+    print_step("INVOKE", "Calling run_agent_to_completion WITHOUT model preference...")
     print("  (LLM will analyze goal and select appropriate model)")
-    result = invoke_training_agent(
+    result = run_agent_to_completion(
         goal="Build a credit risk model to predict loan defaults for regulatory reporting",
         linked_datasets=["loan_auto_model"],
         user_model_preference=None  # LLM chooses!
@@ -367,8 +423,8 @@ def test_6_no_dataset_loan_default():
     print_step("SETUP", "No dataset provided - agent must discover data")
     
     # Run agent WITHOUT linked_datasets
-    print_step("INVOKE", "Calling invoke_training_agent WITHOUT linked_datasets...")
-    result = invoke_training_agent(
+    print_step("INVOKE", "Calling run_agent_to_completion WITHOUT linked_datasets...")
+    result = run_agent_to_completion(
         goal="Build a model to predict loan default risk using available credit data",
         linked_datasets=None,  # No datasets provided!
         user_model_preference="logistic_regression"
@@ -395,8 +451,8 @@ def test_7_no_dataset_insurance():
     print_step("SETUP", "No dataset provided - agent must discover data")
     
     # Run agent WITHOUT linked_datasets
-    print_step("INVOKE", "Calling invoke_training_agent WITHOUT linked_datasets...")
-    result = invoke_training_agent(
+    print_step("INVOKE", "Calling run_agent_to_completion WITHOUT linked_datasets...")
+    result = run_agent_to_completion(
         goal="Predict insurance premiums based on customer health and demographics",
         linked_datasets=None,  # No datasets provided!
         user_model_preference="random_forest"
@@ -422,8 +478,8 @@ def test_8_no_dataset_fraud():
     print_step("SETUP", "No dataset provided - testing fraud detection goal")
     
     # Run agent WITHOUT linked_datasets
-    print_step("INVOKE", "Calling invoke_training_agent WITHOUT linked_datasets...")
-    result = invoke_training_agent(
+    print_step("INVOKE", "Calling run_agent_to_completion WITHOUT linked_datasets...")
+    result = run_agent_to_completion(
         goal="Build a fraud detection model to identify suspicious transactions",
         linked_datasets=None,  # No datasets provided!
         user_model_preference="xgboost"
@@ -451,11 +507,11 @@ def test_9_multi_dataset_loan_and_insurance():
     print_step("SETUP", "Loading multiple datasets")
     
     # Dataset 1: Loan default
-    df_loan = pd.read_csv(Path(__file__).parent.parent.parent / "datasets" / "csv" / "Loan_default.csv")
+    df_loan = pd.read_csv(Path(__file__).parent.parent / "datasets" / "csv" / "Loan_default.csv")
     df_loan_sample = df_loan.sample(n=min(300, len(df_loan)), random_state=789)
     
     # Dataset 2: Insurance
-    df_insurance = pd.read_csv(Path(__file__).parent.parent.parent / "datasets" / "csv" / "insurance.csv")
+    df_insurance = pd.read_csv(Path(__file__).parent.parent / "datasets" / "csv" / "insurance.csv")
     df_insurance_sample = df_insurance.sample(n=min(300, len(df_insurance)), random_state=789)
     
     # Show both input datasets
@@ -476,8 +532,8 @@ def test_9_multi_dataset_loan_and_insurance():
     print(f"\n  ⚠️ Agent must decide which dataset to use or how to combine them!")
     
     # Run agent with BOTH datasets
-    print_step("INVOKE", "Calling invoke_training_agent with MULTIPLE datasets...")
-    result = invoke_training_agent(
+    print_step("INVOKE", "Calling run_agent_to_completion with MULTIPLE datasets...")
+    result = run_agent_to_completion(
         goal="Build a comprehensive risk model using all available customer data for default prediction",
         linked_datasets=["loan_multi_1", "insurance_multi_1"],  # Multiple!
         user_model_preference="logistic_regression"
@@ -495,7 +551,7 @@ def test_10_multi_dataset_financial_and_loan():
     print_step("SETUP", "Loading corporate + consumer datasets")
     
     # Dataset 1: Financial Distress (corporate)
-    df_financial = pd.read_csv(Path(__file__).parent.parent.parent / "datasets" / "csv" / "Financial Distress.csv")
+    df_financial = pd.read_csv(Path(__file__).parent.parent / "datasets" / "csv" / "Financial Distress.csv")
     df_financial["is_distressed"] = (df_financial["Financial Distress"] < 0).astype(int)
     # Select key columns only
     key_cols = ["Company", "Time", "is_distressed", "x1", "x2", "x3", "x4", "x5", "x6"]
@@ -503,7 +559,7 @@ def test_10_multi_dataset_financial_and_loan():
     df_financial_sample = df_financial.sample(n=min(250, len(df_financial)), random_state=321)
     
     # Dataset 2: Loan default (consumer)
-    df_loan = pd.read_csv(Path(__file__).parent.parent.parent / "datasets" / "csv" / "Loan_default.csv")
+    df_loan = pd.read_csv(Path(__file__).parent.parent / "datasets" / "csv" / "Loan_default.csv")
     df_loan_sample = df_loan.sample(n=min(250, len(df_loan)), random_state=321)
     
     # Show both
@@ -523,9 +579,9 @@ def test_10_multi_dataset_financial_and_loan():
     print(f"\n  ✅ Registered: financial_multi_1, loan_multi_2")
     print(f"\n  ⚠️ Agent sees both corporate and consumer data - must choose or combine!")
     
-    # Run agent
-    print_step("INVOKE", "Calling invoke_training_agent with corporate+consumer data...")
-    result = invoke_training_agent(
+    # Run agent with auto-approval for HITL checkpoints
+    print_step("INVOKE", "Calling run_agent_to_completion with corporate+consumer data...")
+    result = run_agent_to_completion(
         goal="Build a credit risk model that can assess both corporate and consumer default risk",
         linked_datasets=["financial_multi_1", "loan_multi_2"],
         user_model_preference="xgboost"
@@ -546,8 +602,8 @@ def test_11_no_dataset_corporate_bankruptcy():
     print_step("SETUP", "No dataset provided - agent must find corporate financial data")
     
     # Run agent WITHOUT linked_datasets
-    print_step("INVOKE", "Calling invoke_training_agent WITHOUT linked_datasets...")
-    result = invoke_training_agent(
+    print_step("INVOKE", "Calling run_agent_to_completion WITHOUT linked_datasets...")
+    result = run_agent_to_completion(
         goal="Build a model to predict corporate bankruptcy using financial ratios and company metrics",
         linked_datasets=None,  # No datasets provided!
         user_model_preference="random_forest"

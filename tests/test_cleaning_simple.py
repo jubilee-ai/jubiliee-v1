@@ -61,7 +61,7 @@ def test_cleaning_simple_full_flow():
     print("\n[3] Running cleaning agent...")
     print("-"*60)
     
-    from agents.training.cleaning_simple import run_cleaning_simple
+    from agents.training.steps.cleaning_simple import run_cleaning_simple
     
     result = run_cleaning_simple(
         dataset_ref=test_ref,
@@ -69,11 +69,14 @@ def test_cleaning_simple_full_flow():
         max_iterations=25,
     )
     
-    # Print all messages
+    # Print all messages and track tool usage
     print("\n[4] Agent Messages:")
     print("-"*60)
     
     messages = result.get("messages", [])
+    tool_call_counts = {}
+    batched_transforms = []
+    
     for i, msg in enumerate(messages):
         role = getattr(msg, "type", "unknown")
         content = getattr(msg, "content", "")
@@ -89,7 +92,31 @@ def test_cleaning_simple_full_flow():
                 print(content)
         
         if tool_calls:
-            print(f"Tool calls: {[tc.get('name', tc) for tc in tool_calls]}")
+            for tc in tool_calls:
+                tool_name = tc.get('name', str(tc))
+                tool_call_counts[tool_name] = tool_call_counts.get(tool_name, 0) + 1
+                
+                # Check for batched transformations
+                if tool_name == "apply_transformations_tool":
+                    args = tc.get('args', {})
+                    transforms = args.get('transformations', [])
+                    print(f"\n  🔧 BATCHED TRANSFORMATIONS ({len(transforms)} operations):")
+                    for t in transforms:
+                        t_name = t.get('tool_name', 'unknown')
+                        t_params = {k: v for k, v in t.items() if k != 'tool_name'}
+                        print(f"     - {t_name}: {t_params}")
+                        batched_transforms.append(t_name)
+                else:
+                    print(f"  Tool call: {tool_name}")
+    
+    # Summary of tool usage
+    print("\n" + "="*60)
+    print("[4.5] Tool Usage Summary")
+    print("="*60)
+    print(f"Tool call counts: {tool_call_counts}")
+    print(f"Total batched transformations: {len(batched_transforms)}")
+    if batched_transforms:
+        print(f"Batched ops: {batched_transforms}")
     
     # Check final result
     print("\n" + "="*60)

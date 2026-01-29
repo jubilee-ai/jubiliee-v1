@@ -3,10 +3,12 @@ Simple Cleaning Agent using LangChain's create_agent.
 
 A streamlined cleaning workflow:
 1. Agent calls `run_clean_tests` to get EDA + validation results
-2. Agent uses cleaning tools to fix issues OR calls `mark_cleaning_complete` if done
-3. Repeat until complete or max iterations reached
+2. Agent calls `apply_transformations_tool` with ALL fixes batched in one call
+3. Agent calls `run_clean_tests` again to verify fixes worked
+4. Repeat if needed, then `mark_cleaning_complete` when done
 
-Uses create_agent for a simple tool-calling loop without custom LangGraph.
+Uses apply_transformations_tool to batch multiple cleaning operations,
+reducing LLM round-trips and intermediate dataset registrations.
 """
 
 import sys
@@ -27,19 +29,13 @@ if str(_DATA_TOOLS_DIR) not in sys.path:
 
 from analysis.data_validation import validate_dataset
 from analysis.eda_report import run_eda_report
-from transformations.clean_ops import clean_tools
-from transformations.column_ops import cast_tool, drop_columns_tool
-from transformations.row_ops import dedupe_tool, filter_rows_tool
+from transformations.apply_transformations import apply_transformations_tool
 from utils import generate_unique_id, get_registered_dataset, register_dataset
 
 # =============================================================================
 # TOOLS
 # =============================================================================
 
-# TODO: Optimize it so that we have a single apply_transformations tool which takes the transformations as inputs.
-# then we apply them in a loop, getting the new dataset_ref and running each next one on those
-# --> Put this into the tools folder
-# --> Currently we have it but needs improvement (NEED THIS NOW)
 class RunCleanTestsInput(BaseModel):
     """Input for running EDA + validation tests."""
     dataset_ref: str = Field(description="Reference to the dataset to analyze")
@@ -57,6 +53,9 @@ def run_clean_tests(dataset_ref: str) -> str:
     try:
         # Run EDA
         eda = run_eda_report(dataset_ref=dataset_ref)
+        
+        # Get column names for detecting binned columns
+        all_columns = [col["column"] for col in eda["schema"]]
         
         # Build validation rules from schema
         column_names = [col["column"] for col in eda["schema"][:15]]
@@ -81,10 +80,30 @@ def run_clean_tests(dataset_ref: str) -> str:
             lines.append(f"- ... +{len(eda['schema']) - 15} more")
         lines.append("")
         
+        # Filter alerts - skip skew warnings if a binned version exists
+        critical_alerts = []
+        skipped_alerts = []
+        for alert in eda["alerts"][:8]:
+            if alert["type"] == "high_skew":
+                col = alert["column"]
+                # Check if binned version exists (e.g., income_binned, income_bin)
+                has_binned = any(c.startswith(f"{col}_bin") or c == f"{col}_binned" for c in all_columns)
+                if has_binned:
+                    skipped_alerts.append(f"high_skew on {col} (binned version exists)")
+                    continue
+            critical_alerts.append(alert)
+        
+        # Print decision logic
+        print(f"\n[run_clean_tests] Dataset: {dataset_ref}")
+        print(f"[run_clean_tests] Total alerts: {len(eda['alerts'])}, Critical: {len(critical_alerts)}, Skipped: {len(skipped_alerts)}")
+        if skipped_alerts:
+            print(f"[run_clean_tests] Skipped alerts: {skipped_alerts}")
+        print(f"[run_clean_tests] Validation passed: {validation['passed']}")
+        
         # Alerts (most important)
-        if eda["alerts"]:
+        if critical_alerts:
             lines.append("## ⚠️ Issues Found")
-            for alert in eda["alerts"][:8]:
+            for alert in critical_alerts:
                 if alert["type"] == "high_skew":
                     lines.append(f"- High skew on `{alert['column']}` (skew={alert['skew']})")
                 elif alert["type"] == "high_nulls":
@@ -106,15 +125,18 @@ def run_clean_tests(dataset_ref: str) -> str:
                 lines.append(f"  → Suggested: `{fix['action']}` {fix.get('params', {})}")
             lines.append("")
         
-        # Recommendations
-        if eda["recommendations"]:
+        # Recommendations (only if there are critical issues)
+        if critical_alerts and eda["recommendations"]:
             lines.append("## Recommended Actions")
             for rec in eda["recommendations"][:5]:
                 lines.append(f"- {rec}")
             lines.append("")
         
-        # Summary status
-        if not eda["alerts"] and validation["passed"]:
+        # Summary status - use critical_alerts not eda["alerts"]
+        is_clean = not critical_alerts and validation["passed"]
+        print(f"[run_clean_tests] Is clean: {is_clean}")
+        
+        if is_clean:
             lines.append("✅ **Data looks clean!** Call `mark_cleaning_complete` to finish.")
         else:
             lines.append("⚠️ **Issues found.** Apply cleaning tools, then call `run_clean_tests` again to verify.")
@@ -153,18 +175,12 @@ def mark_cleaning_complete(dataset_ref: str, reasoning: str) -> str:
     
     return f"✅ CLEANING COMPLETE\nCleaned dataset: `{cleaned_ref}`\nRows: {len(df):,}\nColumns: {len(df.columns)}\nReason: {reasoning}"
 
-# TODO: something more like this
-# CLEANING_TOOLS = [apply_transformations_tool, run_clean_tests, mark_cleaning_complete]
-
 # All tools for the cleaning agent
+# Uses apply_transformations_tool to batch all cleaning operations in one call
 CLEANING_TOOLS = [
     run_clean_tests,
     mark_cleaning_complete,
-    *clean_tools,  # drop_nulls, fill_null, impute, clip, replace_values, regex_replace
-    drop_columns_tool,
-    cast_tool,
-    dedupe_tool,
-    filter_rows_tool,
+    apply_transformations_tool,
 ]
 
 # =============================================================================
@@ -175,21 +191,44 @@ CLEANING_SYSTEM_PROMPT = """You are a data cleaning agent. Clean a dataset for m
 
 ## Workflow
 1. Call `run_clean_tests` to see issues
-2. Fix issues using cleaning tools (impute, clip, etc.)
-3. When done, call `mark_cleaning_complete` and STOP IMMEDIATELY
+2. Call `apply_transformations_tool` with ALL fixes at once (batch them!)
+3. Call `run_clean_tests` again to verify fixes worked
+4. Repeat if needed, then call `mark_cleaning_complete` and STOP
 
 ## Tools
 - `run_clean_tests`: Analyze dataset for issues (call first)
-- `impute`: Fill nulls with mean/median/mode
-- `fill_null`: Fill nulls with specific value
-- `drop_nulls`: Remove rows with nulls
-- `clip`: Cap outliers to a range
-- `drop_columns`: Remove columns
-- `dedupe`: Remove duplicate rows
+- `apply_transformations_tool`: Apply multiple transformations in one call
 - `mark_cleaning_complete`: Finish cleaning (call last, then STOP)
 
+## Using apply_transformations_tool
+Pass a list of transformations. Each is a dict with 'tool_name' and the tool's parameters.
+
+Available tool_names:
+- impute: Fill nulls (column, strategy: mean/median/mode/ffill/bfill)
+- fill_null: Fill nulls with specific value (column, value)
+- drop_nulls: Remove rows with nulls (subset: [columns])
+- clip: Cap outliers (column, min_val, max_val)
+- drop_columns: Remove columns (columns: [list])
+- dedupe: Remove duplicate rows
+- cast: Change column type (column, dtype)
+
+Example call:
+```
+apply_transformations_tool(
+    dataset_ref="ds_123",
+    transformations=[
+        {"tool_name": "impute", "column": "age", "strategy": "median"},
+        {"tool_name": "impute", "column": "income", "strategy": "mean"},
+        {"tool_name": "clip", "column": "income", "min_val": 0, "max_val": 500000},
+        {"tool_name": "drop_columns", "columns": ["id", "timestamp"]}
+    ],
+    output_prefix="cleaned"
+)
+```
+
 ## Rules
-- Fix nulls first, then outliers
+- BATCH all transformations in ONE call to apply_transformations_tool
+- Fix nulls first, then outliers in the same batch
 - Use the dataset_ref from previous tool output
 - Don't over-clean - minor issues are OK
 
@@ -268,32 +307,29 @@ Start by calling `run_clean_tests` to analyze the dataset."""
     cleaning_reason = None
     transformations = []
     
-    # Tools that are actual transformations (not analysis tools)
-    transformation_tools = {
-        "drop_columns_tool", "drop_nulls", "fill_null", "impute", 
-        "clip", "replace_values", "regex_replace", "cast_tool",
-        "dedupe_tool", "filter_rows_tool", "drop_columns", "cast", "dedupe", "filter_rows"
-    }
-    
     for msg in result.get("messages", []):
         # Check for tool calls (AIMessage with tool_calls)
         if hasattr(msg, "tool_calls") and msg.tool_calls:
             for tool_call in msg.tool_calls:
                 tool_name = tool_call.get("name", "")
                 tool_args = tool_call.get("args", {})
-                if tool_name in transformation_tools or tool_name.startswith("drop_") or tool_name.startswith("fill_"):
-                    transformations.append({
-                        "tool": tool_name,
-                        "args": tool_args,
-                    })
+                
+                # Extract transformations from apply_transformations_tool calls
+                if tool_name == "apply_transformations_tool":
+                    batch_transforms = tool_args.get("transformations", [])
+                    for t in batch_transforms:
+                        transformations.append({
+                            "tool": t.get("tool_name", "unknown"),
+                            "args": {k: v for k, v in t.items() if k != "tool_name"},
+                        })
         
-        # Check for tool message with cleaning complete
+        # Check for tool message with cleaning complete or transformation results
         if hasattr(msg, "content") and isinstance(msg.content, str):
-            # Check if this is a transformation tool result
-            if hasattr(msg, "name") and msg.name in transformation_tools:
-                # Update the last transformation with its result
-                if transformations and transformations[-1].get("tool") == msg.name:
-                    transformations[-1]["result"] = msg.content
+            # Check if this is an apply_transformations_tool result
+            if hasattr(msg, "name") and msg.name == "apply_transformations_tool":
+                # Store result in last batch of transformations
+                if transformations:
+                    transformations[-1]["batch_result"] = msg.content
             
             if "CLEANING COMPLETE" in msg.content and "Cleaned dataset:" in msg.content:
                 # Store the full cleaning summary message
