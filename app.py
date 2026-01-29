@@ -6,16 +6,16 @@ Exposes the training agent functionality to the frontend UI
 import json
 import sys
 import uuid
+from contextlib import asynccontextmanager
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
-from datetime import datetime
-from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+import pandas as pd
+from fastapi import BackgroundTasks, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-import pandas as pd
 
 # Add project root to path for imports
 PROJECT_ROOT = Path(__file__).parent
@@ -25,15 +25,13 @@ sys.path.insert(0, str(PROJECT_ROOT))
 DATA_TOOLS_DIR = PROJECT_ROOT / "tools" / "data-tools"
 sys.path.insert(0, str(DATA_TOOLS_DIR))
 
-# Import the training agent
-from agents.training.agent import (
-    invoke_training_agent, 
-    stream_training_agent_with_updates,
-    TrainingAgentState
-)
-
 # Import dataset utilities
-from utils import register_dataset, get_registered_dataset
+from utils import get_registered_dataset, register_dataset
+
+# Import the training agent
+from agents.training.agent import (TrainingAgentState, invoke_training_agent,
+                                   resume_training_agent,
+                                   stream_training_agent_with_updates)
 
 # Import dataset catalog
 DATASETS_DIR = PROJECT_ROOT / "datasets"
@@ -55,6 +53,12 @@ class TrainRequest(BaseModel):
     goal: str
     linked_datasets: Optional[list[str]] = None
     user_model_preference: Optional[str] = None
+
+
+class ResumeRequest(BaseModel):
+    thread_id: str
+    approved: bool = True
+    feedback: Optional[str] = None
 
 
 class TrainResponse(BaseModel):
@@ -384,8 +388,7 @@ async def get_training_status(job_id: str):
         "label_split_definition": 45,
         "feature_selection_specification": 55,
         "feature_engineering_executor": 70,
-        "human_confirmation": 80,
-        "training": 90,
+        "training": 85,
         "generate_report": 95,
         "completed": 100,
     }
@@ -451,10 +454,17 @@ async def cancel_training(job_id: str):
 # SSE Streaming Endpoint
 # ============================================================================
 
-def generate_sse_events(goal: str, linked_datasets: Optional[list[str]], model_pref: Optional[str]):
+def generate_sse_events(goal: str, linked_datasets: Optional[list[str]], model_pref: Optional[str], thread_id: Optional[str] = None):
     """
     Generator that yields SSE-formatted events from the training agent.
+    With HITL, will yield interrupt events that pause for user approval.
     """
+    import uuid
+
+    # Generate thread_id if not provided
+    if not thread_id:
+        thread_id = f"training-{uuid.uuid4().hex[:8]}"
+    
     # Pre-register linked datasets
     registered_refs = []
     if linked_datasets:
@@ -462,7 +472,7 @@ def generate_sse_events(goal: str, linked_datasets: Optional[list[str]], model_p
             ref = load_and_register_dataset(dataset_path)
             if ref:
                 registered_refs.append(ref)
-                yield f"data: {json.dumps({'type': 'dataset_loaded', 'dataset': dataset_path, 'ref': ref})}\n\n"
+                yield f"data: {json.dumps({'type': 'dataset_loaded', 'dataset': dataset_path, 'ref': ref, 'thread_id': thread_id})}\n\n"
     
     final_linked = registered_refs if registered_refs else linked_datasets
     
@@ -471,15 +481,63 @@ def generate_sse_events(goal: str, linked_datasets: Optional[list[str]], model_p
             goal=goal,
             linked_datasets=final_linked,
             user_model_preference=model_pref,
+            thread_id=thread_id,
         ):
+            # Add thread_id to all updates
+            update["thread_id"] = thread_id
+            
             # Serialize the update, handling non-serializable values
             serialized_update = serialize_state(update)
             yield f"data: {json.dumps(serialized_update)}\n\n"
+            
+            # If this is an interrupt event, stop streaming (frontend will resume)
+            if update.get("type") == "interrupt":
+                return
             
     except Exception as e:
         error_event = {
             "type": "error",
             "error": str(e),
+            "thread_id": thread_id,
+        }
+        yield f"data: {json.dumps(error_event)}\n\n"
+
+
+def generate_resume_sse_events(thread_id: str, approved: bool, feedback: Optional[str]):
+    """
+    Generator that yields SSE-formatted events when resuming after an interrupt.
+    """
+    try:
+        # Build the decision object
+        if approved:
+            decision = {"approved": True}
+        else:
+            decision = {"approved": False, "feedback": feedback or "Please redo this step."}
+        
+        # Resume the agent - this returns a generator
+        from agents.training.agent import \
+            stream_resume_training_agent_with_updates
+        
+        for update in stream_resume_training_agent_with_updates(
+            decision=decision,
+            thread_id=thread_id,
+        ):
+            # Add thread_id to all updates
+            update["thread_id"] = thread_id
+            
+            # Serialize the update
+            serialized_update = serialize_state(update)
+            yield f"data: {json.dumps(serialized_update)}\n\n"
+            
+            # If this is an interrupt event, stop streaming (frontend will resume again)
+            if update.get("type") == "interrupt":
+                return
+            
+    except Exception as e:
+        error_event = {
+            "type": "error",
+            "error": str(e),
+            "thread_id": thread_id,
         }
         yield f"data: {json.dumps(error_event)}\n\n"
 
@@ -489,14 +547,12 @@ async def train_stream(request: TrainRequest):
     """
     Stream training progress via Server-Sent Events (SSE).
     
-    Returns a stream of JSON events:
-    - {type: "started", progress: 0}
-    - {type: "node_complete", node: "select_model", progress: 10, state: {...}, summary: {...}}
-    - {type: "node_complete", node: "data_collection", progress: 20, ...}
-    - ...
-    - {type: "completed", progress: 100}
+    With HITL enabled, returns events until an interrupt is hit:
+    - {type: "started", progress: 0, thread_id: "xxx"}
+    - {type: "node_complete", node: "select_model", ...} (won't happen with HITL)
+    - {type: "interrupt", node: "select_model", summary: "...", thread_id: "xxx"}
     
-    Use EventSource in JavaScript to consume this stream.
+    When interrupt is received, call /api/train-resume to continue.
     """
     return StreamingResponse(
         generate_sse_events(
@@ -509,6 +565,33 @@ async def train_stream(request: TrainRequest):
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",  # Disable nginx buffering
+        },
+    )
+
+
+@app.post("/api/train-resume")
+async def train_resume(request: ResumeRequest):
+    """
+    Resume training after an interrupt (human-in-the-loop).
+    
+    Streams the next step's progress until the next interrupt or completion.
+    
+    Args:
+        thread_id: The thread ID from the previous interrupt event
+        approved: True to accept and continue, False to redo with feedback
+        feedback: Optional feedback message when approved=False
+    """
+    return StreamingResponse(
+        generate_resume_sse_events(
+            request.thread_id,
+            request.approved,
+            request.feedback,
+        ),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
         },
     )
 

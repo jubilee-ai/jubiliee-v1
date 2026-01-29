@@ -21,10 +21,10 @@ export default function App() {
     steps: realAgent.steps,
     messages: realAgent.messages,
     isRunning: realAgent.isRunning,
-    currentStepId: realAgent.steps.find(s => s.status === "running")?.id || null,
-    confirmationRequest: null as null,
+    currentStepId: realAgent.steps.find(s => s.status === "running" || s.status === "awaiting_confirmation")?.id || null,
+    confirmationRequest: realAgent.confirmationRequest,
     startAgent: realAgent.startAgent,
-    handleConfirmation: () => {},
+    handleConfirmation: realAgent.handleConfirmation,
     sendMessage: realAgent.sendMessage,
     reset: realAgent.reset,
   }

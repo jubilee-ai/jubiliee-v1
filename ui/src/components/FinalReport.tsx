@@ -3,7 +3,7 @@ import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { ScrollArea } from "@/components/ui/scroll-area"
-import type { TrainingAgentState, StepInfo, KeyStats, FeatureCorrelation, DistributionStat, NumericSummary, GroupSummary, ConcentrationStat, HistogramBin, LorenzPoint } from "@/types/agent"
+import type { TrainingAgentState, StepInfo, KeyStats, FeatureCorrelation, DistributionStat, NumericSummary, GroupSummary, ConcentrationStat, HistogramBin, LorenzPoint, TrainingIteration } from "@/types/agent"
 import { formatNumber, formatPercent } from "@/lib/utils"
 import {
   X,
@@ -284,15 +284,69 @@ function SummaryTab({ agentState }: { agentState: TrainingAgentState }) {
   )
 }
 
+// Helper to extract iteration metrics from various possible structures
+function getIterationMetrics(iter: TrainingIteration): {
+  val_accuracy?: number
+  val_roc_auc?: number
+  val_r2?: number
+  val_rmse?: number
+  val_mae?: number
+  test_r2?: number
+  test_rmse?: number
+  test_mae?: number
+  model_name?: string
+  tool?: string
+  success?: boolean
+  error?: string | null
+} {
+  // Check top-level properties first
+  const topLevel = {
+    val_accuracy: iter.val_accuracy,
+    val_roc_auc: iter.val_roc_auc,
+    val_r2: iter.val_r2,
+    val_rmse: iter.val_rmse,
+    val_mae: iter.val_mae,
+    test_r2: iter.test_r2,
+    test_rmse: iter.test_rmse,
+    test_mae: iter.test_mae,
+    model_name: iter.model_name,
+    tool: iter.tool,
+    success: iter.success,
+    error: iter.error,
+  }
+  
+  // If metrics object exists, merge values (top-level takes precedence)
+  const metricsObj = iter.metrics as Record<string, unknown> | undefined
+  if (metricsObj) {
+    return {
+      val_accuracy: topLevel.val_accuracy ?? (metricsObj.val_accuracy as number | undefined),
+      val_roc_auc: topLevel.val_roc_auc ?? (metricsObj.roc_auc as number | undefined) ?? (metricsObj.val_roc_auc as number | undefined),
+      val_r2: topLevel.val_r2 ?? (metricsObj.val_r2 as number | undefined),
+      val_rmse: topLevel.val_rmse ?? (metricsObj.val_rmse as number | undefined),
+      val_mae: topLevel.val_mae ?? (metricsObj.val_mae as number | undefined),
+      test_r2: topLevel.test_r2 ?? (metricsObj.test_r2 as number | undefined),
+      test_rmse: topLevel.test_rmse ?? (metricsObj.test_rmse as number | undefined),
+      test_mae: topLevel.test_mae ?? (metricsObj.test_mae as number | undefined),
+      model_name: topLevel.model_name,
+      tool: topLevel.tool,
+      success: topLevel.success,
+      error: topLevel.error,
+    }
+  }
+  
+  return topLevel
+}
+
 function MetricsTab({ agentState }: { agentState: TrainingAgentState }) {
   const metrics = agentState.training_metrics
   const lastIteration = metrics?.iterations?.[metrics.iterations.length - 1]
-  const testR2 = metrics?.test_r2 ?? lastIteration?.test_r2
-  const testRmse = metrics?.test_rmse ?? lastIteration?.test_rmse
-  const testMae = metrics?.test_mae ?? lastIteration?.test_mae
-  const valR2 = metrics?.val_r2 ?? lastIteration?.val_r2
-  const valRmse = metrics?.val_rmse ?? lastIteration?.val_rmse
-  const valMae = metrics?.val_mae ?? lastIteration?.val_mae
+  const lastIterMetrics = lastIteration ? getIterationMetrics(lastIteration) : null
+  const testR2 = metrics?.test_r2 ?? lastIterMetrics?.test_r2
+  const testRmse = metrics?.test_rmse ?? lastIterMetrics?.test_rmse
+  const testMae = metrics?.test_mae ?? lastIterMetrics?.test_mae
+  const valR2 = metrics?.val_r2 ?? lastIterMetrics?.val_r2
+  const valRmse = metrics?.val_rmse ?? lastIterMetrics?.val_rmse
+  const valMae = metrics?.val_mae ?? lastIterMetrics?.val_mae
   
   const hasClassificationMetrics = metrics?.test_accuracy != null || metrics?.test_roc_auc != null
   const hasRegressionMetrics = testR2 != null || valR2 != null
@@ -347,46 +401,77 @@ function MetricsTab({ agentState }: { agentState: TrainingAgentState }) {
       <Section title="Training Iterations">
         <div className="space-y-2">
           {metrics?.iterations && metrics.iterations.length > 0 ? (
-            metrics.iterations.map((iter, i) => (
-              <div
-                key={i}
-                className={`flex items-center justify-between p-4 rounded-xl ${
-                  i === (metrics.iterations?.length || 1) - 1
-                    ? "bg-foreground/5 ring-1 ring-foreground/10"
-                    : "bg-muted/30"
-                }`}
-              >
-                <div className="flex items-center gap-3">
-                  <span className="font-medium">Iteration {i + 1}</span>
-                  {i === (metrics.iterations?.length || 1) - 1 && (
-                    <Badge variant="secondary" className="text-xs">Best</Badge>
+            metrics.iterations.map((iter, i) => {
+              const iterMetrics = getIterationMetrics(iter)
+              const isBest = i === (metrics.iterations?.length || 1) - 1
+              const hasIterClassificationMetrics = iterMetrics.val_accuracy != null || iterMetrics.val_roc_auc != null
+              const hasIterRegressionMetrics = iterMetrics.val_r2 != null || iterMetrics.test_r2 != null
+              
+              return (
+                <div
+                  key={i}
+                  className={`p-4 rounded-xl ${
+                    isBest
+                      ? "bg-foreground/5 ring-1 ring-foreground/10"
+                      : "bg-muted/30"
+                  }`}
+                >
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                      <span className="font-medium">Iteration {iter.iteration ?? i + 1}</span>
+                      {isBest && (
+                        <Badge variant="secondary" className="text-xs">Best</Badge>
+                      )}
+                      {iterMetrics.success === false && (
+                        <Badge variant="destructive" className="text-xs">Failed</Badge>
+                      )}
+                    </div>
+                    <div className="flex gap-6 text-sm">
+                      {hasIterClassificationMetrics ? (
+                        <>
+                          <span className="text-muted-foreground">
+                            Accuracy: <span className="text-foreground font-medium">{formatPercent(iterMetrics.val_accuracy)}</span>
+                          </span>
+                          <span className="text-muted-foreground">
+                            AUC: <span className="text-foreground font-medium">{formatNumber(iterMetrics.val_roc_auc, 3)}</span>
+                          </span>
+                        </>
+                      ) : hasIterRegressionMetrics ? (
+                        <>
+                          <span className="text-muted-foreground">
+                            Val R²: <span className="text-foreground font-medium">{formatNumber(iterMetrics.val_r2, 4)}</span>
+                          </span>
+                          <span className="text-muted-foreground">
+                            Test R²: <span className="text-foreground font-medium">{formatNumber(iterMetrics.test_r2, 4)}</span>
+                          </span>
+                        </>
+                      ) : (
+                        <span className="text-muted-foreground">
+                          {iterMetrics.success === false ? "Failed" : "Completed"}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  
+                  {/* Show model name and tool used */}
+                  <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
+                    {iterMetrics.model_name && (
+                      <span>Model: <code className="text-foreground">{iterMetrics.model_name}</code></span>
+                    )}
+                    {iterMetrics.tool && (
+                      <span>Tool: <code className="text-foreground">{iterMetrics.tool}</code></span>
+                    )}
+                  </div>
+                  
+                  {/* Show error if present */}
+                  {iterMetrics.error && (
+                    <div className="mt-2 text-xs text-destructive bg-destructive/10 rounded px-2 py-1">
+                      {iterMetrics.error}
+                    </div>
                   )}
                 </div>
-                <div className="flex gap-6 text-sm">
-                  {hasClassificationMetrics ? (
-                    <>
-                      <span className="text-muted-foreground">
-                        Accuracy: <span className="text-foreground font-medium">{formatPercent(iter.val_accuracy)}</span>
-                      </span>
-                      <span className="text-muted-foreground">
-                        AUC: <span className="text-foreground font-medium">{formatNumber(iter.val_roc_auc, 3)}</span>
-                      </span>
-                    </>
-                  ) : iter.val_r2 != null ? (
-                    <>
-                      <span className="text-muted-foreground">
-                        R²: <span className="text-foreground font-medium">{formatNumber(iter.val_r2, 4)}</span>
-                      </span>
-                      <span className="text-muted-foreground">
-                        RMSE: <span className="text-foreground font-medium">{formatNumber(iter.val_rmse, 2)}</span>
-                      </span>
-                    </>
-                  ) : (
-                    <span className="text-muted-foreground">Completed</span>
-                  )}
-                </div>
-              </div>
-            ))
+              )
+            })
           ) : (
             <div className="p-4 rounded-xl bg-foreground/5 ring-1 ring-foreground/10">
               <div className="flex items-center gap-3">
@@ -848,7 +933,6 @@ function TraceTab({ steps, agentState }: { steps: StepInfo[]; agentState: Traini
       "label_split_definition": "label_split_definition",
       "feature_selection_specification": "feature_selection_specification",
       "feature_engineering_executor": "feature_engineering_executor",
-      "human_confirmation": "human_confirmation",
       "training": "training",
       "generate_report": "generate_report",
     }
@@ -1125,35 +1209,23 @@ function TraceTab({ steps, agentState }: { steps: StepInfo[]; agentState: Traini
       )
     }
 
-    if (stepId === "human_confirmation") {
-      return (
-        <div className="space-y-3">
-          <InfoBox 
-            label="Status" 
-            value={agentState.human_confirmed ? "Confirmed" : "Pending"} 
-            highlight={agentState.human_confirmed}
-          />
-          {audit?.mode != null && <InfoBox label="Mode" value={String(audit.mode)} />}
-        </div>
-      )
-    }
-
     if (stepId === "training") {
       const metrics = agentState.training_metrics
+      const iterations = metrics?.iterations || []
       const hasClassification = metrics?.test_accuracy != null || metrics?.test_roc_auc != null
-      const hasRegression = metrics?.test_r2 != null || metrics?.val_r2 != null || metrics?.iterations?.[0]?.test_r2 != null
+      const hasRegression = metrics?.test_r2 != null || metrics?.val_r2 != null || iterations[0]?.test_r2 != null
 
       return (
-        <div className="space-y-3">
+        <div className="space-y-4">
           <div className="grid grid-cols-2 gap-3">
             <InfoBox label="Status" value={metrics?.success ? "Success" : "Failed"} highlight={metrics?.success} />
-            <InfoBox label="Iterations" value={String(metrics?.num_iterations || 1)} />
+            <InfoBox label="Total Iterations" value={String(metrics?.num_iterations || iterations.length || 1)} />
           </div>
-          <InfoBox label="Model" value={metrics?.model_name || agentState.model_weights_path} mono />
+          <InfoBox label="Best Model" value={metrics?.model_name || agentState.model_weights_path} mono />
 
           {hasClassification && (
             <div>
-              <div className="text-sm text-muted-foreground mb-2">Classification Metrics</div>
+              <div className="text-sm text-muted-foreground mb-2">Final Classification Metrics</div>
               <div className="grid grid-cols-2 gap-2 text-sm">
                 {metrics?.val_accuracy != null && <span>Val Accuracy: <strong>{(metrics.val_accuracy * 100).toFixed(2)}%</strong></span>}
                 {metrics?.test_accuracy != null && <span>Test Accuracy: <strong>{(metrics.test_accuracy * 100).toFixed(2)}%</strong></span>}
@@ -1165,23 +1237,118 @@ function TraceTab({ steps, agentState }: { steps: StepInfo[]; agentState: Traini
 
           {hasRegression && (
             <div>
-              <div className="text-sm text-muted-foreground mb-2">Regression Metrics</div>
+              <div className="text-sm text-muted-foreground mb-2">Final Regression Metrics</div>
               <div className="grid grid-cols-2 gap-2 text-sm">
-                {(metrics?.val_r2 ?? metrics?.iterations?.[0]?.val_r2) != null && (
-                  <span>Val R²: <strong>{(metrics?.val_r2 ?? metrics?.iterations?.[0]?.val_r2)?.toFixed(4)}</strong></span>
+                {(metrics?.val_r2 ?? iterations[0]?.val_r2) != null && (
+                  <span>Val R²: <strong>{(metrics?.val_r2 ?? iterations[0]?.val_r2)?.toFixed(4)}</strong></span>
                 )}
-                {(metrics?.test_r2 ?? metrics?.iterations?.[0]?.test_r2) != null && (
-                  <span>Test R²: <strong>{(metrics?.test_r2 ?? metrics?.iterations?.[0]?.test_r2)?.toFixed(4)}</strong></span>
+                {(metrics?.test_r2 ?? iterations[0]?.test_r2) != null && (
+                  <span>Test R²: <strong>{(metrics?.test_r2 ?? iterations[0]?.test_r2)?.toFixed(4)}</strong></span>
                 )}
-                {(metrics?.val_rmse ?? metrics?.iterations?.[0]?.val_rmse) != null && (
-                  <span>Val RMSE: <strong>{(metrics?.val_rmse ?? metrics?.iterations?.[0]?.val_rmse)?.toFixed(2)}</strong></span>
+                {(metrics?.val_rmse ?? iterations[0]?.val_rmse) != null && (
+                  <span>Val RMSE: <strong>{(metrics?.val_rmse ?? iterations[0]?.val_rmse)?.toFixed(2)}</strong></span>
                 )}
-                {(metrics?.test_rmse ?? metrics?.iterations?.[0]?.test_rmse) != null && (
-                  <span>Test RMSE: <strong>{(metrics?.test_rmse ?? metrics?.iterations?.[0]?.test_rmse)?.toFixed(2)}</strong></span>
+                {(metrics?.test_rmse ?? iterations[0]?.test_rmse) != null && (
+                  <span>Test RMSE: <strong>{(metrics?.test_rmse ?? iterations[0]?.test_rmse)?.toFixed(2)}</strong></span>
                 )}
-                {(metrics?.test_mae ?? metrics?.iterations?.[0]?.test_mae) != null && (
-                  <span>Test MAE: <strong>{(metrics?.test_mae ?? metrics?.iterations?.[0]?.test_mae)?.toFixed(2)}</strong></span>
+                {(metrics?.test_mae ?? iterations[0]?.test_mae) != null && (
+                  <span>Test MAE: <strong>{(metrics?.test_mae ?? iterations[0]?.test_mae)?.toFixed(2)}</strong></span>
                 )}
+              </div>
+            </div>
+          )}
+
+          {/* All Iterations Log */}
+          {iterations.length > 0 && (
+            <div>
+              <div className="text-sm font-medium mb-2">All Training Iterations ({iterations.length})</div>
+              <div className="space-y-2 max-h-[400px] overflow-y-auto">
+                {iterations.map((iter, i) => {
+                  const iterMetrics = getIterationMetrics(iter)
+                  const hasIterClassification = iterMetrics.val_accuracy != null || iterMetrics.val_roc_auc != null
+                  const hasIterRegression = iterMetrics.val_r2 != null || iterMetrics.test_r2 != null
+                  const isBest = metrics?.best_iteration && typeof metrics.best_iteration === 'object' 
+                    ? (metrics.best_iteration as Record<string, unknown>).model_name === iterMetrics.model_name
+                    : i === iterations.length - 1
+                  
+                  return (
+                    <div
+                      key={i}
+                      className={`p-3 rounded-lg ${
+                        isBest
+                          ? "bg-green-500/10 ring-1 ring-green-500/20"
+                          : iterMetrics.success === false
+                            ? "bg-destructive/10"
+                            : "bg-muted/30"
+                      }`}
+                    >
+                      <div className="flex items-center justify-between mb-2">
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm font-medium">
+                            Iteration {iter.iteration ?? i + 1}
+                          </span>
+                          {isBest && (
+                            <Badge variant="secondary" className="text-xs bg-green-500/20 text-green-700 dark:text-green-400">
+                              Best
+                            </Badge>
+                          )}
+                          {iterMetrics.success === false && (
+                            <Badge variant="destructive" className="text-xs">Failed</Badge>
+                          )}
+                          {iterMetrics.success === true && !isBest && (
+                            <Badge variant="outline" className="text-xs">OK</Badge>
+                          )}
+                        </div>
+                      </div>
+                      
+                      {/* Model and tool info */}
+                      <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground mb-2">
+                        {iterMetrics.model_name && (
+                          <span>Model: <code className="text-foreground bg-muted/50 px-1 rounded">{iterMetrics.model_name}</code></span>
+                        )}
+                        {iterMetrics.tool && (
+                          <span>Tool: <code className="text-foreground bg-muted/50 px-1 rounded">{iterMetrics.tool}</code></span>
+                        )}
+                      </div>
+                      
+                      {/* Metrics */}
+                      {hasIterClassification && (
+                        <div className="grid grid-cols-2 gap-2 text-xs">
+                          {iterMetrics.val_accuracy != null && (
+                            <span>Val Accuracy: <strong>{(iterMetrics.val_accuracy * 100).toFixed(2)}%</strong></span>
+                          )}
+                          {iterMetrics.val_roc_auc != null && (
+                            <span>Val ROC-AUC: <strong>{iterMetrics.val_roc_auc.toFixed(4)}</strong></span>
+                          )}
+                        </div>
+                      )}
+                      
+                      {hasIterRegression && (
+                        <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
+                          {iterMetrics.val_r2 != null && (
+                            <span>Val R²: <strong>{iterMetrics.val_r2.toFixed(4)}</strong></span>
+                          )}
+                          {iterMetrics.test_r2 != null && (
+                            <span>Test R²: <strong>{iterMetrics.test_r2.toFixed(4)}</strong></span>
+                          )}
+                          {iterMetrics.val_rmse != null && (
+                            <span>Val RMSE: <strong>{iterMetrics.val_rmse.toFixed(2)}</strong></span>
+                          )}
+                          {iterMetrics.test_rmse != null && (
+                            <span>Test RMSE: <strong>{iterMetrics.test_rmse.toFixed(2)}</strong></span>
+                          )}
+                        </div>
+                      )}
+                      
+                      {/* Error */}
+                      {iterMetrics.error && (
+                        <div className="mt-2 text-xs text-destructive">
+                          Error: {iterMetrics.error}
+                        </div>
+                      )}
+                    </div>
+                  )
+                })}
               </div>
             </div>
           )}

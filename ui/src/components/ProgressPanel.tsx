@@ -22,6 +22,17 @@ export function ProgressPanel({
   const completedSteps = steps.filter((s) => s.status === "completed").length
   const progress = Math.round((completedSteps / steps.length) * 100)
 
+  // Filter steps to only show those that have been started (running, completed, awaiting_confirmation, error)
+  // Steps only appear after the previous one is accepted and completed
+  const visibleSteps = steps.filter((step) => {
+    return step.status === "running" || step.status === "completed" || step.status === "awaiting_confirmation" || step.status === "error"
+  })
+
+  // Calculate the original step numbers for visible steps
+  const getOriginalStepNumber = (step: StepInfo) => {
+    return steps.findIndex(s => s.id === step.id) + 1
+  }
+
   return (
     <div className="h-full flex flex-col bg-muted/30">
       {/* Header */}
@@ -50,18 +61,24 @@ export function ProgressPanel({
 
       <Separator />
 
-      {/* Steps List */}
+      {/* Steps List - only show visible steps */}
       <ScrollArea className="flex-1">
         <div className="p-4 space-y-1">
-          {steps.map((step, index) => (
-            <StepNode
-              key={step.id}
-              step={step}
-              stepNumber={index + 1}
-              isActive={step.id === currentStepId || step.status === "awaiting_confirmation"}
-              onSelect={() => onStepClick?.(step.id)}
-            />
-          ))}
+          {visibleSteps.length === 0 ? (
+            <div className="text-sm text-muted-foreground text-center py-8">
+              Steps will appear here as they start
+            </div>
+          ) : (
+            visibleSteps.map((step) => (
+              <StepNode
+                key={step.id}
+                step={step}
+                stepNumber={getOriginalStepNumber(step)}
+                isActive={step.id === currentStepId || step.status === "awaiting_confirmation"}
+                onSelect={() => onStepClick?.(step.id)}
+              />
+            ))
+          )}
         </div>
       </ScrollArea>
 

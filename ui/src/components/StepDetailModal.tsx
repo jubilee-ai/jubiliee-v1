@@ -23,7 +23,6 @@ export function StepDetailModal({ stepId, agentState, steps, onClose }: StepDeta
     "label_split_definition": "label_split_definition",
     "feature_selection_specification": "feature_selection_specification",
     "feature_engineering_executor": "feature_engineering_executor",
-    "human_confirmation": "human_confirmation",
     "training": "training",
     "generate_report": "generate_report",
   }
@@ -39,7 +38,6 @@ export function StepDetailModal({ stepId, agentState, steps, onClose }: StepDeta
       case "label_split_definition": return "Label & Split Definition"
       case "feature_selection_specification": return "Feature Selection"
       case "feature_engineering_executor": return "Feature Engineering"
-      case "human_confirmation": return "Human Confirmation"
       case "training": return "Model Training"
       case "generate_report": return "Report Generation"
       default: return step?.name || stepId

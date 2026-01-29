@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback, useImperativeHandle, forwardRef } from "react"
+import React, { useState, useRef, useEffect, useCallback, useImperativeHandle, forwardRef } from "react"
 import ReactMarkdown from "react-markdown"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Button } from "@/components/ui/button"
@@ -193,6 +193,62 @@ export const ChatPanel = forwardRef<ChatPanelRef, ChatPanelProps>(function ChatP
   const [showDatasetPicker, setShowDatasetPicker] = useState(false)
   const [selectedStepId, setSelectedStepId] = useState<string | null>(null)
   const messageRefs = useRef<Map<string, HTMLDivElement>>(new Map())
+  
+  // Track past confirmation requests so they persist in the chat
+  // Each past confirmation includes the message ID it should appear after
+  const [pastConfirmations, setPastConfirmations] = useState<Array<ConfirmationRequest & { resolvedAction?: string; afterMessageId?: string; redoComment?: string }>>([])
+  const confirmationShownAfterMessageIdRef = useRef<string | null>(null)
+  
+  // Save the current confirmation BEFORE calling parent's onConfirmation
+  // This ensures we capture it before React batches state updates
+  const handleConfirmationWithTracking = useCallback((action: ConfirmationAction, comment?: string) => {
+    if (confirmationRequest) {
+      // Save the current confirmation immediately before it disappears
+      setPastConfirmations(prev => [...prev, { 
+        ...confirmationRequest, 
+        resolvedAction: action,
+        afterMessageId: confirmationShownAfterMessageIdRef.current || undefined,
+        redoComment: action === "redo" ? comment : undefined
+      }])
+    }
+    onConfirmation(action, comment)
+  }, [onConfirmation, confirmationRequest])
+  
+  // Track which message the current confirmation appeared after
+  const prevConfirmationStepRef = useRef<string | null>(null)
+  useEffect(() => {
+    if (confirmationRequest && confirmationRequest.step !== prevConfirmationStepRef.current) {
+      // A new confirmation just appeared - record the last message ID
+      const lastMessage = messages[messages.length - 1]
+      confirmationShownAfterMessageIdRef.current = lastMessage?.id || null
+      prevConfirmationStepRef.current = confirmationRequest.step
+    }
+    if (!confirmationRequest) {
+      prevConfirmationStepRef.current = null
+    }
+  }, [confirmationRequest, messages])
+  
+  // Clear past confirmations when messages are reset
+  useEffect(() => {
+    if (messages.length === 0) {
+      setPastConfirmations([])
+      confirmationShownAfterMessageIdRef.current = null
+      prevConfirmationStepRef.current = null
+    }
+  }, [messages.length])
+  
+  // Create a map of messageId -> past confirmations that should appear after it
+  const confirmationsAfterMessage = useCallback(() => {
+    const map = new Map<string, Array<ConfirmationRequest & { resolvedAction?: string; redoComment?: string }>>()
+    for (const conf of pastConfirmations) {
+      if (conf.afterMessageId) {
+        const existing = map.get(conf.afterMessageId) || []
+        existing.push(conf)
+        map.set(conf.afterMessageId, existing)
+      }
+    }
+    return map
+  }, [pastConfirmations])
 
   // Expose methods to parent via ref
   useImperativeHandle(ref, () => ({
@@ -211,7 +267,6 @@ export const ChatPanel = forwardRef<ChatPanelRef, ChatPanelProps>(function ChatP
         "label_split_definition": ["Label", "Split", "target column"],
         "feature_selection_specification": ["Feature Selection", "features specified"],
         "feature_engineering_executor": ["Feature Engineering", "features created"],
-        "human_confirmation": ["Confirmation", "confirmed"],
         "training": ["Training", "trained", "R²", "accuracy", "RMSE"],
         "generate_report": ["Report", "complete"],
       }
@@ -317,73 +372,233 @@ export const ChatPanel = forwardRef<ChatPanelRef, ChatPanelProps>(function ChatP
             const stepInfo = detectedStep && steps ? steps.find(s => s.id === detectedStep) : null
             const isClickable = !!detectedStep && !!agentState && !!steps && stepInfo?.status === "completed"
             
+            // Get any past confirmations that should appear after this message
+            const confsAfterThis = confirmationsAfterMessage().get(msg.id) || []
+            
             return (
-              <MessageBubble 
-                key={msg.id} 
-                message={msg} 
-                isHighlighted={highlightedMessageId === msg.id}
-                onViewReport={onViewReport}
-                stepId={detectedStep}
-                isClickable={isClickable}
-                onStepClick={isClickable ? () => setSelectedStepId(detectedStep) : undefined}
-                ref={(el) => {
-                  if (el) messageRefs.current.set(msg.id, el)
-                  else messageRefs.current.delete(msg.id)
-                }}
-              />
+              <React.Fragment key={msg.id}>
+                <MessageBubble 
+                  message={msg} 
+                  isHighlighted={highlightedMessageId === msg.id}
+                  onViewReport={onViewReport}
+                  stepId={detectedStep}
+                  isClickable={isClickable}
+                  onStepClick={isClickable ? () => setSelectedStepId(detectedStep) : undefined}
+                  ref={(el) => {
+                    if (el) messageRefs.current.set(msg.id, el)
+                    else messageRefs.current.delete(msg.id)
+                  }}
+                />
+                
+                {/* Render any past confirmations that appeared after this message */}
+                {confsAfterThis.map((conf, index) => {
+                  const isRedo = conf.resolvedAction === "redo"
+                  const redoComment = (conf as { redoComment?: string }).redoComment
+                  
+                  return (
+                    <div key={`past-conf-${msg.id}-${index}`} className="flex gap-3">
+                      {/* Bot avatar */}
+                      <div className="flex-shrink-0 w-7 h-7 rounded-full flex items-center justify-center bg-muted">
+                        <Bot className="h-3.5 w-3.5 text-muted-foreground" />
+                      </div>
+                      
+                      <div className="flex-1 max-w-[92%] space-y-2">
+                        {/* Summary bubble - styling based on action */}
+                        <div className={cn(
+                          "rounded-2xl px-4 py-3 bg-muted/50 border",
+                          isRedo ? "border-amber-500/20" : "border-green-500/20"
+                        )}>
+                          <div className="flex items-center gap-2 mb-2">
+                            <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                              {conf.stepName}
+                            </span>
+                            {isRedo ? (
+                              <span className="flex items-center gap-1 text-xs text-amber-600 dark:text-amber-500">
+                                (Redo requested. Feedback: "{redoComment}")
+                              </span>
+                            ) : (
+                              <span className="flex items-center gap-1 text-xs text-green-600 dark:text-green-500">
+                                <Check className="h-3 w-3" />
+                                Accepted
+                              </span>
+                            )}
+                          </div>
+                          
+                          <div className="text-[15px] leading-relaxed prose prose-sm dark:prose-invert max-w-none prose-p:my-1 prose-headings:my-2">
+                            <ReactMarkdown>{conf.summary}</ReactMarkdown>
+                          </div>
+                          
+                          {/* Show redo comment if provided */}
+                          {/* {isRedo && redoComment && (
+                            <div className="mt-2 text-sm text-amber-700 dark:text-amber-400 italic">
+                              Feedback: "{redoComment}"
+                            </div>
+                          )} */}
+                          
+                          {/* Compact key details */}
+                          {conf.details && Object.keys(conf.details).length > 0 && (
+                            <div className="mt-3 pt-2 border-t border-border/30 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
+                              {Boolean(conf.details.selected_model) && (
+                                <span>Model: <code className="text-foreground">{String(conf.details.selected_model)}</code></span>
+                              )}
+                              {Boolean(conf.details.collected_dataset_ref) && (
+                                <span>Dataset: <code className="text-foreground">{String(conf.details.collected_dataset_ref)}</code></span>
+                              )}
+                              {Boolean(conf.details.label_definition) && (
+                                <span>Target: <code className="text-foreground">{String((conf.details.label_definition as Record<string, unknown>)?.target_column || "N/A")}</code></span>
+                              )}
+                              {Boolean(conf.details.feature_spec) && (
+                                <span>Features: <code className="text-foreground">{((conf.details.feature_spec as Record<string, unknown>)?.features as unknown[])?.length || 0}</code></span>
+                              )}
+                              {(conf.details.training_metrics as Record<string, unknown>)?.test_accuracy != null && (
+                                <span>Accuracy: <code className="text-foreground">{(Number((conf.details.training_metrics as Record<string, unknown>).test_accuracy) * 100).toFixed(1)}%</code></span>
+                              )}
+                              {(conf.details.training_metrics as Record<string, unknown>)?.test_r2 != null && (
+                                <span>R²: <code className="text-foreground">{Number((conf.details.training_metrics as Record<string, unknown>).test_r2).toFixed(4)}</code></span>
+                              )}
+                            </div>
+                          )}
+                          
+                          {/* View details link */}
+                          {agentState && steps && (
+                            <button
+                              onClick={() => setSelectedStepId(conf.step)}
+                              className="mt-2 flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
+                            >
+                              <span>View full details</span>
+                              <ChevronRight className="h-3 w-3" />
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  )
+                })}
+              </React.Fragment>
             )
           })}
 
-          {/* Confirmation Panel */}
-          {confirmationRequest && (
-            <div className="rounded-lg border bg-muted/30 p-4">
-              <h3 className="font-semibold flex items-center gap-2 mb-2">
-                <Badge variant="warning">Awaiting Confirmation</Badge>
-                {confirmationRequest.stepName}
-              </h3>
-              <p className="text-sm text-muted-foreground mb-4">
-                {confirmationRequest.summary}
-              </p>
+          {/* Subtle loading indicator */}
+          {isRunning && !confirmationRequest && (
+            <div className="flex gap-3">
+              <div className="flex-shrink-0 w-7 h-7 rounded-full flex items-center justify-center bg-muted">
+                <Bot className="h-3.5 w-3.5 text-muted-foreground" />
+              </div>
+              <div className="flex items-center gap-1.5 py-3 px-1">
+                <span className="w-1.5 h-1.5 rounded-full bg-muted-foreground/40 animate-pulse" style={{ animationDelay: "0ms" }} />
+                <span className="w-1.5 h-1.5 rounded-full bg-muted-foreground/40 animate-pulse" style={{ animationDelay: "150ms" }} />
+                <span className="w-1.5 h-1.5 rounded-full bg-muted-foreground/40 animate-pulse" style={{ animationDelay: "300ms" }} />
+              </div>
+            </div>
+          )}
 
-              <div className="space-y-3">
-                {/* Redo with comment */}
-                <div className="flex gap-2">
-                  <Textarea
-                    value={redoComment}
-                    onChange={(e) => setRedoComment(e.target.value)}
-                    placeholder="Add feedback for redo (optional)..."
-                    className="min-h-[60px] text-sm"
-                  />
+          {/* Confirmation Panel - Subtle inline design */}
+          {confirmationRequest && (
+            <div className="flex gap-3">
+              {/* Bot avatar */}
+              <div className="flex-shrink-0 w-7 h-7 rounded-full flex items-center justify-center bg-muted">
+                <Bot className="h-3.5 w-3.5 text-muted-foreground" />
+              </div>
+              
+              <div className="flex-1 max-w-[92%] space-y-3">
+                {/* Summary bubble */}
+                <div className="rounded-2xl px-4 py-3 bg-muted/50">
+                  <div className="flex items-center gap-2 mb-2">
+                    <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                      {confirmationRequest.stepName}
+                    </span>
+                    <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse" />
+                  </div>
+                  
+                  <div className="text-[15px] leading-relaxed prose prose-sm dark:prose-invert max-w-none prose-p:my-1 prose-headings:my-2">
+                    <ReactMarkdown>{confirmationRequest.summary}</ReactMarkdown>
+                  </div>
+                  
+                  {/* Compact key details */}
+                  {confirmationRequest.details && Object.keys(confirmationRequest.details).length > 0 && (
+                    <div className="mt-3 pt-2 border-t border-border/30 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
+                      {Boolean(confirmationRequest.details.selected_model) && (
+                        <span>Model: <code className="text-foreground">{String(confirmationRequest.details.selected_model)}</code></span>
+                      )}
+                      {Boolean(confirmationRequest.details.collected_dataset_ref) && (
+                        <span>Dataset: <code className="text-foreground">{String(confirmationRequest.details.collected_dataset_ref)}</code></span>
+                      )}
+                      {Boolean(confirmationRequest.details.label_definition) && (
+                        <span>Target: <code className="text-foreground">{String((confirmationRequest.details.label_definition as Record<string, unknown>)?.target_column || "N/A")}</code></span>
+                      )}
+                      {Boolean(confirmationRequest.details.feature_spec) && (
+                        <span>Features: <code className="text-foreground">{((confirmationRequest.details.feature_spec as Record<string, unknown>)?.features as unknown[])?.length || 0}</code></span>
+                      )}
+                      {(confirmationRequest.details.training_metrics as Record<string, unknown>)?.test_accuracy != null && (
+                        <span>Accuracy: <code className="text-foreground">{(Number((confirmationRequest.details.training_metrics as Record<string, unknown>).test_accuracy) * 100).toFixed(1)}%</code></span>
+                      )}
+                      {(confirmationRequest.details.training_metrics as Record<string, unknown>)?.test_r2 != null && (
+                        <span>R²: <code className="text-foreground">{Number((confirmationRequest.details.training_metrics as Record<string, unknown>).test_r2).toFixed(4)}</code></span>
+                      )}
+                    </div>
+                  )}
+                  
+                  {/* View details link */}
+                  {agentState && steps && (
+                    <button
+                      onClick={() => setSelectedStepId(confirmationRequest.step)}
+                      className="mt-2 flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
+                    >
+                      <span>View full details</span>
+                      <ChevronRight className="h-3 w-3" />
+                    </button>
+                  )}
                 </div>
 
-                <div className="flex flex-wrap gap-2">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => {
-                      onConfirmation("redo", redoComment || undefined)
-                      setRedoComment("")
-                    }}
+                {/* Inline action bar */}
+                <div className="flex items-center gap-2">
+                  {/* Accept button - primary action */}
+                  <button
+                    onClick={() => handleConfirmationWithTracking("accept")}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-foreground text-background text-sm font-medium hover:bg-foreground/90 transition-colors"
                   >
-                    <RotateCcw className="h-4 w-4 mr-2" />
-                    Redo
-                  </Button>
-                  <Button
-                    variant="default"
-                    size="sm"
-                    onClick={() => onConfirmation("accept")}
-                  >
-                    <Check className="h-4 w-4 mr-2" />
+                    <Check className="h-3.5 w-3.5" />
                     Accept
-                  </Button>
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    onClick={() => onConfirmation("accept_all")}
+                  </button>
+                  
+                  {/* Accept all - secondary */}
+                  <button
+                    onClick={() => handleConfirmationWithTracking("accept_all")}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-border text-sm hover:bg-muted transition-colors"
                   >
-                    <FastForward className="h-4 w-4 mr-2" />
-                    Accept All
-                  </Button>
+                    <FastForward className="h-3.5 w-3.5" />
+                    Accept all
+                  </button>
+                  
+                  {/* Redo - inline input that expands */}
+                  <div className="flex-1 flex items-center gap-2">
+                    <div className="flex-1 relative">
+                      <input
+                        type="text"
+                        value={redoComment}
+                        onChange={(e) => setRedoComment(e.target.value)}
+                        placeholder="Redo with feedback..."
+                        className="w-full h-8 px-3 pr-9 rounded-full border border-border bg-background text-sm placeholder:text-muted-foreground/60 focus:outline-none focus:ring-1 focus:ring-foreground/20 transition-all"
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" && redoComment.trim()) {
+                            handleConfirmationWithTracking("redo", redoComment)
+                            setRedoComment("")
+                          }
+                        }}
+                      />
+                      {redoComment.trim() && (
+                        <button
+                          onClick={() => {
+                            handleConfirmationWithTracking("redo", redoComment)
+                            setRedoComment("")
+                          }}
+                          className="absolute right-1 top-1/2 -translate-y-1/2 w-6 h-6 rounded-full bg-foreground text-background flex items-center justify-center hover:bg-foreground/90 transition-colors"
+                        >
+                          <RotateCcw className="h-3 w-3" />
+                        </button>
+                      )}
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>
@@ -543,8 +758,15 @@ const MessageBubble = forwardRef<HTMLDivElement, MessageBubbleProps>(
       : message.content
 
     if (isSystem) {
+      const isStepAccepted = message.content.includes("Step accepted")
+      const isRedo = message.content.includes("Requested redo")
       return (
-        <div ref={ref} className="text-xs text-muted-foreground/70 text-center py-2">
+        <div ref={ref} className={cn(
+          "text-xs text-center py-2",
+          isStepAccepted && "text-green-600 dark:text-green-500",
+          isRedo && "text-amber-600 dark:text-amber-500",
+          !isStepAccepted && !isRedo && "text-muted-foreground/70"
+        )}>
           {message.content}
         </div>
       )

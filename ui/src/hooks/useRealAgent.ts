@@ -7,6 +7,8 @@ import type {
   TrainingAgentState,
   StepInfo,
   ChatMessage,
+  ConfirmationRequest,
+  ConfirmationAction,
 } from "@/types/agent"
 import {
   checkHealth,
@@ -15,6 +17,7 @@ import {
   getDatasets,
   getModelTypes,
   streamTraining,
+  streamResumeTraining,
   type Dataset,
   type ModelType,
   type StreamEvent,
@@ -29,7 +32,6 @@ const STEP_DEFINITIONS = [
   { id: "label_split_definition", name: "Label & Split Definition", description: "Defining target column and split strategy" },
   { id: "feature_selection_specification", name: "Feature Selection", description: "Selecting and specifying features to use" },
   { id: "feature_engineering_executor", name: "Feature Engineering", description: "Executing feature transformations" },
-  { id: "human_confirmation", name: "Human Confirmation", description: "Review and confirm before training" },
   { id: "training", name: "Training", description: "Training the model and evaluating metrics" },
   { id: "generate_report", name: "Generate Report", description: "Creating final report with results" },
 ]
@@ -93,6 +95,7 @@ export interface UseRealAgentReturn {
   isBackendConnected: boolean
   currentJobId: string | null
   progress: number
+  confirmationRequest: ConfirmationRequest | null
   
   // Data
   datasets: Dataset[]
@@ -101,6 +104,7 @@ export interface UseRealAgentReturn {
   // Actions
   startAgent: (goal: string, datasets?: string[], modelPreference?: string) => Promise<void>
   sendMessage: (content: string) => void
+  handleConfirmation: (action: ConfirmationAction, comment?: string) => void
   reset: () => void
   checkConnection: () => Promise<boolean>
 }
@@ -115,6 +119,13 @@ export function useRealAgent(): UseRealAgentReturn {
   const [progress, setProgress] = useState(0)
   const [datasets, setDatasets] = useState<Dataset[]>([])
   const [modelTypes, setModelTypes] = useState<ModelType[]>([])
+  const [threadId, setThreadId] = useState<string | null>(null)
+  const [confirmationRequest, setConfirmationRequest] = useState<ConfirmationRequest | null>(null)
+  const [acceptAllMode, setAcceptAllMode] = useState(false)
+  
+  // Use a ref to track accept-all mode to avoid stale closure issues in callbacks
+  const acceptAllModeRef = useRef(acceptAllMode)
+  acceptAllModeRef.current = acceptAllMode
   
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const streamControllerRef = useRef<AbortController | null>(null)
@@ -489,8 +500,6 @@ export function useRealAgent(): UseRealAgentReturn {
       if (summary.validation_passed !== undefined) {
         lines.push(`Validation: ${summary.validation_passed ? "✓ Passed" : "⚠ Issues found"}`)
       }
-    } else if (nodeName === "human_confirmation" && summary) {
-      lines.push(summary.confirmed ? "✓ Confirmed - proceeding to training" : "Awaiting confirmation...")
     } else if (nodeName === "training" && summary) {
       if (summary.model_name) lines.push(`Model: **${summary.model_name}**`)
       if (summary.model_type) lines.push(`Type: ${summary.model_type}`)
@@ -529,6 +538,11 @@ export function useRealAgent(): UseRealAgentReturn {
   const handleStreamEvent = useCallback((event: StreamEvent) => {
     console.log("[stream]", event)
     
+    // Store thread_id from any event
+    if (event.thread_id) {
+      setThreadId(event.thread_id)
+    }
+    
     if (event.type === "started") {
       setProgress(0)
       addMessage("system", "Training stream started...")
@@ -542,6 +556,77 @@ export function useRealAgent(): UseRealAgentReturn {
           return step
         })
       )
+    } else if (event.type === "interrupt") {
+      // Human-in-the-loop interrupt - pause for user approval
+      console.log("[stream] Interrupt received:", event)
+      
+      const nodeName = event.node || "unknown"
+      const summary = typeof event.summary === "string" 
+        ? event.summary 
+        : JSON.stringify(event.summary || {}, null, 2)
+      const stateSnapshot = (event.state_snapshot || {}) as Record<string, unknown>
+      
+      // Update step to awaiting confirmation with details
+      setSteps((prev) =>
+        prev.map((step) => {
+          if (step.id === nodeName) {
+            return { 
+              ...step, 
+              status: "awaiting_confirmation", 
+              endTime: Date.now(),
+              details: summary,
+            }
+          }
+          return step
+        })
+      )
+      
+      // Update agent state with snapshot data
+      if (stateSnapshot && Object.keys(stateSnapshot).length > 0) {
+        setAgentState((prev) => ({
+          ...prev,
+          ...stateSnapshot as Partial<TrainingAgentState>,
+        }))
+      }
+      
+      // If in accept-all mode, auto-accept
+      if (acceptAllModeRef.current) {
+        console.log("[stream] Auto-accepting in accept-all mode")
+        const currentThreadId = event.thread_id
+        if (currentThreadId) {
+          // Mark step as completed and continue
+          setSteps((prev) =>
+            prev.map((step) =>
+              step.id === nodeName ? { ...step, status: "completed" } : step
+            )
+          )
+          // Auto-resume with approval
+          setTimeout(() => {
+            streamControllerRef.current = streamResumeTraining(
+              { thread_id: currentThreadId, approved: true },
+              handleStreamEvent,
+              (error) => {
+                setIsRunning(false)
+                addMessage("system", `Stream error: ${error.message}`)
+              }
+            )
+          }, 100)
+        }
+        return
+      }
+      
+      // Set confirmation request for UI with rich details
+      const stepDef = STEP_DEFINITIONS.find((s) => s.id === nodeName)
+      setConfirmationRequest({
+        step: nodeName,
+        stepName: stepDef?.name || nodeName,
+        summary: summary,
+        details: stateSnapshot,
+      })
+      
+      // Pause running state so the input is enabled
+      setIsRunning(false)
+      
     } else if (event.type === "dataset_loaded") {
       addMessage("system", `Dataset loaded: ${event.dataset} → ${event.ref}`)
     } else if (event.type === "node_complete") {
@@ -782,6 +867,97 @@ export function useRealAgent(): UseRealAgentReturn {
     )
   }, [addMessage, checkConnection, handleStreamEvent])
 
+  // Handle confirmation actions (human-in-the-loop)
+  const handleConfirmation = useCallback((action: ConfirmationAction, comment?: string) => {
+    if (!confirmationRequest || !threadId) {
+      console.warn("[handleConfirmation] No confirmation request or thread_id")
+      return
+    }
+    
+    const currentStep = confirmationRequest.step
+    const stepDef = STEP_DEFINITIONS.find((s) => s.id === currentStep)
+    
+    switch (action) {
+      case "accept":
+        addMessage("system", "✓ Step accepted")
+        
+        // Mark step as completed
+        setSteps((prev) =>
+          prev.map((step) =>
+            step.id === currentStep ? { ...step, status: "completed" } : step
+          )
+        )
+        
+        // Clear confirmation and resume
+        setConfirmationRequest(null)
+        setIsRunning(true)
+        
+        // Resume streaming with approval
+        streamControllerRef.current = streamResumeTraining(
+          { thread_id: threadId, approved: true },
+          handleStreamEvent,
+          (error) => {
+            setIsRunning(false)
+            addMessage("system", `Stream error: ${error.message}`)
+          }
+        )
+        break
+        
+      case "accept_all":
+        addMessage("system", "Auto-accepting remaining steps")
+        setAcceptAllMode(true)
+        acceptAllModeRef.current = true // Set ref immediately to avoid stale closure
+        
+        // Mark step as completed
+        setSteps((prev) =>
+          prev.map((step) =>
+            step.id === currentStep ? { ...step, status: "completed" } : step
+          )
+        )
+        
+        // Clear confirmation and resume
+        setConfirmationRequest(null)
+        setIsRunning(true)
+        
+        // Resume streaming with approval
+        streamControllerRef.current = streamResumeTraining(
+          { thread_id: threadId, approved: true },
+          handleStreamEvent,
+          (error) => {
+            setIsRunning(false)
+            addMessage("system", `Stream error: ${error.message}`)
+          }
+        )
+        break
+        
+      case "redo":
+        addMessage("system", `↻ Requested redo${comment ? `: ${comment}` : ""}`)
+        addMessage("agent", `Got it. I'll redo **${stepDef?.name || currentStep}**${comment ? ` with your feedback: "${comment}"` : ""}.`)
+        
+        // Mark step as running (will be redone)
+        setSteps((prev) =>
+          prev.map((step) =>
+            step.id === currentStep ? { ...step, status: "running", startTime: Date.now() } : step
+          )
+        )
+        
+        // Clear confirmation and resume with feedback
+        setConfirmationRequest(null)
+        setIsRunning(true)
+        
+        // Resume streaming with rejection and feedback
+        streamControllerRef.current = streamResumeTraining(
+          { thread_id: threadId, approved: false, feedback: comment || "Please redo this step." },
+          handleStreamEvent,
+          (error) => {
+            setIsRunning(false)
+            addMessage("system", `Stream error: ${error.message}`)
+          }
+        )
+        break
+    }
+  }, [confirmationRequest, threadId, addMessage, handleStreamEvent])
+
   // Start training with polling (fallback)
   const startAgentPolling = useCallback(async (goal: string, linkedDatasets?: string[], modelPreference?: string) => {
     // Check connection first
@@ -886,6 +1062,10 @@ Note: The real agent runs the full pipeline at once. Progress updates show which
     setIsRunning(false)
     setCurrentJobId(null)
     setProgress(0)
+    setThreadId(null)
+    setConfirmationRequest(null)
+    setAcceptAllMode(false)
+    acceptAllModeRef.current = false
   }, [])
 
   // Cleanup on unmount
@@ -908,10 +1088,12 @@ Note: The real agent runs the full pipeline at once. Progress updates show which
     isBackendConnected,
     currentJobId,
     progress,
+    confirmationRequest,
     datasets,
     modelTypes,
     startAgent,
     sendMessage,
+    handleConfirmation,
     reset,
     checkConnection,
   }

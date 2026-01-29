@@ -44,6 +44,10 @@ export function useAgentState(): UseAgentStateReturn {
   
   const stateRef = useRef(agentState)
   stateRef.current = agentState
+  
+  // Use a ref to track accept-all mode to avoid stale closure issues
+  const acceptAllModeRef = useRef(acceptAllMode)
+  acceptAllModeRef.current = acceptAllMode
 
   // Add a message to the chat
   const addMessage = useCallback((role: ChatMessage["role"], content: string, links?: ChatMessage["links"]) => {
@@ -100,7 +104,7 @@ export function useAgentState(): UseAgentStateReturn {
       addMessage("agent", `Completed ${stepDef?.name || stepId}.\n\n${stepDetails || ""}`)
       
       // If confirmation required and not in accept-all mode, wait for user
-      if (confirmationRequired && !acceptAllMode) {
+      if (confirmationRequired && !acceptAllModeRef.current) {
         setConfirmationRequest(getConfirmationRequest(stepId, stateRef.current, stepMetrics, stepDetails))
         setIsRunning(false)
         return false // Stop execution, waiting for confirmation
@@ -120,7 +124,7 @@ export function useAgentState(): UseAgentStateReturn {
       setIsRunning(false)
       return false
     }
-  }, [updateStep, addMessage, acceptAllMode])
+  }, [updateStep, addMessage])
 
   // Run all steps from current position
   const runFromStep = useCallback(async (startStepId: string) => {
@@ -171,7 +175,7 @@ export function useAgentState(): UseAgentStateReturn {
     
     switch (action) {
       case "accept":
-        addMessage("user", "Accepted this step")
+        addMessage("system", "✓ Step accepted")
         updateStep(currentStep, { status: "completed" })
         setConfirmationRequest(null)
         const nextStep = getNextStep(currentStep)
@@ -183,8 +187,9 @@ export function useAgentState(): UseAgentStateReturn {
         break
         
       case "accept_all":
-        addMessage("user", "Accepted all remaining steps")
+        addMessage("system", "Auto-accepting remaining steps")
         setAcceptAllMode(true)
+        acceptAllModeRef.current = true // Set ref immediately to avoid stale closure
         updateStep(currentStep, { status: "completed" })
         setConfirmationRequest(null)
         const nextStepAll = getNextStep(currentStep)
@@ -196,7 +201,7 @@ export function useAgentState(): UseAgentStateReturn {
         break
         
       case "redo":
-        addMessage("user", `Requested redo${comment ? `: ${comment}` : ""}`)
+        addMessage("system", `↻ Requested redo"${comment ? `: ${comment}` : ""}"`)
         addMessage("agent", `Got it. I'll redo this step${comment ? ` with your feedback: "${comment}"` : ""}.`)
         updateStep(currentStep, { status: "pending" })
         setConfirmationRequest(null)
