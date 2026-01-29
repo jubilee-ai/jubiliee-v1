@@ -18,4 +18,5 @@ bm25s
 openai
 python-dotenv
 sqlalchemy
-
+fastapi
+uvicorn[standard]

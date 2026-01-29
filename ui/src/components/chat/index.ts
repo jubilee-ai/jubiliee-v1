@@ -1,0 +1,10 @@
+// Chat subcomponents barrel export
+export { MessageBubble } from "./MessageBubble"
+export { SuggestionChip } from "./SuggestionChip"
+export { EmptyState } from "./EmptyState"
+export { LoadingIndicator } from "./LoadingIndicator"
+export { ConfirmationPanel } from "./ConfirmationPanel"
+export { PastConfirmation, ConfirmationDetails } from "./PastConfirmation"
+export type { ResolvedConfirmation } from "./PastConfirmation"
+export { ChatInput } from "./ChatInput"
+export { detectStepFromMessage, STEP_PATTERNS, STEP_KEYWORDS } from "./stepPatterns"

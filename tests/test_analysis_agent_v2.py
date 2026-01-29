@@ -38,7 +38,7 @@ from langchain_openai import ChatOpenAI
 # Now import the agent (paths are set up)
 from agents.analysis_agent_v2 import agent
 
-llm = ChatOpenAI(model="gpt-5-mini", temperature=0)
+llm = ChatOpenAI(model="gpt-5.1", temperature=0)
 
 
 # Delay between tests to avoid rate limits

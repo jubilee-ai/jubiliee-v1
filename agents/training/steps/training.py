@@ -21,19 +21,20 @@ from langchain.chat_models import init_chat_model
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 
-from agents.training.prompts import TRAINING_SYSTEM_PROMPT
+from ..utils.prompts import TRAINING_SYSTEM_PROMPT
 
-load_dotenv(Path(__file__).parent.parent.parent / ".env")
+load_dotenv(Path(__file__).parent.parent.parent.parent / ".env")
 
 # TODO: More hyperparameters (e.g. sample weights... and for each model...)
 
 # Add tools path
-_TOOLS_DIR = Path(__file__).parent.parent.parent / "tools" / "models-tools" / "training"
+# Path: steps -> training -> agents -> root -> tools/models-tools/training
+_TOOLS_DIR = Path(__file__).parent.parent.parent.parent / "tools" / "models-tools" / "training"
 if str(_TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(_TOOLS_DIR))
 
 # Add data-tools path for utils
-_DATA_TOOLS_DIR = Path(__file__).parent.parent.parent / "tools" / "data-tools"
+_DATA_TOOLS_DIR = Path(__file__).parent.parent.parent.parent / "tools" / "data-tools"
 if str(_DATA_TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(_DATA_TOOLS_DIR))
 
@@ -160,9 +161,18 @@ class TrainingIteration(BaseModel):
     model_name: str = Field(description="Name of the model for this iteration")
     tool_used: str = Field(description="Training tool used (e.g., sklearn_logistic_regression)")
     hyperparams: dict = Field(default_factory=dict, description="Hyperparameters used")
+    # Classification metrics
     train_accuracy: Optional[float] = Field(default=None, description="Training accuracy")
     val_accuracy: Optional[float] = Field(default=None, description="Validation accuracy from evaluate_model")
     val_roc_auc: Optional[float] = Field(default=None, description="Validation ROC-AUC from evaluate_model")
+    # Regression metrics
+    train_r2: Optional[float] = Field(default=None, description="Training R² score")
+    val_r2: Optional[float] = Field(default=None, description="Validation R² score")
+    val_rmse: Optional[float] = Field(default=None, description="Validation RMSE")
+    val_mae: Optional[float] = Field(default=None, description="Validation MAE")
+    test_r2: Optional[float] = Field(default=None, description="Test R² score")
+    test_rmse: Optional[float] = Field(default=None, description="Test RMSE")
+    test_mae: Optional[float] = Field(default=None, description="Test MAE")
     success: bool = Field(description="Whether this iteration succeeded")
     error: Optional[str] = Field(default=None, description="Error message if failed")
 
@@ -173,11 +183,20 @@ class TrainingResult(BaseModel):
     best_model_name: str = Field(description="Name of the best trained model")
     model_type: str = Field(description="Type of model trained (e.g., logistic_regression, random_forest)")
     
-    # Best model metrics
+    # Classification metrics
     val_accuracy: Optional[float] = Field(default=None, description="Best model validation accuracy")
     val_roc_auc: Optional[float] = Field(default=None, description="Best model validation ROC-AUC")
     test_accuracy: Optional[float] = Field(default=None, description="Best model test accuracy")
     test_roc_auc: Optional[float] = Field(default=None, description="Best model test ROC-AUC")
+    
+    # Regression metrics
+    train_r2: Optional[float] = Field(default=None, description="Training R² score")
+    val_r2: Optional[float] = Field(default=None, description="Validation R² score")
+    val_rmse: Optional[float] = Field(default=None, description="Validation RMSE")
+    val_mae: Optional[float] = Field(default=None, description="Validation MAE")
+    test_r2: Optional[float] = Field(default=None, description="Test R² score")
+    test_rmse: Optional[float] = Field(default=None, description="Test RMSE")
+    test_mae: Optional[float] = Field(default=None, description="Test MAE")
     
     # Iteration tracking
     iterations: list[TrainingIteration] = Field(default_factory=list, description="List of all training iterations attempted")
@@ -338,7 +357,7 @@ def run_training_agent(
     goal: str,
     model_name: Optional[str] = None,
     max_iterations: int = 6,
-    llm_model: str = "openai:gpt-5-mini",
+    llm_model: str = "openai:gpt-5.1",
 ) -> dict[str, Any]:
     """
     Run the training agent to train and evaluate a model.
@@ -582,10 +601,23 @@ Begin training now.
                 "tool": it.tool_used,
                 "hyperparams": it.hyperparams,
                 "metrics": {
+                    # Classification (kept for backward compat)
                     "train_accuracy": it.train_accuracy,
                     "val_accuracy": it.val_accuracy,
                     "roc_auc": it.val_roc_auc,
                 },
+                # Classification metrics (top level for UI access)
+                "train_accuracy": it.train_accuracy,
+                "val_accuracy": it.val_accuracy,
+                "val_roc_auc": it.val_roc_auc,
+                # Regression metrics (top level for easier access)
+                "train_r2": it.train_r2,
+                "val_r2": it.val_r2,
+                "val_rmse": it.val_rmse,
+                "val_mae": it.val_mae,
+                "test_r2": it.test_r2,
+                "test_rmse": it.test_rmse,
+                "test_mae": it.test_mae,
                 "success": it.success,
                 "error": it.error,
             }
@@ -608,10 +640,20 @@ Begin training now.
             "train_size": len(train_data),
             "val_size": len(val_data),
             "test_size": len(test_data),
+            # Classification metrics
             "val_accuracy": training_result.val_accuracy,
             "val_roc_auc": training_result.val_roc_auc,
             "test_accuracy": training_result.test_accuracy,
             "test_roc_auc": training_result.test_roc_auc,
+            # Regression metrics
+            "train_r2": training_result.train_r2,
+            "val_r2": training_result.val_r2,
+            "val_rmse": training_result.val_rmse,
+            "val_mae": training_result.val_mae,
+            "test_r2": training_result.test_r2,
+            "test_rmse": training_result.test_rmse,
+            "test_mae": training_result.test_mae,
+            # Iterations
             "iterations": iterations_dict,
             "num_iterations": training_result.num_iterations,
             "best_iteration": best_iteration,

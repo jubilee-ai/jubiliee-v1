@@ -1,0 +1,615 @@
+"""
+Node function implementations for the ML Training Agent.
+Each node represents a step in the training pipeline.
+"""
+
+import json
+import re
+import sys
+import time
+from datetime import datetime
+from pathlib import Path
+from typing import Optional
+
+from langchain.chat_models import init_chat_model
+from langgraph.types import interrupt
+
+from ..core.hitl import make_serializable, parse_decision, run_with_hitl
+from ..core.state import TrainingAgentState
+
+# Import utilities for dataset registration
+_DATA_TOOLS_DIR = Path(__file__).parent.parent.parent.parent / "tools" / "data-tools"
+if str(_DATA_TOOLS_DIR) not in sys.path:
+    sys.path.insert(0, str(_DATA_TOOLS_DIR))
+from utils import get_registered_dataset, register_dataset
+
+# Import node implementations from separate modules
+from .cleaning_simple import run_cleaning_simple
+from .data_collection import data_collection as _data_collection_impl
+from .feature_engineering_executor import execute_feature_spec_split
+from .feature_engineering_simple import run_feature_engineering_simple
+from .label_and_split import apply_split, compute_split_indices, run_label_split_definition
+from .select_model import select_model as _select_model_impl
+from .training import run_training_agent as _run_training
+
+
+# =============================================================================
+# HELPER FUNCTIONS
+# =============================================================================
+
+
+def _add_feedback_to_goal(goal: str, step: str, feedback: Optional[str]) -> str:
+    """Append user feedback to goal if provided."""
+    return f"{goal}\n\nUser feedback on {step}: {feedback}" if feedback else goal
+
+
+def _get_label_def(state: TrainingAgentState) -> dict:
+    """Get label definition from state with empty dict fallback."""
+    return state.get("label_definition") or {}
+
+
+def _infer_task_type(goal: str, selected_model: str) -> str:
+    """Infer task type from goal and model selection."""
+    goal_lower = goal.lower()
+    model_lower = selected_model.lower()
+    
+    if any(w in model_lower for w in ["regress", "continuous", "numeric"]):
+        return "regression"
+    if any(w in goal_lower for w in ["regress", "predict value", "forecast", "amount", "price", "cost"]):
+        return "regression"
+    if any(w in model_lower for w in ["glm", "regression"]) and "logistic" not in model_lower:
+        return "regression"
+    return "classification"
+
+
+# =============================================================================
+# NODE FUNCTIONS
+# =============================================================================
+
+
+def select_model(state: TrainingAgentState) -> TrainingAgentState:
+    """Step 1: Select Model with HITL approval."""
+
+    def do_work(s: TrainingAgentState, feedback: Optional[str]) -> TrainingAgentState:
+        if feedback:
+            return _select_model_impl({**s, "goal": _add_feedback_to_goal(s.get("goal", ""), "model selection", feedback)})
+        return _select_model_impl(s)
+
+    def get_summary(r: TrainingAgentState) -> str:
+        return f"Selected model: {r.get('selected_model', 'unknown')}\n\nReason: {r.get('model_explanation', 'No explanation provided')}"
+
+    return run_with_hitl("select_model", state, do_work, get_summary)
+
+
+def data_collection(state: TrainingAgentState) -> TrainingAgentState:
+    """Step 2: Data Collection with HITL approval."""
+
+    def do_work(s: TrainingAgentState, feedback: Optional[str]) -> TrainingAgentState:
+        if feedback:
+            return _data_collection_impl({**s, "goal": _add_feedback_to_goal(s.get("goal", ""), "data collection", feedback)})
+        return _data_collection_impl(s)
+
+    def get_summary(r: TrainingAgentState) -> str:
+        audit = next((t for t in r.get("audit_trace", []) if t.get("step") == "data_collection"), {})
+        cols = len(audit.get("columns", [])) if audit.get("columns") else "?"
+        return f"Collected dataset: {r.get('collected_dataset_ref', 'unknown')}\nRows: {audit.get('rows', '?')}, Columns: {cols}"
+
+    return run_with_hitl("data_collection", state, do_work, get_summary)
+
+
+def cleaning_node(state: TrainingAgentState) -> TrainingAgentState:
+    """Step 3: Cleaning & Standardization with HITL approval."""
+
+    def do_work(s: TrainingAgentState, feedback: Optional[str]) -> TrainingAgentState:
+        # Dynamically set max iterations based on dataset complexity
+        try:
+            df = get_registered_dataset(s["collected_dataset_ref"])
+            num_columns = len(df.columns) if df is not None else 20
+            max_iters = min(80, max(30, 30 + num_columns))
+        except Exception:
+            max_iters = 50
+
+        result = run_cleaning_simple(
+            dataset_ref=s["collected_dataset_ref"],
+            goal=_add_feedback_to_goal(s.get("goal", ""), "cleaning", feedback),
+            max_iterations=max_iters,
+        )
+
+        return {
+            **s,
+            "cleaned_dataset_ref": result["cleaned_ref"],
+            "cleaning_summary": result.get("cleaning_summary"),
+            "cleaning_transformations": result.get("transformations", []),
+            "current_step": "label_split_definition",
+        }
+
+    def get_summary(r: TrainingAgentState) -> str:
+        return (
+            f"Cleaned dataset: {r.get('cleaned_dataset_ref', 'unknown')}\n"
+            f"Transformations applied: {len(r.get('cleaning_transformations', []))}\n\n"
+            f"{r.get('cleaning_summary', '')}"
+        )
+
+    return run_with_hitl("cleaning", state, do_work, get_summary)
+
+
+def label_split_definition(state: TrainingAgentState) -> TrainingAgentState:
+    """Step 3.5: Label + Split Definition + Data Splitting with HITL approval."""
+
+    def do_work(s: TrainingAgentState, feedback: Optional[str]) -> TrainingAgentState:
+        existing = _get_label_def(s)
+        goal = _add_feedback_to_goal(s.get("goal", ""), "label/split definition", feedback)
+
+        # Get label definition from LLM
+        label_def = run_label_split_definition(
+            dataset_ref=s["cleaned_dataset_ref"],
+            goal=goal,
+            selected_model=s.get("selected_model"),
+            model_explanation=s.get("model_explanation"),
+            target_column=existing.get("target_column"),
+            prediction_horizon=existing.get("prediction_horizon"),
+            grain=existing.get("grain"),
+            as_of_cutoff=existing.get("as_of_cutoff"),
+            split_strategy=existing.get("split_strategy"),
+            forbidden_columns=existing.get("forbidden_columns"),
+        )
+
+        # Compute and apply split
+        df = get_registered_dataset(s["cleaned_dataset_ref"])
+        print(f"[label_split_definition] Computing {label_def.get('split_strategy', 'random')} split...")
+        
+        split_indices = compute_split_indices(df=df, label_definition=label_def, train_ratio=0.7, val_ratio=0.15, test_ratio=0.15)
+        train_df, val_df, test_df = apply_split(df, split_indices)
+        print(f"[label_split_definition] Split sizes: train={len(train_df)}, val={len(val_df)}, test={len(test_df)}")
+
+        # Register split datasets
+        base_ref = s["cleaned_dataset_ref"]
+        train_ref, val_ref, test_ref = f"{base_ref}_train", f"{base_ref}_val", f"{base_ref}_test"
+        register_dataset(train_ref, train_df)
+        register_dataset(val_ref, val_df)
+        register_dataset(test_ref, test_df)
+        print(f"[label_split_definition] Registered: {train_ref}, {val_ref}, {test_ref}")
+
+        return {
+            **s,
+            "label_definition": label_def,
+            "split_indices": split_indices,
+            "train_dataset_ref": train_ref,
+            "val_dataset_ref": val_ref,
+            "test_dataset_ref": test_ref,
+            "current_step": "feature_selection_specification",
+        }
+
+    def get_summary(r: TrainingAgentState) -> str:
+        ld = _get_label_def(r)
+        return (
+            f"Target column: {ld.get('target_column', 'unknown')}\n"
+            f"Split strategy: {ld.get('split_strategy', 'unknown')}\n"
+            f"Grain: {ld.get('grain', 'unknown')}\n"
+            f"Forbidden columns: {ld.get('forbidden_columns', [])}\n"
+            f"Train: {r.get('train_dataset_ref')}\n"
+            f"Val: {r.get('val_dataset_ref')}\n"
+            f"Test: {r.get('test_dataset_ref')}"
+        )
+
+    return run_with_hitl("label_split_definition", state, do_work, get_summary)
+
+
+def feature_selection_specification(state: TrainingAgentState) -> TrainingAgentState:
+    """Step 4: Feature Selection & Specification with HITL approval."""
+
+    def do_work(s: TrainingAgentState, feedback: Optional[str]) -> TrainingAgentState:
+        train_ref, val_ref, test_ref = s.get("train_dataset_ref"), s.get("val_dataset_ref"), s.get("test_dataset_ref")
+        label_def = _get_label_def(s)
+        goal = _add_feedback_to_goal(s.get("goal", ""), "feature selection", feedback)
+        
+        target_column = label_def.get("target_column", "")
+        if not train_ref:
+            raise ValueError("No train_dataset_ref in state - step 3.5 must complete first")
+        if not target_column:
+            raise ValueError("No target_column in label_definition - step 3.5 must complete first")
+
+        # Handle feature redo from training
+        feature_redo_requested = s.get("feature_redo_requested", False)
+        feature_redo_recommendation = s.get("feature_redo_recommendation")
+        feature_redo_iteration = s.get("feature_redo_iteration", 0)
+
+        recommendation = feature_redo_recommendation if feature_redo_requested else None
+        if feedback:
+            recommendation = f"{recommendation}\n{feedback}" if recommendation else feedback
+
+        if feature_redo_requested:
+            print(f"[feature_selection_specification] REDO iteration {feature_redo_iteration + 1}")
+            print(f"[feature_selection_specification] Recommendation from training: {feature_redo_recommendation}")
+
+        print(f"[feature_selection_specification] Running analysis on TRAINING data only ({train_ref})...")
+
+        result = run_feature_engineering_simple(
+            train_ref=train_ref, goal=goal, target_column=target_column,
+            grain=label_def.get("grain", ""), recomendation=recommendation,
+            val_ref=val_ref, test_ref=test_ref,
+            task_type=_infer_task_type(goal, s.get("selected_model", "")),
+            forbidden_columns=label_def.get("forbidden_columns", []),
+            as_of_cutoff=label_def.get("as_of_cutoff"),
+            prediction_horizon=label_def.get("prediction_horizon"),
+        )
+
+        feature_spec, validation = result.get("feature_spec"), result.get("validation", {})
+        key_stats = result.get("key_stats", {})
+
+        # Log key statistics
+        if key_stats:
+            overview = key_stats.get("dataset_overview", {})
+            print(f"[feature_selection_specification] Key statistics extracted:")
+            print(f"  - Dataset: {overview.get('rows', '?')} rows, {overview.get('columns', '?')} columns")
+            if key_stats.get("feature_correlations"):
+                top = key_stats["feature_correlations"][0]
+                print(f"  - Top correlation: {top.get('feature')} (r={top.get('correlation')})")
+            if key_stats.get("leakage_warnings"):
+                print(f"  - ⚠️ Leakage warnings: {len(key_stats['leakage_warnings'])} features")
+            if key_stats.get("high_correlation_pairs"):
+                print(f"  - High correlation pairs: {len(key_stats['high_correlation_pairs'])}")
+
+        # Auto-remove invalid features
+        if validation and not validation.get("valid", True):
+            print(f"[WARNING] Feature spec validation issues: {validation.get('errors', [])}")
+            features_valid = validation.get("features_valid", {})
+            if feature_spec and "features" in feature_spec:
+                original_count = len(feature_spec["features"])
+                feature_spec["features"] = [
+                    f for f in feature_spec["features"]
+                    if features_valid.get(f.get("name"), {}).get("valid", True)
+                ]
+                removed = original_count - len(feature_spec["features"])
+                if removed > 0:
+                    print(f"[INFO] Auto-removed {removed} invalid feature(s)")
+
+        return {
+            **s,
+            "feature_spec": feature_spec,
+            "analysis_trace": [{
+                "step": "feature_selection_specification",
+                "analysis_results": result.get("analysis_results", {}),
+                "key_stats": key_stats,
+                "validation": validation,
+                "is_redo": feature_redo_requested,
+                "redo_recommendation": feature_redo_recommendation,
+            }],
+            "feature_redo_requested": False,
+            "feature_redo_recommendation": None,
+            "feature_redo_reason": None,
+            "feature_redo_iteration": feature_redo_iteration + 1 if feature_redo_requested else feature_redo_iteration,
+        }
+
+    def get_summary(r: TrainingAgentState) -> str:
+        features = (r.get("feature_spec") or {}).get("features", [])
+        names = [f.get("name", "?") for f in features[:10]]
+        more = f" (+{len(features) - 10} more)" if len(features) > 10 else ""
+        return f"Features selected: {len(features)}\nFeature names: {', '.join(names)}{more}"
+
+    return run_with_hitl("feature_selection_specification", state, do_work, get_summary)
+
+
+def feature_engineering_executor(state: TrainingAgentState) -> TrainingAgentState:
+    """Step 5: Feature Engineering Executor with HITL approval."""
+
+    def do_work(s: TrainingAgentState, feedback: Optional[str]) -> TrainingAgentState:
+        train_ref, val_ref, test_ref = s.get("train_dataset_ref"), s.get("val_dataset_ref"), s.get("test_dataset_ref")
+        feature_spec, label_def = s.get("feature_spec"), _get_label_def(s)
+        target_column = label_def.get("target_column", "")
+
+        if not train_ref:
+            raise ValueError("No train_dataset_ref in state - step 3.5 must complete first")
+        if not feature_spec:
+            raise ValueError("No feature_spec in state - step 4 must complete first")
+        if not target_column:
+            raise ValueError("No target_column in label_definition")
+
+        if feedback:
+            print(f"[feature_engineering_executor] Feedback received, will be passed to feature selection: {feedback}")
+
+        print("[feature_engineering_executor] Executing feature spec (fit on train, transform all)...")
+
+        result = execute_feature_spec_split(
+            train_ref=train_ref, val_ref=val_ref, test_ref=test_ref,
+            feature_spec=feature_spec, target_column=target_column,
+            grain=label_def.get("grain", ""), as_of_cutoff=label_def.get("as_of_cutoff"),
+        )
+
+        errors, features_created = result.get("errors", []), result.get("features_created", [])
+        if errors:
+            print(f"[WARNING] Feature engineering had {len(errors)} errors:")
+            for err in errors:
+                print(f"  - {err}")
+
+        print(f"[feature_engineering_executor] Created {len(features_created)} features")
+        print(f"[feature_engineering_executor] Shapes: {result.get('shapes')}")
+
+        return {
+            **s,
+            "transformed_train_ref": result.get("train_ref"),
+            "transformed_val_ref": result.get("val_ref"),
+            "transformed_test_ref": result.get("test_ref"),
+            "transformed_dataset_ref": result.get("train_ref"),
+            "feature_validation_passed": len(features_created) > 0 and len(errors) < len(features_created),
+            "feature_redo_recommendation": feedback if feedback else s.get("feature_redo_recommendation"),
+            "audit_trace": s.get("audit_trace", []) + [{
+                "step": "feature_engineering_executor",
+                "features_created": features_created,
+                "errors": errors,
+                "shapes": result.get("shapes"),
+                "temporal_constraints_applied": result.get("temporal_constraints_applied", 0),
+            }],
+        }
+
+    def get_summary(r: TrainingAgentState) -> str:
+        audit = next((t for t in r.get("audit_trace", []) if t.get("step") == "feature_engineering_executor"), {})
+        shapes = audit.get("shapes", {})
+        return (
+            f"Features created: {len(audit.get('features_created', []))}\n"
+            f"Train shape: {shapes.get('train', '?')}\n"
+            f"Val shape: {shapes.get('val', '?')}\n"
+            f"Test shape: {shapes.get('test', '?')}\n"
+            f"Errors: {len(audit.get('errors', []))}"
+        )
+
+    return run_with_hitl("feature_engineering_executor", state, do_work, get_summary)
+
+
+def training_approval(state: TrainingAgentState) -> TrainingAgentState:
+    """Step 6.5: Training Approval - Propose training configuration for user approval."""
+    feedback = None
+
+    while True:
+        train_ref, val_ref = state.get("transformed_train_ref"), state.get("transformed_val_ref")
+        label_def, feature_spec = _get_label_def(state), state.get("feature_spec") or {}
+        target_column = label_def.get("target_column", "")
+        selected_model = state.get("selected_model", "logistic_regression")
+        goal = state.get("goal", "")
+
+        train_df = get_registered_dataset(train_ref)
+        val_df = get_registered_dataset(val_ref) if val_ref else None
+        if train_df is None:
+            raise ValueError(f"Training dataset not found: {train_ref}")
+
+        n_rows, n_features = len(train_df), len([c for c in train_df.columns if c != target_column])
+        class_counts = train_df[target_column].value_counts().to_dict()
+        total = sum(class_counts.values())
+        minority_ratio = min(class_counts.values()) / total if total > 0 else 0
+        is_imbalanced = minority_ratio < 0.3
+        task_type = _infer_task_type(goal, selected_model)
+
+        features_list = [f.get("name") for f in feature_spec.get("features", [])][:20]
+        imbalance_msg = f"⚠️ IMBALANCED DATA - minority class is {minority_ratio:.1%}" if is_imbalanced else "✓ Balanced classes"
+        feedback_section = f"## User Feedback to Incorporate:\n{feedback}" if feedback else ""
+
+        prompt = f"""You are an ML expert. Propose a training configuration for the following task.
+
+## Task
+Goal: {goal}
+Task Type: {task_type}
+Selected Model: {selected_model}
+Target Column: {target_column}
+
+## Data Characteristics
+- Training rows: {n_rows}
+- Features: {n_features}
+- Feature names (first 20): {features_list}
+- Validation rows: {len(val_df) if val_df is not None else 'N/A'}
+
+## Class Distribution (Training)
+{json.dumps(class_counts, indent=2)}
+{imbalance_msg}
+
+{feedback_section}
+
+## Your Task
+Propose a training configuration. Respond with a JSON object containing:
+
+```json
+{{
+    "model_type": "{selected_model}",
+    "task_type": "{task_type}",
+    "hyperparameters": {{}},
+    "class_weight": "balanced" or null,
+    "max_iterations": 3,
+    "strategy_notes": "Brief explanation of why these hyperparameters were chosen",
+    "expected_metrics": "What metrics to optimize and expected performance range"
+}}
+```
+
+Be specific with hyperparameter values. Consider:
+- Dataset size ({n_rows} rows) - larger datasets can support more complex models
+- Number of features ({n_features}) - may need regularization if many features
+- Class imbalance - use class_weight="balanced" if imbalanced
+- Model type - choose appropriate hyperparameters for {selected_model}
+"""
+
+        response = init_chat_model("openai:gpt-4o-mini").invoke([{"role": "user", "content": prompt}])
+
+        # Parse JSON from response
+        try:
+            json_match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", response.content)
+            training_plan = json.loads(json_match.group(1)) if json_match else json.loads(response.content)
+        except json.JSONDecodeError:
+            training_plan = {
+                "model_type": selected_model, "task_type": task_type, "hyperparameters": {},
+                "class_weight": "balanced" if is_imbalanced else None, "max_iterations": 3,
+                "strategy_notes": "Default configuration - LLM response could not be parsed",
+                "expected_metrics": "Standard metrics for the task type",
+            }
+
+        # Ensure required fields and add data summary
+        training_plan.setdefault("model_type", selected_model)
+        training_plan.setdefault("task_type", task_type)
+        training_plan.setdefault("max_iterations", 3)
+        training_plan["data_summary"] = {
+            "train_rows": n_rows, "val_rows": len(val_df) if val_df is not None else None,
+            "n_features": n_features, "class_distribution": class_counts, "is_imbalanced": is_imbalanced,
+        }
+
+        print(f"[training_approval] Proposed training plan:")
+        print(f"  Model: {training_plan.get('model_type')}")
+        print(f"  Hyperparameters: {training_plan.get('hyperparameters')}")
+        print(f"  Strategy: {training_plan.get('strategy_notes')}")
+
+        hyperparams = training_plan.get("hyperparameters", {})
+        hyperparams_str = "\n".join([f"  - {k}: {v}" for k, v in hyperparams.items()]) if hyperparams else "  (default values)"
+
+        summary = f"""## Proposed Training Configuration
+
+**Model:** {training_plan.get('model_type')}
+**Task Type:** {training_plan.get('task_type')}
+**Max Iterations:** {training_plan.get('max_iterations')}
+
+**Hyperparameters:**
+{hyperparams_str}
+
+**Class Weight:** {training_plan.get('class_weight', 'None')}
+
+**Strategy:**
+{training_plan.get('strategy_notes', 'No notes provided')}
+
+**Expected Metrics:**
+{training_plan.get('expected_metrics', 'Standard metrics for the task')}
+
+**Data Summary:**
+- Training: {n_rows} rows, {n_features} features
+- Validation: {len(val_df) if val_df is not None else 'N/A'} rows
+- Class balance: {'Imbalanced' if is_imbalanced else 'Balanced'}
+"""
+
+        training_plan = make_serializable(training_plan)
+        decision = interrupt({
+            "node": "training_approval", "summary": summary,
+            "message": "Review the proposed training configuration. Approve to start training, or provide feedback to adjust the plan.",
+            "state_snapshot": {"training_plan": training_plan, "selected_model": selected_model, "target_column": target_column},
+        })
+
+        approved, new_feedback = parse_decision(decision)
+        if approved:
+            return {**state, "training_plan": training_plan, "training_plan_approved": True, "current_step": "training"}
+        
+        feedback = new_feedback or "Please adjust the training configuration."
+        print(f"[training_approval] Plan rejected. Feedback: {feedback}")
+
+
+def training(state: TrainingAgentState) -> TrainingAgentState:
+    """Step 7: Training with HITL approval."""
+
+    def do_work(s: TrainingAgentState, feedback: Optional[str]) -> TrainingAgentState:
+        train_ref, val_ref, test_ref = s.get("transformed_train_ref"), s.get("transformed_val_ref"), s.get("transformed_test_ref")
+        label_def = _get_label_def(s)
+        target_column = label_def.get("target_column", "")
+        selected_model = s.get("selected_model", "logistic_regression")
+        goal = _add_feedback_to_goal(s.get("goal", ""), "training", feedback)
+
+        if not train_ref:
+            raise ValueError("No transformed_train_ref in state - step 5 must complete first")
+        if not target_column:
+            raise ValueError("No target_column in label_definition")
+
+        model_name = f"{selected_model}_{int(time.time())}"
+        print(f"[training] Starting training with {selected_model}...")
+        print(f"  Train: {train_ref}\n  Val: {val_ref}\n  Test: {test_ref}\n  Target: {target_column}")
+
+        result = _run_training(
+            train_ref=train_ref, val_ref=val_ref, test_ref=test_ref,
+            target_column=target_column, selected_model=selected_model,
+            goal=goal, model_name=model_name, max_iterations=3,
+        )
+
+        if result.get("success"):
+            print(f"[training] Model trained successfully: {result.get('model_name')}")
+        else:
+            print(f"[training] Training failed: {result.get('error')}")
+
+        feature_redo_requested = result.get("feature_redo_requested", False)
+        if feature_redo_requested:
+            print(f"[training] Feature engineering redo requested!")
+            print(f"  Reason: {result.get('feature_redo_reason')}")
+            print(f"  Recommendation: {result.get('feature_redo_recommendation')}")
+
+        return {
+            **s,
+            "model_weights_path": result.get("model_name"),
+            "training_metrics": {
+                "success": result.get("success"), "model_name": result.get("model_name"), "model_type": result.get("model_type"),
+                "val_accuracy": result.get("val_accuracy"), "val_roc_auc": result.get("val_roc_auc"),
+                "test_accuracy": result.get("test_accuracy"), "test_roc_auc": result.get("test_roc_auc"),
+                "train_r2": result.get("train_r2"), "val_r2": result.get("val_r2"), "val_rmse": result.get("val_rmse"), "val_mae": result.get("val_mae"),
+                "test_r2": result.get("test_r2"), "test_rmse": result.get("test_rmse"), "test_mae": result.get("test_mae"),
+                "iterations": result.get("iterations", []), "num_iterations": result.get("num_iterations", 0),
+                "best_iteration": result.get("best_iteration"), "summary": result.get("summary"),
+                "recommendations": result.get("recommendations"), "feature_redo_requested": feature_redo_requested,
+            },
+            "training_iteration": s.get("training_iteration", 0) + 1,
+            "feature_redo_requested": feature_redo_requested,
+            "feature_redo_recommendation": result.get("feature_redo_recommendation"),
+            "feature_redo_reason": result.get("feature_redo_reason"),
+            "audit_trace": s.get("audit_trace", []) + [{
+                "step": "training", "model_name": result.get("model_name"), "success": result.get("success"),
+                "num_iterations": result.get("num_iterations", 0), "val_accuracy": result.get("val_accuracy"),
+                "val_roc_auc": result.get("val_roc_auc"), "test_accuracy": result.get("test_accuracy"),
+                "test_roc_auc": result.get("test_roc_auc"), "error": result.get("error"),
+                "feature_redo_requested": feature_redo_requested, "feature_redo_recommendation": result.get("feature_redo_recommendation"),
+            }],
+        }
+
+    def get_summary(r: TrainingAgentState) -> str:
+        metrics = r.get("training_metrics") or {}
+        lines = [f"Training {'succeeded' if metrics.get('success') else 'failed'}", f"Model: {metrics.get('model_name', 'unknown')}"]
+        for key, label in [("val_accuracy", "Val Accuracy"), ("val_roc_auc", "Val ROC-AUC"), ("test_accuracy", "Test Accuracy"), ("val_r2", "Val R²"), ("test_r2", "Test R²")]:
+            if metrics.get(key) is not None:
+                lines.append(f"{label}: {metrics.get(key):.4f}")
+        if metrics.get("summary"):
+            lines.append(f"\nSummary: {metrics.get('summary')}")
+        return "\n".join(lines)
+
+    return run_with_hitl("training", state, do_work, get_summary)
+
+
+def generate_report(state: TrainingAgentState) -> TrainingAgentState:
+    """Step 8: Generate Report with HITL approval."""
+
+    def do_work(s: TrainingAgentState, feedback: Optional[str]) -> TrainingAgentState:
+        training_metrics, label_def = s.get("training_metrics", {}), _get_label_def(s)
+
+        report = {
+            "generated_at": datetime.now().isoformat(),
+            "goal": s.get("goal"),
+            "model": {"type": s.get("selected_model"), "name": training_metrics.get("model_name"), "explanation": s.get("model_explanation")},
+            "data": {
+                "collected_dataset": s.get("collected_dataset_ref"), "cleaned_dataset": s.get("cleaned_dataset_ref"),
+                "train_dataset": s.get("transformed_train_ref"), "val_dataset": s.get("transformed_val_ref"), "test_dataset": s.get("transformed_test_ref"),
+            },
+            "label_definition": {"target_column": label_def.get("target_column"), "split_strategy": label_def.get("split_strategy"), "grain": label_def.get("grain")},
+            "training_results": {
+                "success": training_metrics.get("success"), "num_iterations": training_metrics.get("num_iterations", 0),
+                "validation_metrics": {"accuracy": training_metrics.get("val_accuracy"), "roc_auc": training_metrics.get("val_roc_auc")},
+                "test_metrics": {"accuracy": training_metrics.get("test_accuracy"), "roc_auc": training_metrics.get("test_roc_auc")},
+                "iterations": training_metrics.get("iterations", []), "best_iteration": training_metrics.get("best_iteration"),
+                "summary": training_metrics.get("summary"), "recommendations": training_metrics.get("recommendations"),
+            },
+            "audit_trace": s.get("audit_trace", []),
+            "user_feedback": feedback,
+        }
+
+        report_dir = Path(__file__).parent.parent.parent.parent / "trained_models"
+        report_dir.mkdir(exist_ok=True)
+        report_path = report_dir / f"{training_metrics.get('model_name', 'unknown')}_report.json"
+        
+        with open(report_path, "w") as f:
+            json.dump(report, f, indent=2, default=str)
+        print(f"\n[generate_report] Report saved to: {report_path}")
+
+        return {
+            **s,
+            "report_path": str(report_path),
+            "audit_trace": s.get("audit_trace", []) + [{"step": "generate_report", "path": str(report_path)}],
+        }
+
+    def get_summary(r: TrainingAgentState) -> str:
+        return f"Report generated successfully.\nPath: {r.get('report_path')}\nModel: {r.get('model_weights_path')}"
+
+    return run_with_hitl("generate_report", state, do_work, get_summary)

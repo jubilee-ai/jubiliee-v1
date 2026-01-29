@@ -9,12 +9,14 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 # Add data-tools to path for registry access
-_DATA_TOOLS_DIR = Path(__file__).parent.parent.parent / "tools" / "data-tools"
+# Path: steps -> training -> agents -> root -> tools/data-tools
+_DATA_TOOLS_DIR = Path(__file__).parent.parent.parent.parent / "tools" / "data-tools"
 if str(_DATA_TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(_DATA_TOOLS_DIR))
 
 # Import data retrieval agent
-_DATA_RETRIEVAL_DIR = Path(__file__).parent.parent / "data-retrieval"
+# Path: steps -> training -> agents -> data-retrieval
+_DATA_RETRIEVAL_DIR = Path(__file__).parent.parent.parent / "data-retrieval"
 if str(_DATA_RETRIEVAL_DIR) not in sys.path:
     sys.path.insert(0, str(_DATA_RETRIEVAL_DIR))
 
@@ -22,7 +24,7 @@ from agent import DataRetrievalResult, retrieve_data
 from utils import get_registered_dataset
 
 if TYPE_CHECKING:
-    from .agent import TrainingAgentState
+    from ..core.state import TrainingAgentState
 
 # TODO: Potentially turn this into a subagent --> for example when merging datastes
 def data_collection(state: "TrainingAgentState") -> "TrainingAgentState":

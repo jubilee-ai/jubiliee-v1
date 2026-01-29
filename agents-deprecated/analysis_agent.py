@@ -28,7 +28,7 @@ from .subagent import SubagentState, build_subagent_graph
 # LLM Setup
 # =============================================================================
 
-llm = ChatOpenAI(model="gpt-5-mini", temperature=0)
+llm = ChatOpenAI(model="gpt-5.1", temperature=0)
 
 
 # =============================================================================

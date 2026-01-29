@@ -172,7 +172,7 @@ def run_tool_binding_demo(api_key: str):
     
     # Initialize model
     model = init_chat_model(
-        model="gpt-5-mini",
+        model="gpt-5.1",
         temperature=0,
     )
     

@@ -19,10 +19,11 @@ from langchain.agents.structured_output import ToolStrategy
 from pydantic import BaseModel, Field
 from transformations.tool_utils import resolve_dataset
 
-load_dotenv(Path(__file__).parent.parent.parent / ".env")
+load_dotenv(Path(__file__).parent.parent.parent.parent / ".env")
 
 # Add data-tools to path
-_DATA_TOOLS_DIR = Path(__file__).parent.parent.parent / "tools" / "data-tools"
+# Path: steps -> training -> agents -> root -> tools/data-tools
+_DATA_TOOLS_DIR = Path(__file__).parent.parent.parent.parent / "tools" / "data-tools"
 if str(_DATA_TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(_DATA_TOOLS_DIR))
 
@@ -445,7 +446,7 @@ def run_feature_engineering(
     forbidden_columns: list[str] = None,
     as_of_cutoff: Optional[str] = None,
     prediction_horizon: Optional[str] = None,
-    model: str = "openai:gpt-5-mini",
+    model: str = "openai:gpt-5.1",
     max_iterations: int = 10,
 ) -> dict[str, Any]:
     """
