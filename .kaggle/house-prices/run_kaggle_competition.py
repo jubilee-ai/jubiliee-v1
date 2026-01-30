@@ -23,8 +23,57 @@ sys.path.insert(0, str(PROJECT_ROOT / "tools" / "data-tools"))
 sys.path.insert(0, str(PROJECT_ROOT / "tools" / "models-tools" / "training"))
 
 from utils import register_dataset, get_registered_dataset
-from agents.training.agent import invoke_training_agent
+from agents.training.agent import invoke_training_agent, resume_training_agent
 from model_storage import load_model, get_model_info
+
+
+def run_training_agent_auto_approve(goal: str, linked_datasets: list, user_model_preference: str = None):
+    """
+    Run the training agent with automatic approval of all HITL steps.
+    This is useful for automated pipelines like Kaggle competitions.
+    """
+    print_step("STARTING", "Training agent with auto-approval of HITL steps")
+    
+    # Start the training agent
+    result = invoke_training_agent(
+        goal=goal,
+        linked_datasets=linked_datasets,
+        user_model_preference=user_model_preference
+    )
+    
+    step_count = 0
+    max_steps = 50  # Safety limit to prevent infinite loops
+    
+    # Loop to auto-approve each HITL interrupt
+    while "__interrupt__" in result and step_count < max_steps:
+        step_count += 1
+        thread_id = result.get("_thread_id")
+        
+        # Extract interrupt info
+        interrupt_data = result.get("__interrupt__", [])
+        if interrupt_data:
+            interrupt_obj = interrupt_data[0]
+            interrupt_value = interrupt_obj.value if hasattr(interrupt_obj, "value") else interrupt_obj
+            node = interrupt_value.get("node", "unknown") if isinstance(interrupt_value, dict) else "unknown"
+            summary = interrupt_value.get("summary", "") if isinstance(interrupt_value, dict) else str(interrupt_value)
+            
+            print(f"\n  [STEP {step_count}] {node}")
+            print(f"  Summary: {summary[:200]}..." if len(summary) > 200 else f"  Summary: {summary}")
+            print(f"  → Auto-approving...")
+        
+        # Resume with approval
+        result = resume_training_agent(decision=True, thread_id=thread_id)
+        
+        # Check for errors
+        if result.get("error"):
+            print(f"\n  ❌ Error: {result.get('error')}")
+            break
+    
+    if step_count >= max_steps:
+        print(f"\n  ⚠️ Reached max steps ({max_steps}), stopping.")
+    
+    print(f"\n  ✓ Completed {step_count} steps")
+    return result
 
 
 # =============================================================================
@@ -40,32 +89,104 @@ SUBMISSION_FILE = DATA_DIR / "submission.csv"
 USE_EXISTING_MODEL = None  # e.g., "xgboost_1769321495_v1"
 
 # The goal prompt - crafted to guide the agent for this specific competition
+# Enhanced with Kaggle competition best practices and domain knowledge
 GOAL = """
-Predict residential home sale prices (SalePrice) in Ames, Iowa using the 79 housing features provided.
+## TASK: Kaggle House Prices Competition
+Predict residential home sale prices (SalePrice) in Ames, Iowa using 79 housing features.
 
-This is a REGRESSION task. The target variable is SalePrice (continuous, in dollars).
-The evaluation metric is RMSE between log(predicted) and log(actual), so consider:
-- Log-transforming the target variable for training
-- Features that capture multiplicative effects on price
+## CRITICAL: Evaluation Metric
+Submissions are evaluated on **Root-Mean-Squared-Error (RMSE) between log(predicted) and log(actual)**.
+This means:
+1. **MUST train on log1p(SalePrice)** - transform target before training
+2. Predictions will be expm1() transformed back to dollars
+3. Errors on expensive and cheap houses affect score equally (log scale normalizes)
+4. Focus on getting relative price ratios correct, not absolute values
 
-Key feature categories to explore:
-- Quality ratings (OverallQual, ExterQual, KitchenQual, etc.) - strong predictors
-- Size features (GrLivArea, TotalBsmtSF, GarageArea, LotArea)
-- Location/Neighborhood effects
-- Age and condition (YearBuilt, YearRemodAdd, OverallCond)
-- Amenities (Fireplaces, PoolArea, central air)
+## PROVEN FEATURE ENGINEERING (from top Kaggle solutions)
 
-Feature engineering opportunities:
-- Total square footage (basement + above ground)
-- Age of house at sale (YrSold - YearBuilt)
-- Quality x Size interactions
-- Bathroom counts (full + half baths)
-- Has garage/pool/fireplace flags
+### 1. Size Features (Most Important Predictors)
+- `TotalSF = TotalBsmtSF + 1stFlrSF + 2ndFlrSF` (total living area)
+- `log1p(GrLivArea)`, `log1p(TotalBsmtSF)`, `log1p(LotArea)` (log-transform skewed distributions)
+- `TotalPorchSF = OpenPorchSF + EnclosedPorch + 3SsnPorch + ScreenPorch`
+- `TotalBaths = FullBath + 0.5*HalfBath + BsmtFullBath + 0.5*BsmtHalfBath`
 
-Handle missing values appropriately - many NA values in this dataset mean "not applicable" 
-(e.g., NA in PoolQC means no pool, not missing data).
+### 2. Quality Features (2nd Most Important)
+- **OverallQual is the #1 predictor** - use as-is AND create interactions
+- Ordinal encode: ExterQual, ExterCond, BsmtQual, BsmtCond, HeatingQC, KitchenQual, FireplaceQu, GarageQual, GarageCond, PoolQC
+  - Mapping: None=0, Po=1, Fa=2, TA=3, Gd=4, Ex=5
+- Create `TotalQual = OverallQual + ExterQual_ord + KitchenQual_ord + BsmtQual_ord`
 
-Prioritize models that work well on tabular regression: XGBoost, Random Forest, or GLM.
+### 3. Critical Interaction Features
+- `OverallQual * log1p(GrLivArea)` - quality-size interaction, very strong predictor
+- `OverallQual * TotalSF` - another powerful interaction
+- `Neighborhood_encoded * OverallQual` - location-quality interaction
+- `YearBuilt * OverallQual` - newer high-quality homes command premium
+
+### 4. Age Features
+- `HouseAge = YrSold - YearBuilt` (age at time of sale)
+- `RemodAge = YrSold - YearRemodAdd` (years since remodel)
+- `IsRemodeled = (YearRemodAdd != YearBuilt).astype(int)` (was it remodeled?)
+- `IsNew = (YrSold - YearBuilt <= 2).astype(int)` (new construction premium)
+
+### 5. Neighborhood (Location Matters!)
+- Neighborhood has ~25 categories with very different price levels
+- Top neighborhoods: NoRidge, NridgHt, StoneBr have 2-3x higher prices
+- Consider: target encoding or one-hot encoding
+- Create `Neighborhood_median_price` as target-encoded feature (use training set only!)
+
+### 6. Binary Flags
+- `HasGarage = (GarageArea > 0).astype(int)`
+- `HasBsmt = (TotalBsmtSF > 0).astype(int)`
+- `Has2ndFloor = (2ndFlrSF > 0).astype(int)`
+- `HasPool = (PoolArea > 0).astype(int)`
+- `HasFireplace = (Fireplaces > 0).astype(int)`
+- `CentralAir_bin = (CentralAir == 'Y').astype(int)`
+
+### 7. Garage Features
+- `GarageAge = YrSold - GarageYrBlt` (handle NA as no garage)
+- `GarageFinish_ord`: None=0, Unf=1, RFn=2, Fin=3
+
+### 8. Lot Features
+- `log1p(LotFrontage)`, `log1p(LotArea)` - both are right-skewed
+- `LotFrontage / LotArea` - lot shape ratio
+
+## MISSING VALUE HANDLING (CRITICAL!)
+In this dataset, NA often means "Not Applicable" NOT "Missing":
+- PoolQC, MiscFeature, Alley, Fence: NA = "No pool/misc/alley/fence" → fill with "None"
+- GarageType, GarageFinish, GarageQual, GarageCond: NA = "No garage" → fill with "None"
+- BsmtQual, BsmtCond, BsmtExposure, BsmtFinType1, BsmtFinType2: NA = "No basement" → fill with "None"
+- FireplaceQu: NA = "No fireplace" → fill with "None"
+- MasVnrType, MasVnrArea: NA likely means "No masonry veneer" → fill with "None"/0
+- LotFrontage: TRUE missing → impute with median by Neighborhood
+
+Numeric NAs for basement/garage features (when house has no basement/garage):
+- BsmtFinSF1, BsmtFinSF2, BsmtUnfSF, TotalBsmtSF, BsmtFullBath, BsmtHalfBath → fill with 0
+- GarageCars, GarageArea → fill with 0
+
+## MODEL CONFIGURATION
+**Use XGBoost with these hyperparameters (proven on this competition):**
+- objective: 'reg:squarederror'
+- learning_rate: 0.01-0.05 (lower is better with more trees)
+- n_estimators: 1000-3000 with early_stopping_rounds: 50-100
+- max_depth: 3-5 (shallow trees to avoid overfitting)
+- min_child_weight: 3-5
+- subsample: 0.8
+- colsample_bytree: 0.7-0.8
+- reg_alpha: 0.01-0.1 (L1 regularization)
+- reg_lambda: 1-10 (L2 regularization)
+
+**Key insight:** This is a small dataset (~1460 rows). Regularization is crucial to avoid overfitting.
+
+## FEATURES TO EXCLUDE
+- Id (identifier, no predictive value)
+- Be careful with: MoSold, YrSold (can cause leakage if not used carefully)
+
+## TARGET LEADERBOARD SCORE
+Top 10% on Kaggle: log-RMSE < 0.12
+Top 25%: log-RMSE < 0.13
+Baseline (just OverallQual): log-RMSE ~0.18
+
+Focus on feature engineering - that's what separates good scores from great scores in this competition.
 """.strip()
 
 
@@ -100,20 +221,23 @@ def apply_feature_engineering(df: pd.DataFrame, feature_names: list) -> pd.DataF
     """
     Apply feature engineering to match what the trained model expects.
     
-    The model's feature_names have 'num__' prefix, but the input data should have
-    the raw column names (without prefix) since the model's preprocessor handles that.
+    This function creates features with the exact names the model expects,
+    stripping 'num__' prefix to get the raw column names.
     """
+    import warnings
+    warnings.filterwarnings('ignore')
+    
     df = df.copy()
     
     # Extract the required column names (strip 'num__' and 'cat__' prefixes)
-    required_cols = set()
+    required_cols = []
     for f in feature_names:
         if f.startswith('num__'):
-            required_cols.add(f[5:])  # Remove 'num__' prefix
+            required_cols.append(f[5:])  # Remove 'num__' prefix
         elif f.startswith('cat__'):
-            required_cols.add(f[5:])  # Remove 'cat__' prefix
+            required_cols.append(f[5:])  # Remove 'cat__' prefix
         else:
-            required_cols.add(f)
+            required_cols.append(f)
     
     print(f"  Model expects {len(required_cols)} input columns")
     
@@ -124,116 +248,116 @@ def apply_feature_engineering(df: pd.DataFrame, feature_names: list) -> pd.DataF
             df[col] = df[col].fillna(df[col].median() if df[col].notna().any() else 0)
     
     # Fill missing values for categorical columns
-    cat_cols = df.select_dtypes(include=['object']).columns
+    cat_cols = df.select_dtypes(include=['object', 'string']).columns
     for col in cat_cols:
         if df[col].isna().any():
             df[col] = df[col].fillna('None')
     
-    # 1. Log transformations
-    for col in ['LotFrontage', 'LotArea', 'MasVnrArea']:
-        if col in df.columns:
-            df[f'{col}_log1p'] = np.log1p(df[col].fillna(0))
+    # =========================================================================
+    # Create engineered features with EXACT names the model expects
+    # Based on the model's feature list
+    # =========================================================================
     
-    # 2. Binning MSSubClass
+    # Log transformations (match naming: log_ColName)
+    if 'LotFrontage' in df.columns:
+        df['log_LotFrontage'] = np.log1p(df['LotFrontage'].fillna(0))
+    if 'LotArea' in df.columns:
+        df['log_LotArea'] = np.log1p(df['LotArea'].fillna(0))
+    if 'MasVnrArea' in df.columns:
+        df['log_MasVnrArea'] = np.log1p(df['MasVnrArea'].fillna(0))
+    if 'GrLivArea' in df.columns:
+        df['log_GrLivArea'] = np.log1p(df['GrLivArea'].fillna(0))
+    if '1stFlrSF' in df.columns:
+        df['log_1stFlrSF'] = np.log1p(df['1stFlrSF'].fillna(0))
+    if 'TotalBsmtSF' in df.columns:
+        df['log_TotalBsmtSF'] = np.log1p(df['TotalBsmtSF'].fillna(0))
+    
+    # Binning MSSubClass
     if 'MSSubClass' in df.columns:
         df['MSSubClass_binned'] = pd.cut(
             df['MSSubClass'], 
-            bins=[0, 30, 60, 90, 200], 
+            bins=[-np.inf, 30, 60, 90, np.inf], 
             labels=[0, 1, 2, 3]
         ).astype(float).fillna(0)
     
-    # 3. One-hot encoding for categorical columns
-    # MSZoning
-    if 'MSZoning' in df.columns:
-        for cat in ['FV', 'RH', 'RL', 'RM']:
-            df[f'MSZoning_ohe_{cat}'] = (df['MSZoning'] == cat).astype(int)
-    
-    # Neighborhood
-    if 'Neighborhood' in df.columns:
-        neighborhoods = ['Blueste', 'BrDale', 'BrkSide', 'ClearCr', 'CollgCr', 
-                        'Crawfor', 'Edwards', 'Gilbert', 'IDOTRR', 'MeadowV',
-                        'Mitchel', 'NAmes', 'NPkVill', 'NWAmes', 'NoRidge',
-                        'NridgHt', 'OldTown', 'SWISU', 'Sawyer', 'SawyerW',
-                        'Somerst', 'StoneBr', 'Timber', 'Veenker']
-        for cat in neighborhoods:
-            df[f'Neighborhood_ohe_{cat}'] = (df['Neighborhood'] == cat).astype(int)
-    
-    # BldgType
-    if 'BldgType' in df.columns:
-        for cat in ['2fmCon', 'Duplex', 'Twnhs', 'TwnhsE']:
-            df[f'BldgType_ohe_{cat}'] = (df['BldgType'] == cat).astype(int)
-    
-    # HouseStyle
-    if 'HouseStyle' in df.columns:
-        for cat in ['1.5Unf', '1Story', '2.5Fin', '2.5Unf', '2Story', 'SFoyer', 'SLvl']:
-            df[f'HouseStyle_ohe_{cat}'] = (df['HouseStyle'] == cat).astype(int)
-    
-    # 4. Computed features
+    # Computed features
     # Total square footage
     basement_sf = df['TotalBsmtSF'].fillna(0) if 'TotalBsmtSF' in df.columns else 0
     first_floor = df['1stFlrSF'].fillna(0) if '1stFlrSF' in df.columns else 0
     second_floor = df['2ndFlrSF'].fillna(0) if '2ndFlrSF' in df.columns else 0
     df['TotalSF'] = basement_sf + first_floor + second_floor
     
+    # Age at sale
+    if 'YrSold' in df.columns and 'YearBuilt' in df.columns:
+        df['AgeAtSale'] = df['YrSold'] - df['YearBuilt']
+    
+    # Years since remodel
+    if 'YrSold' in df.columns and 'YearRemodAdd' in df.columns:
+        df['YearsSinceRemod'] = df['YrSold'] - df['YearRemodAdd']
+    
     # Total bathrooms
     full_bath = df['FullBath'].fillna(0) if 'FullBath' in df.columns else 0
     half_bath = df['HalfBath'].fillna(0) if 'HalfBath' in df.columns else 0
     bsmt_full = df['BsmtFullBath'].fillna(0) if 'BsmtFullBath' in df.columns else 0
     bsmt_half = df['BsmtHalfBath'].fillna(0) if 'BsmtHalfBath' in df.columns else 0
-    df['TotalBath'] = full_bath + 0.5 * half_bath + bsmt_full + 0.5 * bsmt_half
+    df['TotalBaths'] = full_bath + 0.5 * half_bath + bsmt_full + 0.5 * bsmt_half
     
     # Binary flags
     df['HasGarage'] = (df['GarageArea'].fillna(0) > 0).astype(int) if 'GarageArea' in df.columns else 0
     df['HasFireplace'] = (df['Fireplaces'].fillna(0) > 0).astype(int) if 'Fireplaces' in df.columns else 0
+    df['Has2ndFloor'] = (df['2ndFlrSF'].fillna(0) > 0).astype(int) if '2ndFlrSF' in df.columns else 0
     df['HasPool'] = (df['PoolArea'].fillna(0) > 0).astype(int) if 'PoolArea' in df.columns else 0
+    df['HasBsmt'] = (df['TotalBsmtSF'].fillna(0) > 0).astype(int) if 'TotalBsmtSF' in df.columns else 0
     
     # Interaction features
+    if 'OverallQual' in df.columns and 'log_GrLivArea' in df.columns:
+        df['OverallQual_x_logGrLivArea'] = df['OverallQual'] * df['log_GrLivArea']
     if 'OverallQual' in df.columns and 'GrLivArea' in df.columns:
-        df['OverallQual_GrLivArea'] = df['OverallQual'] * df['GrLivArea']
-    if 'OverallQual' in df.columns:
-        df['OverallQual_TotalSF'] = df['OverallQual'] * df['TotalSF']
+        df['OverallQual_x_GrLivArea'] = df['OverallQual'] * df['GrLivArea']
+    if 'OverallQual' in df.columns and 'TotalSF' in df.columns:
+        df['OverallQual_x_TotalSF'] = df['OverallQual'] * df['TotalSF']
     if 'GarageCars' in df.columns and 'GrLivArea' in df.columns:
-        df['GarageCars_GrLivArea'] = df['GarageCars'].fillna(0) * df['GrLivArea']
+        df['GarageCars_x_GrLivArea'] = df['GarageCars'].fillna(0) * df['GrLivArea']
     
-    # 5. Ordinal encodings for quality columns
-    quality_map = {'Po': 1, 'Fa': 2, 'TA': 3, 'Gd': 4, 'Ex': 5}
+    # Ordinal encodings for quality columns (with _ord suffix)
+    quality_map = {'Po': 1, 'Fa': 2, 'TA': 3, 'Gd': 4, 'Ex': 5, 'None': 0}
     yes_no_map = {'N': 0, 'Y': 1}
-    exposure_map = {'No': 0, 'Mn': 1, 'Av': 2, 'Gd': 3}
-    finish_map = {'Unf': 0, 'RFn': 1, 'Fin': 2}
+    exposure_map = {'No': 0, 'Mn': 1, 'Av': 2, 'Gd': 3, 'None': 0}
+    finish_map = {'Unf': 0, 'RFn': 1, 'Fin': 2, 'None': 0}
+    paved_map = {'N': 0, 'P': 1, 'Y': 2}
     
-    if 'CentralAir' in df.columns:
-        df['CentralAir_ordinal'] = df['CentralAir'].map(yes_no_map).fillna(0)
-    if 'HeatingQC' in df.columns:
-        df['HeatingQC_ordinal'] = df['HeatingQC'].map(quality_map).fillna(3)
-    if 'KitchenQual' in df.columns:
-        df['KitchenQual_ordinal'] = df['KitchenQual'].map(quality_map).fillna(3)
     if 'ExterQual' in df.columns:
-        df['ExterQual_ordinal'] = df['ExterQual'].map(quality_map).fillna(3)
+        df['ExterQual_ord'] = df['ExterQual'].map(quality_map).fillna(3)
+    if 'ExterCond' in df.columns:
+        df['ExterCond_ord'] = df['ExterCond'].map(quality_map).fillna(3)
     if 'BsmtQual' in df.columns:
-        df['BsmtQual_ordinal'] = df['BsmtQual'].map(quality_map).fillna(0)
-    if 'BsmtExposure' in df.columns:
-        df['BsmtExposure_ordinal'] = df['BsmtExposure'].map(exposure_map).fillna(0)
+        df['BsmtQual_ord'] = df['BsmtQual'].map(quality_map).fillna(0)
+    if 'BsmtCond' in df.columns:
+        df['BsmtCond_ord'] = df['BsmtCond'].map(quality_map).fillna(0)
+    if 'HeatingQC' in df.columns:
+        df['HeatingQC_ord'] = df['HeatingQC'].map(quality_map).fillna(3)
+    if 'KitchenQual' in df.columns:
+        df['KitchenQual_ord'] = df['KitchenQual'].map(quality_map).fillna(3)
     if 'GarageFinish' in df.columns:
-        df['GarageFinish_ordinal'] = df['GarageFinish'].map(finish_map).fillna(0)
+        df['GarageFinish_ord'] = df['GarageFinish'].map(finish_map).fillna(0)
+    if 'GarageQual' in df.columns:
+        df['GarageQual_ord'] = df['GarageQual'].map(quality_map).fillna(0)
+    if 'GarageCond' in df.columns:
+        df['GarageCond_ord'] = df['GarageCond'].map(quality_map).fillna(0)
+    if 'PavedDrive' in df.columns:
+        df['PavedDrive_ord'] = df['PavedDrive'].map(paved_map).fillna(0)
+    if 'BsmtExposure' in df.columns:
+        df['BsmtExposure_ord'] = df['BsmtExposure'].map(exposure_map).fillna(0)
+    if 'CentralAir' in df.columns:
+        df['CentralAir_bin'] = df['CentralAir'].map(yes_no_map).fillna(0)
     
-    # Add any missing required columns as 0
+    # Ensure all required columns exist
     for col in required_cols:
         if col not in df.columns:
             df[col] = 0
     
     # Select only the required columns in the right order
-    final_cols = []
-    for f in feature_names:
-        if f.startswith('num__'):
-            col = f[5:]
-        elif f.startswith('cat__'):
-            col = f[5:]
-        else:
-            col = f
-        if col in df.columns:
-            final_cols.append(col)
-    
-    return df[final_cols]
+    return df[required_cols]
 
 
 # =============================================================================
@@ -306,13 +430,13 @@ def run_kaggle_pipeline(use_existing_model: str = None):
         print_step("GOAL", "")
         print(f"  {GOAL[:200]}...")
         print_step("MODEL", "No preference - LLM will select based on goal")
-        print_step("INVOKE", "Calling invoke_training_agent()...")
+        print_step("INVOKE", "Calling training agent with auto-approval...")
         print("\n" + "-" * 80)
         
-        result = invoke_training_agent(
+        result = run_training_agent_auto_approve(
             goal=GOAL,
             linked_datasets=["house_prices_train"],
-            user_model_preference=None  # Let LLM choose!
+            user_model_preference="xgboost"  # Use XGBoost for tabular regression
         )
         
         print("-" * 80)
@@ -324,7 +448,8 @@ def run_kaggle_pipeline(use_existing_model: str = None):
         
         print_step("SUMMARY", "")
         print(f"  Selected Model: {result.get('selected_model')}")
-        print(f"  Model Explanation: {result.get('model_explanation', '')[:150]}...")
+        model_explanation = result.get('model_explanation') or ''
+        print(f"  Model Explanation: {model_explanation[:150]}..." if model_explanation else "  Model Explanation: N/A")
         print(f"  Collected Dataset: {result.get('collected_dataset_ref')}")
         print(f"  Cleaned Dataset: {result.get('cleaned_dataset_ref')}")
         print(f"  Train Dataset: {result.get('transformed_train_ref')}")

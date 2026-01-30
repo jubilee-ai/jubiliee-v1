@@ -28,10 +28,10 @@ from .cleaning_simple import run_cleaning_simple
 from .data_collection import data_collection as _data_collection_impl
 from .feature_engineering_executor import execute_feature_spec_split
 from .feature_engineering_simple import run_feature_engineering_simple
-from .label_and_split import apply_split, compute_split_indices, run_label_split_definition
+from .label_and_split import (apply_split, compute_split_indices,
+                              run_label_split_definition)
 from .select_model import select_model as _select_model_impl
 from .training import run_training_agent as _run_training
-
 
 # =============================================================================
 # HELPER FUNCTIONS
@@ -137,6 +137,14 @@ def label_split_definition(state: TrainingAgentState) -> TrainingAgentState:
     """Step 3.5: Label + Split Definition + Data Splitting with HITL approval."""
 
     def do_work(s: TrainingAgentState, feedback: Optional[str]) -> TrainingAgentState:
+        # Validate that cleaned_dataset_ref exists
+        cleaned_ref = s.get("cleaned_dataset_ref")
+        if not cleaned_ref:
+            raise ValueError(
+                "Cannot proceed with label/split definition: 'cleaned_dataset_ref' is missing. "
+                "The cleaning step must complete successfully before this step can run."
+            )
+        
         existing = _get_label_def(s)
         goal = _add_feedback_to_goal(s.get("goal", ""), "label/split definition", feedback)
 
@@ -425,7 +433,7 @@ Be specific with hyperparameter values. Consider:
 - Model type - choose appropriate hyperparameters for {selected_model}
 """
 
-        response = init_chat_model("openai:gpt-4o-mini").invoke([{"role": "user", "content": prompt}])
+        response = init_chat_model("openai:gpt-5.1").invoke([{"role": "user", "content": prompt}])
 
         # Parse JSON from response
         try:

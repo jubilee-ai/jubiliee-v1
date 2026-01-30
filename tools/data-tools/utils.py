@@ -359,6 +359,8 @@ _dataset_registry: dict = {}
 
 def _sanitize_ref_for_filename(ref: str) -> str:
     """Convert a dataset ref to a safe filename."""
+    if ref is None:
+        raise ValueError("Dataset reference cannot be None")
     # Replace problematic characters with underscores
     safe = re.sub(r'[^\w\-.]', '_', ref)
     return safe

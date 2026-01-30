@@ -30,7 +30,7 @@ if str(_DATA_TOOLS_DIR) not in sys.path:
 from analysis.data_validation import validate_dataset
 from analysis.eda_report import run_eda_report
 from transformations.apply_transformations import apply_transformations_tool
-from utils import generate_unique_id, get_registered_dataset, register_dataset
+from utils import generate_unique_id, get_registered_dataset, list_registered_datasets, register_dataset
 
 # =============================================================================
 # TOOLS
@@ -167,8 +167,22 @@ def mark_cleaning_complete(dataset_ref: str, reasoning: str) -> str:
     This registers the cleaned dataset and ends the cleaning process.
     """
     df = get_registered_dataset(dataset_ref)
+    
+    # If not found, try to find the latest transformed dataset
     if df is None:
-        return f"✗ Dataset '{dataset_ref}' not found. Check the dataset reference."
+        available = list_registered_datasets()
+        # Look for transformed datasets (apply_transformations_tool creates these)
+        transformed = sorted([r for r in available if r.startswith("transformed_")], reverse=True)
+        if transformed:
+            # Use the most recent transformed dataset
+            actual_ref = transformed[0]
+            df = get_registered_dataset(actual_ref)
+            if df is not None:
+                print(f"[mark_cleaning_complete] Using latest transformed dataset: {actual_ref}")
+    
+    if df is None:
+        available = list_registered_datasets()
+        return f"✗ Dataset '{dataset_ref}' not found. Available datasets: {available[:5]}"
     
     cleaned_ref = generate_unique_id("cleaned")
     register_dataset(cleaned_ref, df)
@@ -331,6 +345,15 @@ Start by calling `run_clean_tests` to analyze the dataset."""
                 if transformations:
                     transformations[-1]["batch_result"] = msg.content
             
+            # Check for mark_cleaning_complete errors
+            if hasattr(msg, "name") and msg.name == "mark_cleaning_complete":
+                if "not found" in msg.content.lower() or msg.content.startswith("✗"):
+                    # Tool returned an error - the dataset ref was wrong
+                    raise ValueError(
+                        f"mark_cleaning_complete failed: {msg.content}. "
+                        "The agent may be using the wrong dataset reference."
+                    )
+            
             if "CLEANING COMPLETE" in msg.content and "Cleaned dataset:" in msg.content:
                 # Store the full cleaning summary message
                 cleaning_summary = msg.content
@@ -343,6 +366,41 @@ Start by calling `run_clean_tests` to analyze the dataset."""
                     if "Reason:" in line:
                         # Extract the reasoning
                         cleaning_reason = line.replace("Reason:", "").strip()
+    
+    # Validate that cleaning completed successfully
+    if cleaned_ref is None:
+        # Gather diagnostic info
+        num_messages = len(result.get("messages", []))
+        tool_calls_made = []
+        for msg in result.get("messages", []):
+            if hasattr(msg, "tool_calls") and msg.tool_calls:
+                for tc in msg.tool_calls:
+                    tool_calls_made.append(tc.get("name", "unknown"))
+        
+        # Check if mark_cleaning_complete was called but output wasn't parsed correctly
+        found_cleaning_complete = any(
+            hasattr(msg, "content") and isinstance(msg.content, str) and "CLEANING COMPLETE" in msg.content
+            for msg in result.get("messages", [])
+        )
+        
+        diagnostic = (
+            f"Messages: {num_messages}, "
+            f"Tool calls: {tool_calls_made[-10:] if tool_calls_made else 'none'}, "
+            f"Found 'CLEANING COMPLETE': {found_cleaning_complete}"
+        )
+        
+        if found_cleaning_complete:
+            # The tool was called but parsing failed - likely format issue
+            raise ValueError(
+                f"Cleaning appeared to complete but the cleaned dataset reference could not be parsed. "
+                f"Diagnostic: {diagnostic}"
+            )
+        else:
+            raise ValueError(
+                f"Cleaning did not complete: 'mark_cleaning_complete' was not called successfully. "
+                f"The agent may have hit the iteration limit ({max_iterations}) or encountered an error. "
+                f"Diagnostic: {diagnostic}"
+            )
     
     return {
         "cleaned_ref": cleaned_ref,

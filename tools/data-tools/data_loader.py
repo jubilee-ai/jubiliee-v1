@@ -11,12 +11,17 @@ Optimized for AI agent consumption with:
 - Provenance tracking
 """
 
+from __future__ import annotations
+
 import json
 from dataclasses import dataclass, field
-from typing import Any, Literal, Optional
+from typing import TYPE_CHECKING, Any, Literal, Optional
 
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
+
+if TYPE_CHECKING:
+    import pandas as pd
 
 try:
     from .utils import (DATASETS_DIR, get_dataset_info, infer_simple_dtype,
@@ -76,7 +81,7 @@ class DatasetResult:
         }
 
 
-def _load_csv_dataset(asset_id: str) -> "pd.DataFrame":
+def _load_csv_dataset(asset_id: str) -> pd.DataFrame:
     """Load a CSV dataset."""
     import pandas as pd
     
@@ -88,7 +93,7 @@ def _load_csv_dataset(asset_id: str) -> "pd.DataFrame":
     return pd.read_csv(file_path)
 
 
-def _load_huggingface_dataset(source: str) -> "pd.DataFrame":
+def _load_huggingface_dataset(source: str) -> pd.DataFrame:
     """Load a HuggingFace dataset."""
     import pandas as pd
     
@@ -108,7 +113,7 @@ def _load_huggingface_dataset(source: str) -> "pd.DataFrame":
         return ds.to_pandas()
 
 
-def _infer_column_schema(df: "pd.DataFrame", column: str) -> ColumnSchema:
+def _infer_column_schema(df: pd.DataFrame, column: str) -> ColumnSchema:
     """Infer schema information for a column."""
     col_data = df[column]
     dtype = infer_simple_dtype(str(col_data.dtype))
@@ -140,7 +145,7 @@ def _infer_column_schema(df: "pd.DataFrame", column: str) -> ColumnSchema:
     return schema
 
 
-def _apply_filters(df: "pd.DataFrame", filters: dict) -> "pd.DataFrame":
+def _apply_filters(df: pd.DataFrame, filters: dict) -> pd.DataFrame:
     """Apply filters to dataframe.
     
     Supports:

@@ -119,7 +119,7 @@ CLEANING_PROMPT = """You are a data cleaning agent. Review the EDA report and va
 3. If the data is clean (no critical issues), call `mark_cleaning_complete` to finish
 
 You MUST call either transformation tools OR `mark_cleaning_complete`. Never return without calling a tool.
-Only fix real issues. Don't over-engineer. When ready, call mark_cleaning_complete.
+When ready, call mark_cleaning_complete. The data must be clean and optimized for feature engineering and training.
 """
 
 # =============================================================================

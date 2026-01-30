@@ -9,25 +9,14 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, StateGraph
 from langgraph.types import Command
 
-from .edges import (
-    feature_validation_result,
-    should_regen_model,
-    should_skip_label_definition,
-    training_decision,
-)
-from ..steps.orchestrator import (
-    cleaning_node,
-    data_collection,
-    feature_engineering_executor,
-    feature_selection_specification,
-    generate_report,
-    label_split_definition,
-    select_model,
-    training,
-    training_approval,
-)
+from ..steps.orchestrator import (cleaning_node, data_collection,
+                                  feature_engineering_executor,
+                                  feature_selection_specification,
+                                  generate_report, label_split_definition,
+                                  select_model, training, training_approval)
+from .edges import (feature_validation_result, should_regen_model,
+                    should_skip_label_definition, training_decision)
 from .state import TrainingAgentState, create_initial_state
-
 
 # =============================================================================
 # GRAPH CONSTRUCTION

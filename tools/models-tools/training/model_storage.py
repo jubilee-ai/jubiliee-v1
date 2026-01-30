@@ -580,14 +580,14 @@ def evaluate_model_tool(
     """
     import sys
     from pathlib import Path
-    
+
     # Add data-tools path
     data_tools_path = str(Path(__file__).parent.parent.parent / "data-tools")
     if data_tools_path not in sys.path:
         sys.path.insert(0, data_tools_path)
     
     from utils import get_registered_dataset
-    
+
     # Load model info
     info = get_model_info(model_name)
     if info is None:
@@ -621,12 +621,14 @@ def evaluate_model_tool(
         
         if is_classification:
             # Classification metrics
-            from sklearn.metrics import (
-                accuracy_score, roc_auc_score, precision_score, recall_score,
-                f1_score, confusion_matrix, classification_report, balanced_accuracy_score
-            )
             import numpy as np
-            
+            from sklearn.metrics import (accuracy_score,
+                                         balanced_accuracy_score,
+                                         classification_report,
+                                         confusion_matrix, f1_score,
+                                         precision_score, recall_score,
+                                         roc_auc_score)
+
             # Get probabilities if available
             y_proba = None
             roc_auc = None
@@ -767,8 +769,9 @@ def evaluate_model_tool(
             
         else:
             # Regression metrics
-            from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
             import numpy as np
+            from sklearn.metrics import (mean_absolute_error,
+                                         mean_squared_error, r2_score)
             
             mse = mean_squared_error(y_true, y_pred)
             rmse = np.sqrt(mse)
