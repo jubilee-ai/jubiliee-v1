@@ -102,7 +102,7 @@ export interface UseRealAgentReturn {
   modelTypes: ModelType[]
   
   // Actions
-  startAgent: (goal: string, datasets?: string[], modelPreference?: string) => Promise<void>
+  startAgent: (goal: string, datasets?: string[], modelPreference?: string, simple?: boolean, hitl?: boolean) => Promise<void>
   sendMessage: (content: string) => void
   handleConfirmation: (action: ConfirmationAction, comment?: string) => void
   reset: () => void
@@ -831,7 +831,7 @@ export function useRealAgent(): UseRealAgentReturn {
   }, [addMessage, formatStreamDetails])
 
   // Start training with streaming
-  const startAgentStreaming = useCallback(async (goal: string, linkedDatasets?: string[], modelPreference?: string) => {
+  const startAgentStreaming = useCallback(async (goal: string, linkedDatasets?: string[], modelPreference?: string, simple?: boolean, hitl?: boolean) => {
     // Check connection first
     const connected = await checkConnection()
     if (!connected) {
@@ -850,7 +850,9 @@ export function useRealAgent(): UseRealAgentReturn {
     initialState.user_model_preference = modelPreference || null
     setAgentState(initialState)
     
-    addMessage("agent", `Starting training with goal: "${goal}"\n\nStreaming progress updates in real-time...`)
+    const modeLabel = simple ? "simple agent" : "graph agent"
+    const hitlLabel = hitl === false ? " (no human review)" : ""
+    addMessage("agent", `Starting training with goal: "${goal}"\n\nUsing ${modeLabel}${hitlLabel}. Streaming progress updates in real-time...`)
     
     // Start streaming
     streamControllerRef.current = streamTraining(
@@ -858,6 +860,8 @@ export function useRealAgent(): UseRealAgentReturn {
         goal,
         linked_datasets: linkedDatasets,
         user_model_preference: modelPreference,
+        simple,
+        hitl,
       },
       handleStreamEvent,
       (error) => {
@@ -1004,9 +1008,9 @@ export function useRealAgent(): UseRealAgentReturn {
   }, [addMessage, checkConnection, pollJob])
 
   // Start training (uses streaming by default)
-  const startAgent = useCallback(async (goal: string, linkedDatasets?: string[], modelPreference?: string) => {
+  const startAgent = useCallback(async (goal: string, linkedDatasets?: string[], modelPreference?: string, simple?: boolean, hitl?: boolean) => {
     if (useStreaming) {
-      await startAgentStreaming(goal, linkedDatasets, modelPreference)
+      await startAgentStreaming(goal, linkedDatasets, modelPreference, simple, hitl)
     } else {
       await startAgentPolling(goal, linkedDatasets, modelPreference)
     }

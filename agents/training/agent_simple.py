@@ -16,6 +16,8 @@ from typing import Optional
 
 from deepagents import create_deep_agent
 from langchain.chat_models import init_chat_model
+from langgraph.checkpoint.memory import MemorySaver
+from langgraph.types import interrupt
 
 from .core.state import TrainingAgentState, create_initial_state
 
@@ -66,6 +68,7 @@ with adjusted specs.
 - When you re-run a step, you MUST also re-run all steps that depend on its output.
 
 ## Rules
+- Call each step tool exactly once in the happy path (no unnecessary repeats).
 - After each step, briefly report its outcome before moving to the next.
 - After generate_report, summarize the final results for the user.
 - If a step errors, you may retry it once before giving up.
@@ -90,13 +93,38 @@ def create_simple_training_agent(
     linked_datasets: Optional[list[str]] = None,
     user_model_preference: Optional[str] = None,
     model: str = "openai:gpt-4o-mini",
+    hitl: bool = True,
+    checkpointer=None,
 ):
     """Create a simple deep-agent-based training pipeline.
 
+    Args:
+        hitl: If True, tools call interrupt() after completing their work so
+              the user can review results before the agent proceeds.
+              If False, all tools run without interruption.
+        checkpointer: LangGraph checkpointer for state persistence (required for
+                      HITL). A MemorySaver is created automatically if hitl=True
+                      and no checkpointer is provided.
+
     Returns a compiled deep agent that can be invoked with:
-        agent.invoke({"messages": [{"role": "user", "content": goal}]})
+        agent.invoke({"messages": [{"role": "user", "content": goal}]}, config=...)
     """
     state: dict = create_initial_state(goal, linked_datasets, user_model_preference)
+
+    def _hitl_gate(node_name: str, summary: str) -> dict:
+        """Interrupt for human review after a step completes. Returns the decision."""
+        if not hitl:
+            return {"approved": True}
+        decision = interrupt({
+            "node": node_name,
+            "summary": summary,
+            "message": "Approve to continue, or provide feedback to redo.",
+        })
+        if isinstance(decision, dict):
+            return decision
+        return {"approved": True}
+
+    KNOWN_MODELS = {"glm", "logistic_regression", "random_forest", "survival_analysis", "xgboost"}
 
     # -- tool wrappers (each closes over `state`) ---------------------------
 
@@ -143,9 +171,32 @@ def create_simple_training_agent(
     def tool_select_model() -> str:
         """Select the best ML model type for the training goal. Can be re-called to switch models."""
         nonlocal state
-        _invalidate_downstream("select_model")
+
+        redo_fb = state.pop("_redo_feedback_select_model", None)
+        if redo_fb:
+            fb_lower = redo_fb.lower()
+            for m in KNOWN_MODELS:
+                if m in fb_lower or m.replace("_", " ") in fb_lower:
+                    state["user_model_preference"] = m
+                    break
+            else:
+                state["_select_model_redo_hint"] = redo_fb
+
         result = _select_model_impl(state)
         state.update(result)
+        state.pop("_select_model_redo_hint", None)
+
+        summary = (
+            f"Selected **{state.get('selected_model', 'unknown')}** for this task.\n"
+            f"Reason: {state.get('model_explanation', 'N/A')}"
+        )
+        decision = _hitl_gate("select_model", summary)
+        if not decision.get("approved", True):
+            fb = decision.get("feedback", "Please reconsider the model choice.")
+            state["_redo_feedback_select_model"] = fb
+            state.pop("user_model_preference", None)
+            return f"REJECTED by user: {fb}. Please redo model selection."
+
         return (
             f"Selected model: {state.get('selected_model', 'unknown')}\n"
             f"Reason: {state.get('model_explanation', 'N/A')}"
@@ -162,6 +213,16 @@ def create_simple_training_agent(
             {},
         )
         cols = len(audit.get("columns", [])) if audit.get("columns") else "?"
+
+        summary = (
+            f"Loaded **{state.get('collected_dataset_ref', 'unknown')}** "
+            f"({audit.get('rows', '?')} rows, {cols} columns)"
+        )
+        decision = _hitl_gate("data_collection", summary)
+        if not decision.get("approved", True):
+            fb = decision.get("feedback", "Please redo data collection.")
+            return f"REJECTED by user: {fb}"
+
         return (
             f"Dataset: {state.get('collected_dataset_ref', 'unknown')}\n"
             f"Rows: {audit.get('rows', '?')}, Columns: {cols}"
@@ -188,19 +249,33 @@ def create_simple_training_agent(
         state["cleaning_summary"] = result.get("cleaning_summary")
         state["cleaning_transformations"] = result.get("transformations", [])
         state["current_step"] = "label_split_definition"
+
+        n_transforms = len(result.get("transformations", []))
+        summary = (
+            f"Applied {n_transforms} transformations to clean the data.\n"
+            f"{result.get('cleaning_summary', '')}"
+        )
+        decision = _hitl_gate("cleaning", summary)
+        if not decision.get("approved", True):
+            fb = decision.get("feedback", "Please redo cleaning.")
+            return f"REJECTED by user: {fb}"
+
         return (
             f"Cleaned dataset: {result['cleaned_ref']}\n"
-            f"Transformations applied: {len(result.get('transformations', []))}\n"
+            f"Transformations applied: {n_transforms}\n"
             f"{result.get('cleaning_summary', '')}"
         )
 
     def tool_label_split_definition() -> str:
         """Define the target column, split strategy, and create train/val/test splits. Can be re-called."""
         nonlocal state
+        dataset_ref = state.get("cleaned_dataset_ref")
+        if not dataset_ref:
+            return "Cannot run yet — cleaning must run first to produce a cleaned dataset."
         _invalidate_downstream("label_split_definition")
         existing = state.get("label_definition") or {}
         label_def = run_label_split_definition(
-            dataset_ref=state["cleaned_dataset_ref"],
+            dataset_ref=dataset_ref,
             goal=state.get("goal", ""),
             selected_model=state.get("selected_model"),
             model_explanation=state.get("model_explanation"),
@@ -212,14 +287,14 @@ def create_simple_training_agent(
             forbidden_columns=existing.get("forbidden_columns"),
         )
 
-        df = get_registered_dataset(state["cleaned_dataset_ref"])
+        df = get_registered_dataset(dataset_ref)
         split_indices = compute_split_indices(
             df=df, label_definition=label_def,
             train_ratio=0.7, val_ratio=0.15, test_ratio=0.15,
         )
         train_df, val_df, test_df = apply_split(df, split_indices)
 
-        base_ref = state["cleaned_dataset_ref"]
+        base_ref = dataset_ref
         train_ref = f"{base_ref}_train"
         val_ref = f"{base_ref}_val"
         test_ref = f"{base_ref}_test"
@@ -235,6 +310,17 @@ def create_simple_training_agent(
             "test_dataset_ref": test_ref,
             "current_step": "feature_selection_specification",
         })
+
+        summary = (
+            f"Target: **{label_def.get('target_column', '?')}**, "
+            f"{label_def.get('split_strategy', '?')} split — "
+            f"Train: {len(train_df)} / Val: {len(val_df)} / Test: {len(test_df)}"
+        )
+        decision = _hitl_gate("label_split_definition", summary)
+        if not decision.get("approved", True):
+            fb = decision.get("feedback", "Please redo label/split definition.")
+            return f"REJECTED by user: {fb}"
+
         return (
             f"Target column: {label_def.get('target_column', '?')}\n"
             f"Split strategy: {label_def.get('split_strategy', '?')}\n"
@@ -250,6 +336,11 @@ def create_simple_training_agent(
         target_column = label_def.get("target_column", "")
         if not train_ref or not target_column:
             return "Cannot run yet — label_split_definition must run first to define target and splits."
+
+        redo_fb = state.pop("_redo_feedback_feature_selection", None)
+        if redo_fb:
+            state["feature_redo_requested"] = True
+            state["feature_redo_recommendation"] = redo_fb
 
         recommendation = state.get("feature_redo_recommendation") if state.get("feature_redo_requested") else None
 
@@ -289,6 +380,16 @@ def create_simple_training_agent(
         })
         features = (feature_spec or {}).get("features", [])
         names = [f.get("name", "?") for f in features[:10]]
+
+        summary = f"Specified **{len(features)}** features: {', '.join(names)}"
+        if len(features) > 10:
+            summary += f" … and {len(features) - 10} more"
+        decision = _hitl_gate("feature_selection_specification", summary)
+        if not decision.get("approved", True):
+            fb = decision.get("feedback", "Please revise feature selection.")
+            state["_redo_feedback_feature_selection"] = fb
+            return f"REJECTED by user: {fb}"
+
         return f"Features specified: {len(features)}\nNames: {', '.join(names)}"
 
     def tool_feature_engineering_executor() -> str:
@@ -366,6 +467,11 @@ def create_simple_training_agent(
 
         feature_names = [f.get("name") for f in (state.get("feature_spec") or {}).get("features", [])][:20]
 
+        redo_fb = state.pop("_redo_feedback_training_approval", None)
+        redo_section = ""
+        if redo_fb:
+            redo_section = f"\n\nIMPORTANT - The user rejected the previous training plan with this feedback:\n\"{redo_fb}\"\nPlease adjust accordingly.\n"
+
         prompt = f"""You are an ML expert. Propose a training configuration.
 
 Goal: {state.get('goal', '')}
@@ -377,7 +483,7 @@ Feature names (first 20): {feature_names}
 Val rows: {len(val_df) if val_df is not None else 'N/A'}
 Class distribution: {json.dumps(class_counts)}
 {"Imbalanced data - minority class is " + f"{minority_ratio:.1%}" if is_imbalanced else "Balanced classes"}
-
+{redo_section}
 Respond with JSON:
 {{
     "model_type": "{selected_model}",
@@ -420,8 +526,20 @@ Respond with JSON:
 
         hp = training_plan.get("hyperparameters", {})
         hp_str = ", ".join(f"{k}={v}" for k, v in hp.items()) if hp else "(defaults)"
+
+        summary = (
+            f"Training config: **{training_plan.get('model_type')}**\n"
+            f"Hyperparameters: {hp_str}\n"
+            f"Strategy: {training_plan.get('strategy_notes', 'N/A')}"
+        )
+        decision = _hitl_gate("training_approval", summary)
+        if not decision.get("approved", True):
+            fb = decision.get("feedback", "Please adjust the training configuration.")
+            state["_redo_feedback_training_approval"] = fb
+            return f"REJECTED by user: {fb}"
+
         return (
-            f"Training plan approved.\n"
+            f"Training plan proposed.\n"
             f"Model: {training_plan.get('model_type')}\n"
             f"Hyperparameters: {hp_str}\n"
             f"Strategy: {training_plan.get('strategy_notes', 'N/A')}"
@@ -486,16 +604,31 @@ Respond with JSON:
 
         lines = [f"Training {'succeeded' if result.get('success') else 'FAILED'}"]
         lines.append(f"Model: {result.get('model_name', '?')}")
+        metric_parts = []
         for key, label in [("val_accuracy", "Val Accuracy"), ("val_roc_auc", "Val ROC-AUC"),
                            ("test_accuracy", "Test Accuracy"), ("val_r2", "Val R²"), ("test_r2", "Test R²")]:
             v = result.get(key)
             if v is not None:
                 lines.append(f"{label}: {v:.4f}")
+                metric_parts.append(f"{label}: {v:.4f}")
         if result.get("summary"):
             lines.append(f"Summary: {result['summary']}")
         if feature_redo_requested:
             lines.append(f"\nFeature redo recommended: {result.get('feature_redo_reason')}")
             lines.append("Consider going back to feature_selection_specification.")
+
+        status = "succeeded" if result.get("success") else "FAILED"
+        summary = f"Training **{status}** — {', '.join(metric_parts)}" if metric_parts else f"Training {status}"
+        decision = _hitl_gate("training", summary)
+        if not decision.get("approved", True):
+            fb = decision.get("feedback", "Please adjust training approach.")
+            fb_lower = fb.lower()
+            for m in KNOWN_MODELS:
+                if m in fb_lower or m.replace("_", " ") in fb_lower:
+                    state["_redo_feedback_select_model"] = fb
+                    break
+            return f"REJECTED by user: {fb}"
+
         return "\n".join(lines)
 
     def tool_generate_report() -> str:
@@ -555,22 +688,31 @@ Respond with JSON:
 
     # -- build the deep agent -----------------------------------------------
 
-    agent = create_deep_agent(
-        model=model,
-        tools=[
-            tool_select_model,
-            tool_data_collection,
-            tool_cleaning,
-            tool_label_split_definition,
-            tool_feature_selection_specification,
-            tool_feature_engineering_executor,
-            tool_training_approval,
-            tool_training,
-            tool_generate_report,
-        ],
-        system_prompt=SYSTEM_PROMPT,
-    )
-    return agent
+    all_tools = [
+        tool_select_model,
+        tool_data_collection,
+        tool_cleaning,
+        tool_label_split_definition,
+        tool_feature_selection_specification,
+        tool_feature_engineering_executor,
+        tool_training_approval,
+        tool_training,
+        tool_generate_report,
+    ]
+
+    if checkpointer is None and hitl:
+        checkpointer = MemorySaver()
+
+    kwargs: dict = {
+        "model": model,
+        "tools": all_tools,
+        "system_prompt": SYSTEM_PROMPT,
+    }
+    if checkpointer is not None:
+        kwargs["checkpointer"] = checkpointer
+
+    agent = create_deep_agent(**kwargs)
+    return agent, state
 
 
 def invoke_simple_training_agent(
@@ -579,7 +721,9 @@ def invoke_simple_training_agent(
     user_model_preference: Optional[str] = None,
     model: str = "openai:gpt-4o-mini",
 ):
-    """Convenience function: create and invoke the simple training agent in one call."""
-    agent = create_simple_training_agent(goal, linked_datasets, user_model_preference, model)
+    """Convenience function: create and invoke the simple training agent (no HITL)."""
+    agent, _state = create_simple_training_agent(
+        goal, linked_datasets, user_model_preference, model, hitl=False,
+    )
     result = agent.invoke({"messages": [{"role": "user", "content": goal}]})
     return result

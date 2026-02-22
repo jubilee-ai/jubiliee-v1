@@ -145,7 +145,7 @@ MODEL_SELECTION_PROMPT = """You are an ML model selection expert. Based on the u
 ## User's Goal
 
 {goal}
-
+{redo_section}
 ## Instructions
 
 1. Analyze the goal to understand what kind of prediction/modeling is needed
@@ -204,10 +204,20 @@ def select_model(state: "TrainingAgentState") -> "TrainingAgentState":
     llm = init_chat_model(model="gpt-5.1", temperature=0)
     structured_llm = llm.with_structured_output(ModelSelectionOutput)
     
-    # TODO: Let the model choose from more and do it's thing more
+    redo_hint = state.get("_select_model_redo_hint", "")
+    redo_section = ""
+    if redo_hint:
+        redo_section = (
+            f"\n## User Feedback (IMPORTANT — override your default choice)\n\n"
+            f"The user rejected the previous model selection and said:\n"
+            f'"{redo_hint}"\n\n'
+            f"You MUST follow this feedback when choosing the model.\n"
+        )
+
     prompt = MODEL_SELECTION_PROMPT.format(
         models=format_training_models_for_prompt(),
         goal=state.get("goal", ""),
+        redo_section=redo_section,
     )
     
     result: ModelSelectionOutput = structured_llm.invoke(prompt)
