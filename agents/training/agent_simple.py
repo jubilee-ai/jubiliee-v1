@@ -34,32 +34,42 @@ from .steps.select_model import select_model as _select_model_impl
 from .steps.training import run_training_agent as _run_training
 
 SYSTEM_PROMPT = """\
-You are an ML model training agent. Your job is to train a model end-to-end \
-by calling the provided step tools in order.
+You are an ML model training agent. Your job is to train the best possible model \
+by calling the provided step tools. You have full flexibility to revisit any step.
 
-## Execution Order
-1. select_model — Choose the model type for the task
-2. data_collection — Load/collect the dataset
-3. cleaning — Clean and standardize the data
-4. label_split_definition — Define the target column and create train/val/test splits
-5. feature_selection_specification — Analyze data and specify features to engineer
-6. feature_engineering_executor — Execute the feature spec to produce transformed datasets
-7. training_approval — Propose hyperparameters and training configuration
-8. training — Train the model and evaluate metrics
-9. generate_report — Save the final report
+## Available Steps (recommended first-pass order)
+- select_model — Choose the model type for the task
+- data_collection — Load/collect the dataset
+- cleaning — Clean and standardize the data
+- label_split_definition — Define the target column and create train/val/test splits
+- feature_selection_specification — Analyze data and specify features to engineer
+- feature_engineering_executor — Execute the feature spec to produce transformed datasets
+- training_approval — Propose hyperparameters and training configuration
+- training — Train the model and evaluate metrics
+- generate_report — Save the final report
 
-## Flexibility
-- If feature_engineering_executor reports validation failures, call \
-feature_selection_specification again to revise the feature spec, then retry.
-- If training metrics are poor or training recommends a feature redo, go back to \
-feature_selection_specification to redesign features and re-run from there.
-- If any step errors, you may retry it once before giving up.
-- On the first pass, always follow the order above.
+## First Pass
+On the very first run, follow the order above sequentially.
+
+## Iterating and Going Back
+You can and SHOULD go back to earlier steps when it would improve results:
+- Poor training metrics? Go back to feature_selection_specification to redesign \
+features, or select_model to try a different algorithm, or both.
+- User asks to change the model? Call select_model, then re-run training_approval \
+and training (features can often be reused).
+- User asks to change features? Call feature_selection_specification, then \
+feature_engineering_executor, training_approval, and training.
+- User asks to change data cleaning? Call cleaning, then re-run all downstream \
+steps from label_split_definition onward.
+- Feature engineering validation fails? Retry feature_selection_specification \
+with adjusted specs.
+- When you re-run a step, you MUST also re-run all steps that depend on its output.
 
 ## Rules
-- Call each step tool exactly once in the happy path (no unnecessary repeats).
 - After each step, briefly report its outcome before moving to the next.
-- After generate_report, you are done — summarize the final results for the user.
+- After generate_report, summarize the final results for the user.
+- If a step errors, you may retry it once before giving up.
+- Use your judgment about which steps to revisit — optimize for the best model.
 """
 
 
@@ -90,9 +100,50 @@ def create_simple_training_agent(
 
     # -- tool wrappers (each closes over `state`) ---------------------------
 
+    # Keys produced by each step, used to invalidate downstream state on re-runs
+    _STEP_OUTPUTS = {
+        "select_model": ["selected_model", "model_explanation"],
+        "data_collection": ["collected_dataset_ref"],
+        "cleaning": ["cleaned_dataset_ref", "cleaning_summary", "cleaning_transformations"],
+        "label_split_definition": [
+            "label_definition", "split_indices",
+            "train_dataset_ref", "val_dataset_ref", "test_dataset_ref",
+        ],
+        "feature_selection_specification": [
+            "feature_spec", "analysis_trace",
+            "feature_redo_requested", "feature_redo_recommendation",
+            "feature_redo_reason", "feature_redo_iteration",
+        ],
+        "feature_engineering_executor": [
+            "transformed_train_ref", "transformed_val_ref",
+            "transformed_test_ref", "transformed_dataset_ref",
+            "feature_validation_passed",
+        ],
+        "training_approval": ["training_plan", "training_plan_approved"],
+        "training": [
+            "model_weights_path", "training_metrics", "training_iteration",
+            "feature_redo_requested", "feature_redo_recommendation",
+            "feature_redo_reason",
+        ],
+        "generate_report": ["report_path"],
+    }
+    _STEP_ORDER = [
+        "select_model", "data_collection", "cleaning", "label_split_definition",
+        "feature_selection_specification", "feature_engineering_executor",
+        "training_approval", "training", "generate_report",
+    ]
+
+    def _invalidate_downstream(step_name: str):
+        """Clear state produced by all steps after `step_name`."""
+        idx = _STEP_ORDER.index(step_name)
+        for later_step in _STEP_ORDER[idx + 1:]:
+            for key in _STEP_OUTPUTS.get(later_step, []):
+                state.pop(key, None)
+
     def tool_select_model() -> str:
-        """Step 1: Select the best ML model type for the training goal."""
+        """Select the best ML model type for the training goal. Can be re-called to switch models."""
         nonlocal state
+        _invalidate_downstream("select_model")
         result = _select_model_impl(state)
         state.update(result)
         return (
@@ -101,8 +152,9 @@ def create_simple_training_agent(
         )
 
     def tool_data_collection() -> str:
-        """Step 2: Collect or load the dataset."""
+        """Collect or load the dataset. Can be re-called to reload or change data sources."""
         nonlocal state
+        _invalidate_downstream("data_collection")
         result = _data_collection_impl(state)
         state.update(result)
         audit = next(
@@ -116,8 +168,9 @@ def create_simple_training_agent(
         )
 
     def tool_cleaning() -> str:
-        """Step 3: Clean and standardize the collected dataset."""
+        """Clean and standardize the collected dataset. Can be re-called to apply different cleaning."""
         nonlocal state
+        _invalidate_downstream("cleaning")
         dataset_ref = state["collected_dataset_ref"]
         try:
             df = get_registered_dataset(dataset_ref)
@@ -142,8 +195,9 @@ def create_simple_training_agent(
         )
 
     def tool_label_split_definition() -> str:
-        """Step 4: Define the target column, split strategy, and create train/val/test splits."""
+        """Define the target column, split strategy, and create train/val/test splits. Can be re-called."""
         nonlocal state
+        _invalidate_downstream("label_split_definition")
         existing = state.get("label_definition") or {}
         label_def = run_label_split_definition(
             dataset_ref=state["cleaned_dataset_ref"],
@@ -188,13 +242,14 @@ def create_simple_training_agent(
         )
 
     def tool_feature_selection_specification() -> str:
-        """Step 5: Analyze data and specify which features to engineer."""
+        """Analyze data and specify which features to engineer. Can be re-called to redesign features."""
         nonlocal state
+        _invalidate_downstream("feature_selection_specification")
         label_def = state.get("label_definition") or {}
         train_ref = state.get("train_dataset_ref")
         target_column = label_def.get("target_column", "")
         if not train_ref or not target_column:
-            return "ERROR: label_split_definition must run first."
+            return "Cannot run yet — label_split_definition must run first to define target and splits."
 
         recommendation = state.get("feature_redo_recommendation") if state.get("feature_redo_requested") else None
 
@@ -237,14 +292,15 @@ def create_simple_training_agent(
         return f"Features specified: {len(features)}\nNames: {', '.join(names)}"
 
     def tool_feature_engineering_executor() -> str:
-        """Step 6: Execute the feature specification to produce transformed train/val/test datasets."""
+        """Execute the feature specification to produce transformed train/val/test datasets. Can be re-called."""
         nonlocal state
+        _invalidate_downstream("feature_engineering_executor")
         label_def = state.get("label_definition") or {}
         train_ref = state.get("train_dataset_ref")
         feature_spec = state.get("feature_spec")
         target_column = label_def.get("target_column", "")
         if not train_ref or not feature_spec or not target_column:
-            return "ERROR: feature_selection_specification must run first."
+            return "Cannot run yet — feature_selection_specification must run first to define features."
 
         result = execute_feature_spec_split(
             train_ref=train_ref,
@@ -286,8 +342,9 @@ def create_simple_training_agent(
         return summary
 
     def tool_training_approval() -> str:
-        """Step 7: Propose a training configuration (hyperparameters, strategy)."""
+        """Propose a training configuration (hyperparameters, strategy). Re-call after changing model or features."""
         nonlocal state
+        _invalidate_downstream("training_approval")
         train_ref = state.get("transformed_train_ref")
         val_ref = state.get("transformed_val_ref")
         label_def = state.get("label_definition") or {}
@@ -298,7 +355,7 @@ def create_simple_training_agent(
         train_df = get_registered_dataset(train_ref)
         val_df = get_registered_dataset(val_ref) if val_ref else None
         if train_df is None:
-            return "ERROR: No training dataset found. Run feature_engineering_executor first."
+            return "Cannot run yet — feature_engineering_executor must run first to produce training data."
 
         n_rows = len(train_df)
         n_features = len([c for c in train_df.columns if c != target_column])
@@ -371,14 +428,15 @@ Respond with JSON:
         )
 
     def tool_training() -> str:
-        """Step 8: Train the model and evaluate on validation/test sets."""
+        """Train the model and evaluate on validation/test sets. Can be re-called with different config or features."""
         nonlocal state
+        _invalidate_downstream("training")
         label_def = state.get("label_definition") or {}
         target_column = label_def.get("target_column", "")
         selected_model = state.get("selected_model", "logistic_regression")
         train_ref = state.get("transformed_train_ref")
         if not train_ref or not target_column:
-            return "ERROR: feature_engineering_executor and label_split_definition must complete first."
+            return "Cannot run yet — feature_engineering_executor and label_split_definition must complete first."
 
         model_name = f"{selected_model}_{int(time.time())}"
         result = _run_training(
@@ -441,7 +499,7 @@ Respond with JSON:
         return "\n".join(lines)
 
     def tool_generate_report() -> str:
-        """Step 9: Generate and save the final training report."""
+        """Generate and save the final training report. Call when satisfied with training results."""
         nonlocal state
         metrics = state.get("training_metrics", {})
         label_def = state.get("label_definition") or {}
