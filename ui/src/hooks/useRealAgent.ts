@@ -24,16 +24,17 @@ import {
 } from "@/lib/api"
 import { uid } from "@/lib/utils"
 
-// Step definitions matching the agent graph
+// Step definitions matching the agent's tool set (agent_simple.py _STEP_ORDER)
 const STEP_DEFINITIONS = [
-  { id: "select_model", name: "Model Selection", description: "Selecting the optimal model based on the goal" },
-  { id: "data_collection", name: "Data Collection", description: "Gathering and linking datasets" },
-  { id: "cleaning", name: "Cleaning & Standardization", description: "Cleaning and preparing data for training" },
-  { id: "label_split_definition", name: "Label & Split Definition", description: "Defining target column and split strategy" },
-  { id: "feature_selection_specification", name: "Feature Selection", description: "Selecting and specifying features to use" },
-  { id: "feature_engineering_executor", name: "Feature Engineering", description: "Executing feature transformations" },
-  { id: "training", name: "Training", description: "Training the model and evaluating metrics" },
-  { id: "generate_report", name: "Generate Report", description: "Creating final report with results" },
+  { id: "select_model", name: "Model Selection", description: "Choose the ML model type for this task" },
+  { id: "data_collection", name: "Data Collection", description: "Load or collect the dataset" },
+  { id: "cleaning", name: "Cleaning", description: "Clean and standardize the data" },
+  { id: "label_split_definition", name: "Label & Split", description: "Define target column and train/val/test splits" },
+  { id: "feature_selection_specification", name: "Feature Selection", description: "Analyze data and specify features" },
+  { id: "feature_engineering_executor", name: "Feature Engineering", description: "Execute feature transformations" },
+  { id: "training_approval", name: "Training Config", description: "Propose hyperparameters and strategy" },
+  { id: "training", name: "Training", description: "Train model and evaluate metrics" },
+  { id: "generate_report", name: "Report", description: "Save the final training report" },
 ]
 
 function createInitialSteps(): StepInfo[] {
@@ -500,6 +501,15 @@ export function useRealAgent(): UseRealAgentReturn {
       if (summary.validation_passed !== undefined) {
         lines.push(`Validation: ${summary.validation_passed ? "✓ Passed" : "⚠ Issues found"}`)
       }
+    } else if (nodeName === "training_approval" && summary) {
+      if (summary.model_type) lines.push(`Model: **${summary.model_type}**`)
+      if (summary.task_type) lines.push(`Task: ${summary.task_type}`)
+      const hp = summary.hyperparameters
+      if (hp && typeof hp === "object") {
+        const hpStr = Object.entries(hp as Record<string, unknown>).map(([k, v]) => `${k}=${v}`).join(", ")
+        if (hpStr) lines.push(`Hyperparameters: ${hpStr}`)
+      }
+      if (summary.strategy_notes) lines.push(`\nStrategy: ${summary.strategy_notes}`)
     } else if (nodeName === "training" && summary) {
       if (summary.model_name) lines.push(`Model: **${summary.model_name}**`)
       if (summary.model_type) lines.push(`Type: ${summary.model_type}`)
@@ -532,6 +542,56 @@ export function useRealAgent(): UseRealAgentReturn {
     }
     
     return lines.join("\n")
+  }, [])
+
+  // Derive a brief subtitle for a completed step
+  const computeStepSubtitle = useCallback((nodeName: string, summary?: Record<string, unknown>): string => {
+    if (!summary) return ""
+    switch (nodeName) {
+      case "select_model":
+        return summary.selected_model ? String(summary.selected_model) : ""
+      case "data_collection": {
+        const rows = summary.rows
+        const cols = Array.isArray(summary.columns) ? summary.columns.length : summary.columns
+        return rows ? `${rows} rows, ${cols || "?"} cols` : ""
+      }
+      case "cleaning":
+      case "cleaning_and_standardization":
+        return summary.num_transformations != null
+          ? `${summary.num_transformations} transformations`
+          : ""
+      case "label_split_definition":
+        return summary.target_column
+          ? `Target: ${summary.target_column}`
+          : ""
+      case "feature_selection_specification":
+        return summary.num_features
+          ? `${summary.num_features} features specified`
+          : ""
+      case "feature_engineering_executor": {
+        const created = Array.isArray(summary.features_created) ? summary.features_created.length : 0
+        const passed = summary.validation_passed
+        return created ? `${created} features, ${passed ? "passed" : "issues"}` : ""
+      }
+      case "training_approval": {
+        const model = summary.model_type || ""
+        const hp = summary.hyperparameters
+        const hpCount = hp && typeof hp === "object" ? Object.keys(hp).length : 0
+        return model ? `${model}, ${hpCount} params` : ""
+      }
+      case "training": {
+        const parts: string[] = []
+        if (summary.test_accuracy != null) parts.push(`Acc: ${(Number(summary.test_accuracy) * 100).toFixed(1)}%`)
+        if (summary.test_roc_auc != null) parts.push(`AUC: ${Number(summary.test_roc_auc).toFixed(3)}`)
+        if (summary.test_r2 != null) parts.push(`R²: ${Number(summary.test_r2).toFixed(4)}`)
+        if (summary.test_rmse != null) parts.push(`RMSE: ${Number(summary.test_rmse).toFixed(0)}`)
+        return parts.join(", ") || (summary.success ? "Completed" : "Failed")
+      }
+      case "generate_report":
+        return "Saved"
+      default:
+        return ""
+    }
   }, [])
 
   // Handle streaming event
@@ -567,8 +627,12 @@ export function useRealAgent(): UseRealAgentReturn {
       const stateSnapshot = (event.state_snapshot || {}) as Record<string, unknown>
       
       // Update step to awaiting confirmation with details
+      // Also mark preceding pending steps as completed (they must have run)
+      const stepOrder = STEP_DEFINITIONS.map((s) => s.id)
+      const interruptIndex = stepOrder.indexOf(nodeName)
+      
       setSteps((prev) =>
-        prev.map((step) => {
+        prev.map((step, index) => {
           if (step.id === nodeName) {
             return { 
               ...step, 
@@ -576,6 +640,9 @@ export function useRealAgent(): UseRealAgentReturn {
               endTime: Date.now(),
               details: summary,
             }
+          }
+          if (index < interruptIndex && step.status === "pending") {
+            return { ...step, status: "completed" }
           }
           return step
         })
@@ -635,30 +702,49 @@ export function useRealAgent(): UseRealAgentReturn {
       
       setProgress(nodeProgress)
       
-      // Update steps based on node:
-      // - Previous steps: completed
-      // - Current step: completed
-      // - Next step: running (with spinner)
-      // - Future steps: pending
       const stepOrder = STEP_DEFINITIONS.map((s) => s.id)
       const nodeIndex = stepOrder.indexOf(nodeName)
       
-      setSteps((prev) =>
-        prev.map((step, index) => {
-          if (index < nodeIndex) {
-            // Previous steps are completed
-            return { ...step, status: "completed" }
-          } else if (index === nodeIndex) {
-            // Current step just completed
-            return { ...step, status: "completed", endTime: Date.now() }
-          } else if (index === nodeIndex + 1) {
-            // Next step is now running (show spinner)
-            return { ...step, status: "running", startTime: Date.now() }
+      setSteps((prev) => {
+        const currentStepState = prev.find(s => s.id === nodeName)
+        const isRerun = (currentStepState?.runCount || 0) >= 1
+        
+        return prev.map((step, index) => {
+          if (step.id === nodeName) {
+            return { 
+              ...step, 
+              status: "completed", 
+              endTime: Date.now(),
+              runCount: (step.runCount || 0) + 1,
+            }
           }
-          // Future steps remain pending
+          // On re-run, downstream completed/stale steps become stale
+          if (isRerun && index > nodeIndex && (step.status === "completed" || step.status === "stale")) {
+            return { ...step, status: "stale" }
+          }
+          // On first pass, mark preceding pending steps as completed and next as running
+          if (!isRerun) {
+            if (index < nodeIndex && step.status === "pending") {
+              return { ...step, status: "completed" }
+            }
+            if (index === nodeIndex + 1 && step.status === "pending") {
+              return { ...step, status: "running", startTime: Date.now() }
+            }
+          }
           return step
         })
-      )
+      })
+      
+      // Compute a one-line subtitle for the step dropdown
+      const summary = event.summary as Record<string, unknown> | undefined
+      const subtitle = computeStepSubtitle(nodeName, summary)
+      if (subtitle) {
+        setSteps((prev) =>
+          prev.map((step) =>
+            step.id === nodeName ? { ...step, subtitle } : step
+          )
+        )
+      }
       
       // Update agent state from event
       if (event.state) {

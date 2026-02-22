@@ -12,6 +12,18 @@ export const STEP_PATTERNS: Array<{ stepId: string; patterns: RegExp[] }> = [
       /pipeline complete.*view report/i,
     ]
   },
+  // Training Approval - configuration proposal
+  {
+    stepId: "training_approval",
+    patterns: [
+      /training config/i,
+      /training configuration/i,
+      /hyperparameters/i,
+      /training plan/i,
+      /training_approval/i,
+      /training strategy/i,
+    ]
+  },
   // Training - specific training result patterns
   {
     stepId: "training",
@@ -129,6 +141,7 @@ export const STEP_KEYWORDS: Record<string, string[]> = {
   "label_split_definition": ["Label", "Split", "target column"],
   "feature_selection_specification": ["Feature Selection", "features specified"],
   "feature_engineering_executor": ["Feature Engineering", "features created"],
+  "training_approval": ["Training Config", "hyperparameters", "training plan", "training strategy"],
   "training": ["Training", "trained", "R²", "accuracy", "RMSE"],
   "generate_report": ["Report", "complete"],
 }

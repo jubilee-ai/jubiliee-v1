@@ -300,7 +300,7 @@ export interface TrainingAgentState {
 }
 
 // UI-specific types
-export type StepStatus = "pending" | "running" | "awaiting_confirmation" | "completed" | "error" | "skipped"
+export type StepStatus = "pending" | "running" | "awaiting_confirmation" | "completed" | "error" | "skipped" | "stale"
 
 export interface StepInfo {
   id: string
@@ -309,6 +309,8 @@ export interface StepInfo {
   status: StepStatus
   metrics?: Record<string, string | number>
   details?: string
+  subtitle?: string
+  runCount?: number
   startTime?: number
   endTime?: number
 }
