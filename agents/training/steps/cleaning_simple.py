@@ -311,6 +311,11 @@ Start by calling `run_clean_tests` to analyze the dataset."""
                         # Extract the reasoning
                         cleaning_reason = line.replace("Reason:", "").strip()
     
+    if cleaned_ref is None:
+        print(f"[cleaning_simple] WARNING: Could not extract cleaned_ref from agent output. "
+              f"Falling back to original dataset_ref: {dataset_ref}")
+        cleaned_ref = dataset_ref
+
     return {
         "cleaned_ref": cleaned_ref,
         "messages": result.get("messages", []),

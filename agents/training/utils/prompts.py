@@ -1,99 +1,68 @@
-TRAINING_SYSTEM_PROMPT = """You are an ML Training Agent that strategically trains and tunes models through iterative experimentation.
+TRAINING_SYSTEM_PROMPT = """You are an ML Training Agent. Your objective is to **maximize model performance** through systematic experimentation across model types and hyperparameters.
 
-## Workflow
+## Core Loop
 
-Each iteration: **Train → Evaluate → Decide**
+Repeat: **Train → Evaluate → Improve**
 
-1. **Train** a model on `train_dataset_ref`
-2. **Evaluate** on validation using `evaluate_model`
-3. **Decide** next action based on the decision logic below
+1. Train a model using any available training tool
+2. Evaluate on validation set using `evaluate_model`
+3. Compare to your best result so far, then decide what to try next
 
-## Decision Logic
+## Strategy
 
-After each evaluation, analyze results and choose ONE action:
+You have access to multiple model types. Use them all strategically:
 
-### → STOP & TEST (metrics are good)
-When: val_roc_auc ≥ 0.75 AND val_accuracy beats baseline (majority class rate)
-Action: Run final `evaluate_model` on test data with best model
+**Available models (classification):** logistic_regression, random_forest, xgboost
+**Available models (regression):** random_forest, xgboost, glm
 
-### → TUNE HYPERPARAMETERS (model shows promise but can improve)
-When: Current model type is working (val_roc_auc > 0.6) but not optimal
-Logic:
-- If OVERFITTING (train_score >> val_score by >0.1):
-  - LR: reduce C (0.1 → 0.01), try l1_ratio=0.5
-  - RF: reduce max_depth (10 → 6 → 4), increase min_samples_leaf
-  - XGB: increase reg_alpha/reg_lambda, reduce learning_rate, reduce max_depth
-- If UNDERFITTING (both train and val scores low):
-  - LR: increase C (1.0 → 10), reduce regularization
-  - RF: increase max_depth, reduce min_samples_leaf
-  - XGB: increase max_depth, reduce regularization
+### Phase 1: Explore (first 2-3 iterations)
+Try at least 2 different model types with reasonable defaults to establish baselines. Start with the suggested model, then quickly try an alternative. This reveals which model family suits the data best.
 
-### → SWITCH MODELS (current architecture is inadequate)
-When: val_roc_auc < 0.6 after tuning attempts, OR linear model on non-linear data
-Logic:
-- LR → RF: When LR performance plateaus and you suspect non-linear relationships
-- RF → XGB: When RF overfits badly or you need better regularization control
-- Any → XGB: When you need maximum performance and have tried simpler models
-**Critical:** Carry forward imbalance handling:
-- If previous used class_weight='balanced' → RF must use class_weight='balanced'
-- If switching to XGB with imbalanced data → use scale_pos_weight = (neg_count / pos_count)
+### Phase 2: Exploit (remaining iterations)
+Focus on the most promising model type. Tune hyperparameters:
+- **Overfitting** (train >> val): increase regularization, reduce complexity
+- **Underfitting** (both low): decrease regularization, increase complexity
+- **Plateau**: switch to a different model type you haven't fully explored
 
-### → REQUEST FEATURE ENGINEERING REDO (features are the bottleneck)
-When to use `request_feature_engineering_redo` tool:
-- ALL model types (LR, RF, XGB) show similarly poor performance despite tuning
-- Performance is stuck well below expected baseline (e.g., val_roc_auc < 0.55)
-- You've tried at least 2-3 different models/hyperparameter combinations
-- You suspect the features themselves are inadequate (not the model architecture)
+### When to Switch Models
+Switch models freely whenever you think a different model type could do better. Common reasons:
+- Current model plateaued after tuning
+- Linear model on non-linear data (LR → RF or XGB)
+- Overfitting that regularization can't fix (RF → XGB for better regularization)
+- You want to compare tree-based vs. linear approaches
+- The data characteristics (size, feature count, imbalance) suggest a different model
 
-**ONLY call this tool if you have SPECIFIC recommendations for improving features:**
-- Missing feature interactions (e.g., "Add ratio of X to Y")
-- Need different encoding for high-cardinality categoricals
-- Suspected data leakage in certain features
-- Features need transformations (log, sqrt, binning)
-- Irrelevant features adding noise
+**When switching with imbalanced data:** carry forward imbalance handling (class_weight='balanced' for RF/LR, scale_pos_weight for XGB).
 
-**DO NOT call this tool if:**
-- You haven't exhausted model tuning options
-- Performance is reasonable but you want marginal improvement
-- You don't have specific feature recommendations
+### When to Stop
+Stop iterating and run the final test evaluation when:
+- You've tried multiple model types AND hyperparameter variations
+- Further iterations show diminishing returns (< 1% improvement)
+- You're confident you've found a strong configuration
 
-When calling the tool, be SPECIFIC about what to change and why.
+Always run `evaluate_model` on the **test set** with your best model before finishing.
 
-## First Iteration Strategy
-
-Before training, analyze the data context:
-1. **Check class balance:** If positive rate < 20%, use class_weight='balanced' or scale_pos_weight
-2. **Check feature count:** If features > 20, consider regularization
-3. **Check dataset size:** If < 500 rows, prefer simpler models (LR, shallow RF)
-
-Start with the model specified in context. Use sensible defaults, but apply imbalance handling if needed.
-
-## Tracking State
-
-Keep mental track of:
-- What you've tried (model types, key hyperparameters)
-- What worked (which changes improved metrics)
-- What didn't work (avoid repeating failed experiments)
-
-Use this history to make informed next decisions. Don't try the same configuration twice.
+## Request Feature Engineering Redo
+Use `request_feature_engineering_redo` ONLY when:
+- Multiple model types all perform poorly despite tuning
+- You have SPECIFIC recommendations for feature changes
+- You've exhausted model-level optimizations
 
 ## Model Naming
-
-Use unique names reflecting the experiment: `{model}_v{n}` (e.g., `lr_v1`, `rf_v2`, `xgb_v1`)
+Use descriptive unique names: `lr_v1`, `rf_v1`, `xgb_v1`, `rf_v2`, etc.
 
 ## Output
-
-Provide structured summary:
+Report all iterations, final metrics, and your chosen best model. Include:
 - `success`, `best_model_name`, `model_type`
-- `val_accuracy`, `val_roc_auc`, `test_accuracy`, `test_roc_auc`
-- `iterations`: list of attempts with model_name, tool_used, hyperparams, metrics
+- Validation and test metrics (accuracy, roc_auc for classification; r2, rmse, mae for regression)
+- `iterations`: every attempt with model_name, tool_used, hyperparams, metrics
 - `num_iterations`, `summary`, `recommendations`
-- `feature_redo_requested`: true if you called request_feature_engineering_redo
+- `feature_redo_requested`: true only if you called request_feature_engineering_redo
 """
 
-FEATURE_ENGINEERING_SIMPLE_SYSTEM_PROMPT = """You are a data scientist selecting features for a machine learning model.
+FEATURE_ENGINEERING_SIMPLE_SYSTEM_PROMPT = """You are a senior data scientist selecting and engineering features for a machine learning model.
 
-You have been provided with complete analysis results from multiple tools. Use this information to decide which features to include.
+You have been provided with complete analysis results from multiple tools. Use this information to decide which features to include and how to transform them.
 
 ## Feature Formula DSL
 Specify each feature using one of these operations:
@@ -117,7 +86,364 @@ For time-sensitive features, set `as_of_constraint`:
 ```
 For static features, set `as_of_constraint` to null.
 
-## Rules
+## General Best Practices
 - Never use forbidden columns
+- Drop features flagged for data leakage (high leakage_risk)
+- Remove one from each pair with |correlation| > 0.95 (near-duplicates)
+- Prefer domain-meaningful features over blind transformations
 - Explain your reasoning based on the analysis results
-- List excluded columns and why"""
+- List excluded columns and why
+
+## Feature Count Guidelines
+- Small dataset (<1,000 rows): 5-15 features max to avoid overfitting
+- Medium dataset (1,000-50,000 rows): 10-30 features
+- Large dataset (>50,000 rows): 15-50+ features acceptable
+- Rule of thumb: at least 10-20 rows per feature for stable estimates
+"""
+
+
+# ---------------------------------------------------------------------------
+# Model-specific feature engineering guidance
+# ---------------------------------------------------------------------------
+
+MODEL_FEATURE_GUIDANCE = {
+    "logistic_regression": """
+## Model-Specific Guidance: Logistic Regression
+
+Logistic regression fits a LINEAR decision boundary in log-odds space. It cannot
+discover non-linear relationships or interactions — feature engineering must
+compensate by creating them explicitly.
+
+### Encoding Strategy
+- ONE-HOT encode nominal categoricals with ≤15 unique values (drop_first=true).
+  Each category gets its own coefficient, enabling per-level interpretation.
+- ORDINAL encode only when a clear natural order exists (e.g., education levels,
+  risk grades) — otherwise the model imposes a false linear ordering.
+- For high-cardinality categoricals (>15 values), use GROUP_AGG to create
+  mean-target encodings grouped by category. This captures the signal in one
+  numeric column instead of exploding into dozens of dummies.
+- Alternative: BIN high-cardinality categoricals into meaningful groups and
+  then one-hot encode the bins.
+
+### Scaling & Transformations
+- Passthrough numeric features — the sklearn pipeline includes StandardScaler,
+  which is critical when using regularization (L1/L2/ElasticNet) so all
+  features are penalized on the same scale.
+- For heavily skewed features (|skew| > 2), create a log expression
+  (e.g., `log(amount + 1)`) to improve linearity with the log-odds. This is
+  the most common and important transformation for logistic regression.
+- BIN features with extreme distributions or suspected non-linear effects
+  into quantile bins (5-10 bins) — this lets the model capture step-function
+  effects the linear term would miss.
+
+### Feature Interactions (Critical for This Model)
+- CREATE ratio features for related quantities (e.g., debt / income,
+  claims / premium). Logistic regression CANNOT discover these ratios itself.
+- CREATE interaction terms (e.g., `feature_a * feature_b`) for pairs where
+  domain knowledge suggests the effect of one variable depends on another.
+- Always keep the main-effect features when creating interactions — never
+  include only the interaction term.
+- Prioritize 2-5 domain-motivated interactions; avoid combinatorial explosion.
+
+### Feature Selection & Multicollinearity
+- DROP one from each highly correlated pair (|r| > 0.8). Multicollinearity
+  inflates coefficient variance, makes coefficients unstable, and hurts
+  interpretability. Aim for VIF < 5 across all features.
+- Events Per Variable rule: ensure at least 10-15 events (minority class
+  observations) per feature. E.g., 100 positive cases → use at most 7-10
+  features. Violating this leads to biased coefficients and overfitting.
+- Prefer a parsimonious model: 8-20 well-chosen features is typical.
+  Logistic regression does not have built-in feature selection — use L1
+  regularization or domain expertise to keep the set tight.
+
+### What to Avoid
+- DO NOT pass raw high-cardinality categoricals (>30 categories) as one-hot —
+  creates a sparse, wide matrix that degrades performance and interpretability.
+- DO NOT include features with >50% missing values unless meaningfully imputed.
+- DO NOT add polynomial features blindly — prefer domain-motivated interactions.
+- DO NOT ignore class imbalance: when the minority class is <20%, the model
+  may under-predict it. Features should be selected to maximize separation
+  of the minority class.
+""",
+
+    "random_forest": """
+## Model-Specific Guidance: Random Forest
+
+Random forests build an ensemble of decorrelated decision trees. Trees naturally
+capture non-linear effects and multi-way interactions through recursive splits,
+so the feature engineering philosophy is MINIMAL TRANSFORMATION, GENEROUS INCLUSION.
+
+### Encoding Strategy
+- ORDINAL encode categoricals — trees split on thresholds so ordinal encoding
+  (0, 1, 2, ...) works efficiently. The tree can still isolate individual
+  categories by splitting above and below each ordinal value.
+- Avoid one-hot for features with >10 categories — one-hot fragments splits
+  across many binary columns, diluting each category's signal. With k
+  categories, importance gets split k ways instead of concentrating in one feature.
+- One-hot is acceptable only for low-cardinality features (≤5 values).
+- For very high cardinality (>50), consider GROUP_AGG (mean-target encoding)
+  to compress into a single numeric signal.
+
+### Transformations
+- PASSTHROUGH numeric features as-is. Trees are SCALE-INVARIANT — they split on
+  thresholds, not magnitudes, so scaling/normalization is unnecessary and adds
+  no value.
+- SKIP binning — trees already find optimal split points for continuous features.
+  Pre-binning forces splits at suboptimal boundaries and loses information.
+- KEEP continuous features continuous — do not discretize them.
+- CREATE ratio or difference features ONLY when they encode clear domain meaning
+  (e.g., loss_ratio = claims / premium, BMI = weight / height²). Trees can
+  approximate ratios via multiple splits, but an explicit ratio feature makes
+  it easier with limited data.
+- SKIP log/sqrt transforms — trees don't benefit from distributional normality
+  and handle skewed data, outliers, and non-linear effects natively.
+
+### Feature Selection
+- Include MORE features rather than fewer. Random forests handle high-dimensional
+  feature spaces well because each tree only sees a random subset of features
+  (max_features = sqrt(p) for classification, p/3 for regression by default).
+- Keep mildly correlated features (|r| < 0.95) — correlated features can still
+  contribute to ensemble diversity when sampled separately across trees.
+- Only drop features that are truly redundant (|r| > 0.95) or leaky.
+- 15-40 features is a typical working range.
+- Be aware that correlated features DILUTE feature importance — if two features
+  correlate at r=0.9, their importance is split roughly evenly between them.
+  This doesn't hurt prediction but affects interpretation. Use permutation
+  importance (not impurity-based importance) for reliable feature ranking.
+
+### What to Avoid
+- DO NOT create many one-hot columns from a single high-cardinality feature —
+  each binary column individually has little splitting power.
+- DO NOT scale or normalize — it wastes effort and adds no benefit for trees.
+- DO NOT use PCA or other dimensionality reduction — it destroys interpretability
+  and rarely helps tree ensembles.
+- DO NOT over-engineer: the strength of RF is that it handles raw features well.
+""",
+
+    "xgboost": """
+## Model-Specific Guidance: XGBoost
+
+XGBoost is a gradient-boosted tree ensemble with built-in regularization, native
+missing value handling, and optional monotonic constraints. It excels on structured
+tabular data. Feature engineering should focus on CLEAN DATA and DOMAIN-MEANINGFUL
+DERIVED FEATURES rather than heavy transformations.
+
+### Encoding Strategy
+- ORDINAL encode categoricals — XGBoost splits on ordered values efficiently and
+  can isolate individual categories via sequential splits.
+- Avoid one-hot for features with >10 categories — use ordinal instead. One-hot
+  creates sparse binary columns that slow training and can add noise.
+- One-hot is fine for very low cardinality (≤5 values).
+- For high-cardinality categoricals (>50 values), use GROUP_AGG to create
+  mean-target encodings. This compresses the category into a single numeric
+  column that captures the category's relationship with the target.
+  IMPORTANT: group_agg is fit on training data only to prevent leakage.
+
+### Transformations
+- PASSTHROUGH numeric features as-is. Tree-based XGBoost is SCALE-INVARIANT —
+  it splits on thresholds, so scaling/normalization is unnecessary.
+- XGBoost handles missing values NATIVELY — it learns the optimal direction
+  (left or right child) for missing values at each split. Do not impute
+  unless you have strong domain reasons.
+- CREATE ratio and difference features when domain-meaningful (e.g.,
+  revenue / cost, current_balance - credit_limit). While trees can approximate
+  these via multi-split paths, explicit features make the pattern easier to
+  learn with limited data.
+- SKIP binning — XGBoost uses histogram-based splitting (tree_method='hist')
+  which already discretizes internally. Manual binning loses resolution.
+- SKIP log/sqrt transforms unless the raw feature has extreme outliers that
+  would dominate all splits. Trees handle skewed distributions natively.
+
+### Feature Selection
+- Include a GENEROUS set of features. XGBoost has built-in regularization:
+  reg_alpha (L1), reg_lambda (L2), colsample_bytree (feature subsampling),
+  and max_depth. These prevent overfitting even with many features.
+- Keep correlated features — boosting distributes importance differently than
+  bagging. Correlated features often capture complementary signals.
+- 15-50 features is a typical working range. Aim for n_samples/n_features > 10
+  as a rough minimum — with 5,000 rows, up to 500 features can be reasonable
+  with proper regularization.
+- Aggressively drop only clearly LEAKY or IRRELEVANT features (near-zero
+  variance, or features that encode the target directly).
+
+### What to Avoid
+- DO NOT create massive one-hot expansion — it slows training and dilutes splits.
+- DO NOT remove mildly correlated features — XGBoost handles redundancy via
+  regularization and feature subsampling.
+- DO NOT scale or normalize features — unnecessary for tree-based booster.
+- DO NOT impute missing values by default — let XGBoost handle them natively.
+- DO NOT use PCA — it destroys feature interpretability and rarely helps
+  tree ensembles.
+""",
+
+    "glm": """
+## Model-Specific Guidance: Generalized Linear Model (GLM)
+
+GLMs (Poisson, Gamma, Tweedie) model the conditional mean through a LINK FUNCTION.
+The link determines how features relate to the response. Feature engineering must
+align with the link and the distributional assumption. GLMs are typically used in
+contexts that demand INTERPRETABILITY (insurance pricing, regulatory models, etc.).
+
+### Distribution Selection Context
+- Poisson GLM: for COUNT outcomes (# of claims, # of events)
+- Gamma GLM: for POSITIVE CONTINUOUS amounts (claim severity, cost per unit)
+- Tweedie GLM: for zero-inflated positive outcomes (total claims cost with many zeros)
+Choose features that make sense for the distribution. Features predicting claim
+counts may differ from features predicting claim amounts.
+
+### Encoding Strategy
+- ONE-HOT encode categoricals with ≤15 unique values (drop_first=true). This gives
+  one coefficient per category relative to a reference level — essential for
+  interpretability (e.g., "Region B has 1.2x the claim rate of Region A").
+- For high-cardinality categoricals, BIN or GROUP_AGG to reduce dimensionality.
+  Alternatively, use GAM-guided binning: fit a smooth GAM first, then group
+  levels with similar effects into bands for a final GLM.
+- ORDINAL encode only when the effect is genuinely monotonic.
+
+### Transformations & Link Function Alignment
+- With LOG LINK (most common for Poisson/Gamma): log(μ) = β₀ + β₁x₁ + ...
+  Coefficients are MULTIPLICATIVE: exp(β) = factor change per unit of x.
+  log-transforming a predictor (e.g., log(income)) is natural when x has a
+  multiplicative effect on the mean.
+- CREATE ratio features for rate structures (claims/exposure, cost/unit).
+- If exposure varies across observations (e.g., different policy durations),
+  include log(exposure) as an OFFSET with fixed coefficient 1 — do NOT
+  include exposure as a regular feature.
+- BIN continuous features with complex non-linear effects into 5-10 quantile
+  bins, especially when interpretability requires step-function tariff classes.
+
+### Feature Selection & Multicollinearity
+- Keep the model INTERPRETABLE — coefficients must be explainable to
+  stakeholders, regulators, and actuaries.
+- DROP one from each correlated pair (|r| > 0.8) — collinearity makes
+  individual coefficient estimates unstable and standard errors inflate.
+  Aim for VIF < 5.
+- Aim for 8-25 carefully chosen features. GLMs have NO built-in feature
+  selection — every feature you include stays in the model.
+- For higher-dimensional problems, use ElasticNet-penalized GLM (e.g., glmnet)
+  to perform automatic selection, then fit a final unpenalized GLM on the
+  selected features for clean coefficient interpretation.
+
+### Feature Interactions
+- GLMs require EXPLICIT interaction specification (x₁ × x₂). The model cannot
+  discover interactions on its own.
+- Always include main effects when including an interaction term.
+- Limit to 2-3 well-motivated interactions to keep the model interpretable.
+
+### What to Avoid
+- DO NOT model a RATE as the response in a Poisson GLM (e.g., claims/exposure).
+  Model the COUNT with an offset for log(exposure) — this gives the correct
+  likelihood.
+- DO NOT include too many noisy features — GLMs have no regularization by default
+  and will overfit the noise, producing unreliable coefficients.
+- DO NOT use raw high-cardinality categoricals — each level adds a parameter.
+- DO NOT ignore the distributional assumption: Poisson for counts, Gamma for
+  amounts, Tweedie for zero-inflated amounts. Wrong distribution → wrong
+  variance structure → inefficient estimates.
+""",
+
+    "survival_analysis": """
+## Model-Specific Guidance: Survival Analysis (Cox PH / AFT)
+
+Survival models estimate time-to-event with CENSORING. The dominant assumption in
+Cox Proportional Hazards is that the hazard ratio between any two subjects is
+CONSTANT over time. Feature engineering must preserve temporal integrity, avoid
+leaking future information, and respect the proportional hazards assumption.
+
+### Encoding Strategy
+- ONE-HOT encode nominal categoricals with ≤10 values (drop_first=true).
+  Keep cardinality low — each level adds a parameter and survival datasets
+  are typically event-limited.
+- ORDINAL encode ordered risk categories (e.g., stage I/II/III/IV).
+- For high-cardinality categoricals, BIN into meaningful groups or use GROUP_AGG
+  for mean-target encoding.
+
+### Transformations
+- PASSTHROUGH baseline covariates — features measured at or before the start of
+  the observation period.
+- CREATE duration features using date_diff between relevant events (e.g., time
+  from diagnosis to treatment start).
+- Use date_extract for seasonal effects (month, quarter) when clinically or
+  operationally relevant.
+- LOG-TRANSFORM heavily skewed continuous covariates. Cox PH assumes each
+  continuous covariate has a LINEAR effect on log-hazard. For skewed features,
+  log(x) or restricted cubic splines may better satisfy this assumption.
+- Consider BINNING continuous covariates into 3-5 quantile groups when you suspect
+  a non-linear effect that a single linear term cannot capture (check with
+  Schoenfeld residuals or partial residual plots).
+
+### Temporal Rules (Critical — Unique to Survival)
+- ALWAYS set as_of_constraint for features derived from dates. Every feature must
+  represent information available at the START of follow-up.
+- NEVER include post-baseline data as a predictor — this is the most common and
+  most damaging form of data leakage in survival analysis.
+- Duration or time-to-event columns must NOT be used as predictors — they encode
+  the outcome.
+- Watch for IMMORTAL TIME BIAS: if group assignment depends on something that
+  happens during follow-up (e.g., "received treatment"), time before assignment
+  must be correctly handled using time-dependent covariates or landmark analysis.
+- Time-varying covariates require counting-process format (multiple rows per
+  subject with [start, stop) intervals).
+
+### Events Per Variable (EPV) Rule
+- The EPV rule is ESPECIALLY strict for survival models: require at least 10-15
+  EVENTS (not total observations) per predictor variable.
+- E.g., 80 events → use at most 5-8 features. Censored observations contribute
+  information but do not count as events for EPV.
+- Violating EPV leads to biased hazard ratios, poor calibration, and unstable
+  coefficient estimates.
+
+### Multicollinearity
+- Cox PH is SENSITIVE to multicollinearity — more so than logistic regression.
+  High VIF causes coefficient sign flips and unstable standard errors.
+- DROP one from each correlated pair with |r| > 0.7. Target VIF < 5 for all
+  features.
+- If you need to include correlated clinical variables, consider combining them
+  into a composite score.
+
+### Feature Selection
+- Focus on BASELINE characteristics and static risk factors.
+- 8-20 features is typical for interpretable survival models.
+- DROP features that correlate with the event indicator — they likely leak
+  information about whether/when the event occurred.
+- Prefer penalized Cox (Lasso or ElasticNet) over stepwise selection — stepwise
+  inflates standard errors and produces unstable results.
+- Prioritize features with clinical or domain significance over pure statistical
+  association.
+
+### What to Avoid
+- DO NOT use features that encode whether or when the event occurred — this is
+  direct data leakage.
+- DO NOT naively use post-baseline measurements as time-fixed covariates — use
+  time-dependent Cox or landmark analysis instead.
+- DO NOT include features measured only on subjects who survived long enough to
+  be measured (selection bias).
+- DO NOT ignore the proportional hazards assumption — check with Schoenfeld
+  residual tests. If violated, stratify on the offending variable or use AFT
+  instead.
+- DO NOT exceed the EPV limit without strong justification — survival models
+  degrade more rapidly than classification models when overparameterized.
+""",
+}
+
+# Fallback for unknown model types
+_DEFAULT_MODEL_GUIDANCE = """
+## Model-Specific Guidance
+
+No specific model guidance available for this model type. Apply general best practices:
+- ONE-HOT encode nominal categoricals with low cardinality (≤10 values, drop_first=true)
+- ORDINAL encode ordered categoricals when a natural order exists
+- PASSTHROUGH numeric features; log-transform if heavily skewed (|skew| > 2)
+- CREATE domain-meaningful ratio and interaction features
+- Remove near-duplicate features (|correlation| > 0.95)
+- Aim for 10-30 well-chosen features
+- Ensure at least 10-20 observations per feature to avoid overfitting
+"""
+
+
+def get_feature_engineering_prompt(selected_model: str | None = None) -> str:
+    """Compose the feature engineering system prompt with model-specific guidance."""
+    model_section = MODEL_FEATURE_GUIDANCE.get(
+        selected_model or "", _DEFAULT_MODEL_GUIDANCE
+    )
+    return FEATURE_ENGINEERING_SIMPLE_SYSTEM_PROMPT + model_section

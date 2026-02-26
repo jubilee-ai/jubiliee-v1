@@ -59,11 +59,12 @@ def test_simple_agent_end_to_end():
     print("\n[2] Creating simple training agent...")
     from agents.training.agent_simple import create_simple_training_agent
 
-    agent = create_simple_training_agent(
+    agent, state = create_simple_training_agent(
         goal="Predict loan default risk based on applicant financial profile",
         linked_datasets=["credit_risk_raw"],
         user_model_preference="logistic_regression",
         model="openai:gpt-4o-mini",
+        hitl=False,
     )
     print("    Agent created.")
 

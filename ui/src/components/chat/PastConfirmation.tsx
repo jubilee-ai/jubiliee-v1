@@ -85,6 +85,9 @@ interface ConfirmationDetailsProps {
 }
 
 export function ConfirmationDetails({ details }: ConfirmationDetailsProps) {
+  const tp = details.training_plan as Record<string, unknown> | undefined
+  const hp = (tp?.hyperparameters || details.training_params && (details.training_params as Record<string, unknown>)?.hyperparameters) as Record<string, unknown> | undefined
+
   return (
     <div className="mt-3 pt-2 border-t border-border/30 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
       {Boolean(details.selected_model) && (
@@ -98,6 +101,9 @@ export function ConfirmationDetails({ details }: ConfirmationDetailsProps) {
       )}
       {Boolean(details.feature_spec) && (
         <span>Features: <code className="text-foreground">{((details.feature_spec as Record<string, unknown>)?.features as unknown[])?.length || 0}</code></span>
+      )}
+      {hp && Object.keys(hp).length > 0 && (
+        <span>Params: <code className="text-foreground">{Object.keys(hp).length}</code></span>
       )}
       {(details.training_metrics as Record<string, unknown>)?.test_accuracy != null && (
         <span>Accuracy: <code className="text-foreground">{(Number((details.training_metrics as Record<string, unknown>).test_accuracy) * 100).toFixed(1)}%</code></span>

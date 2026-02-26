@@ -26,8 +26,8 @@ import { uid } from "@/lib/utils"
 
 // Step definitions matching the agent's tool set (agent_simple.py _STEP_ORDER)
 const STEP_DEFINITIONS = [
-  { id: "select_model", name: "Model Selection", description: "Choose the ML model type for this task" },
   { id: "data_collection", name: "Data Collection", description: "Load or collect the dataset" },
+  { id: "select_model", name: "Model Selection", description: "Choose the ML model type for this task" },
   { id: "cleaning", name: "Cleaning", description: "Clean and standardize the data" },
   { id: "label_split_definition", name: "Label & Split", description: "Define target column and train/val/test splits" },
   { id: "feature_selection_specification", name: "Feature Selection", description: "Analyze data and specify features" },
@@ -130,6 +130,7 @@ export function useRealAgent(): UseRealAgentReturn {
   
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const streamControllerRef = useRef<AbortController | null>(null)
+  const emittedStepsRef = useRef<Set<string>>(new Set())
   const useStreaming = true // Enable streaming by default
 
   // Add a message to the chat
@@ -506,10 +507,17 @@ export function useRealAgent(): UseRealAgentReturn {
       if (summary.task_type) lines.push(`Task: ${summary.task_type}`)
       const hp = summary.hyperparameters
       if (hp && typeof hp === "object") {
-        const hpStr = Object.entries(hp as Record<string, unknown>).map(([k, v]) => `${k}=${v}`).join(", ")
-        if (hpStr) lines.push(`Hyperparameters: ${hpStr}`)
+        const entries = Object.entries(hp as Record<string, unknown>)
+        const keyParams = entries.slice(0, 4).map(([k, v]) => `\`${k}=${v}\``).join(", ")
+        if (keyParams) {
+          lines.push(`Key params: ${keyParams}${entries.length > 4 ? ` (+${entries.length - 4} more)` : ""}`)
+        }
       }
-      if (summary.strategy_notes) lines.push(`\nStrategy: ${summary.strategy_notes}`)
+      const strategy = summary.strategy_notes
+      if (strategy) {
+        const noteCount = Array.isArray(strategy) ? strategy.length : 1
+        lines.push(`\nStrategy: ${noteCount} section${noteCount !== 1 ? "s" : ""} — view details for full plan`)
+      }
     } else if (nodeName === "training" && summary) {
       if (summary.model_name) lines.push(`Model: **${summary.model_name}**`)
       if (summary.model_type) lines.push(`Type: ${summary.model_type}`)
@@ -621,9 +629,34 @@ export function useRealAgent(): UseRealAgentReturn {
       console.log("[stream] Interrupt received:", event)
       
       const nodeName = event.node || "unknown"
-      const summary = typeof event.summary === "string" 
-        ? event.summary 
-        : JSON.stringify(event.summary || {}, null, 2)
+      let summary: string
+      if (typeof event.summary === "string") {
+        summary = event.summary
+      } else if (nodeName === "training_approval" && event.summary && typeof event.summary === "object") {
+        const s = event.summary as Record<string, unknown>
+        const lines: string[] = []
+        if (s.model_type) lines.push(`**Model:** ${s.model_type}`)
+        if (s.task_type) lines.push(`**Task:** ${s.task_type}`)
+        const hp = s.hyperparameters as Record<string, unknown> | undefined
+        if (hp && typeof hp === "object") {
+          const entries = Object.entries(hp)
+          const keyParams = entries.slice(0, 5).map(([k, v]) => `\`${k}=${v}\``).join("  ·  ")
+          lines.push("")
+          lines.push(`**Hyperparameters** (${entries.length} total)`)
+          lines.push(keyParams + (entries.length > 5 ? `  ·  *+${entries.length - 5} more*` : ""))
+        }
+        if (s.class_weight) lines.push(`\n**Class weight:** ${s.class_weight}`)
+        const strategy = s.strategy_notes
+        if (strategy) {
+          const notes = Array.isArray(strategy) ? strategy : [strategy]
+          lines.push("")
+          lines.push(`**Strategy** — ${notes.length} section${notes.length !== 1 ? "s" : ""}`)
+          lines.push("*View full details for the complete training plan*")
+        }
+        summary = lines.join("\n")
+      } else {
+        summary = JSON.stringify(event.summary || {}, null, 2)
+      }
       const stateSnapshot = (event.state_snapshot || {}) as Record<string, unknown>
       
       // Update step to awaiting confirmation with details
@@ -699,6 +732,13 @@ export function useRealAgent(): UseRealAgentReturn {
     } else if (event.type === "node_complete") {
       const nodeName = event.node || "unknown"
       const nodeProgress = event.progress || 0
+      
+      // Deduplicate: skip if we already emitted a node_complete for this step
+      if (emittedStepsRef.current.has(nodeName)) {
+        console.log("[stream] Skipping duplicate node_complete for", nodeName)
+        return
+      }
+      emittedStepsRef.current.add(nodeName)
       
       setProgress(nodeProgress)
       
@@ -928,6 +968,7 @@ export function useRealAgent(): UseRealAgentReturn {
     setIsRunning(true)
     setProgress(0)
     setSteps(createInitialSteps())
+    emittedStepsRef.current = new Set()
     
     // Update initial state
     const initialState = createInitialState()
@@ -1156,6 +1197,7 @@ Note: The real agent runs the full pipeline at once. Progress updates show which
     setConfirmationRequest(null)
     setAcceptAllMode(false)
     acceptAllModeRef.current = false
+    emittedStepsRef.current = new Set()
   }, [])
 
   // Cleanup on unmount

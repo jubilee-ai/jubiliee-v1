@@ -36,43 +36,35 @@ from .steps.select_model import select_model as _select_model_impl
 from .steps.training import run_training_agent as _run_training
 
 SYSTEM_PROMPT = """\
-You are an ML model training agent. Your job is to train the best possible model \
-by calling the provided step tools. You have full flexibility to revisit any step.
+You are an ML pipeline agent. Execute the pipeline steps to train the best model.
 
-## Available Steps (recommended first-pass order)
-- select_model — Choose the model type for the task
-- data_collection — Load/collect the dataset
-- cleaning — Clean and standardize the data
-- label_split_definition — Define the target column and create train/val/test splits
-- feature_selection_specification — Analyze data and specify features to engineer
-- feature_engineering_executor — Execute the feature spec to produce transformed datasets
-- training_approval — Propose hyperparameters and training configuration
-- training — Train the model and evaluate metrics
-- generate_report — Save the final report
+## CRITICAL RULES
+1. Call EXACTLY ONE tool at a time. NEVER call multiple tools simultaneously.
+2. Wait for each tool to return before calling the next.
+3. Do NOT skip steps. Do NOT repeat a step that already succeeded.
+4. After each tool returns, briefly note the result, then call the next tool.
 
-## First Pass
-On the very first run, follow the order above sequentially.
+## First Pass — Execute in THIS EXACT ORDER
+1. data_collection — Load the dataset
+2. select_model — Choose the model type based on the goal
+3. cleaning — Clean and standardize the data
+4. label_split_definition — Define target column and train/val/test splits
+5. feature_selection_specification — Analyze data and specify features
+6. feature_engineering_executor — Execute feature transformations
+7. training_approval — Propose training configuration
+8. training — Train the model and evaluate metrics
+9. generate_report — Save the final report
 
-## Iterating and Going Back
-You can and SHOULD go back to earlier steps when it would improve results:
-- Poor training metrics? Go back to feature_selection_specification to redesign \
-features, or select_model to try a different algorithm, or both.
-- User asks to change the model? Call select_model, then re-run training_approval \
-and training (features can often be reused).
-- User asks to change features? Call feature_selection_specification, then \
-feature_engineering_executor, training_approval, and training.
-- User asks to change data cleaning? Call cleaning, then re-run all downstream \
-steps from label_split_definition onward.
-- Feature engineering validation fails? Retry feature_selection_specification \
-with adjusted specs.
-- When you re-run a step, you MUST also re-run all steps that depend on its output.
+## After Training — Optimization (Optional)
+After training completes, evaluate the metrics. If they are unsatisfactory:
+- Weak features → go back to feature_selection_specification
+- Wrong model → go back to select_model
+- Poor hyperparameters → go back to training_approval
+After changing any step, re-run all downstream steps in order.
+Do not loop more than 4 total training iterations.
 
-## Rules
-- Call each step tool exactly once in the happy path (no unnecessary repeats).
-- After each step, briefly report its outcome before moving to the next.
-- After generate_report, summarize the final results for the user.
-- If a step errors, you may retry it once before giving up.
-- Use your judgment about which steps to revisit — optimize for the best model.
+## After generate_report
+Summarize the final results.
 """
 
 
@@ -128,6 +120,9 @@ def create_simple_training_agent(
 
     # -- tool wrappers (each closes over `state`) ---------------------------
 
+    # Track which steps have successfully completed to prevent redundant calls
+    _completed_steps: set[str] = set()
+
     # Keys produced by each step, used to invalidate downstream state on re-runs
     _STEP_OUTPUTS = {
         "select_model": ["selected_model", "model_explanation"],
@@ -156,7 +151,7 @@ def create_simple_training_agent(
         "generate_report": ["report_path"],
     }
     _STEP_ORDER = [
-        "select_model", "data_collection", "cleaning", "label_split_definition",
+        "data_collection", "select_model", "cleaning", "label_split_definition",
         "feature_selection_specification", "feature_engineering_executor",
         "training_approval", "training", "generate_report",
     ]
@@ -167,10 +162,15 @@ def create_simple_training_agent(
         for later_step in _STEP_ORDER[idx + 1:]:
             for key in _STEP_OUTPUTS.get(later_step, []):
                 state.pop(key, None)
+            _completed_steps.discard(later_step)
 
     def tool_select_model() -> str:
         """Select the best ML model type for the training goal. Can be re-called to switch models."""
         nonlocal state
+        if "select_model" in _completed_steps and not state.get("_redo_feedback_select_model"):
+            return f"SKIP: Model already selected: {state.get('selected_model')}. Proceed to the next step."
+        if state.get("selected_model") is not None:
+            _invalidate_downstream("select_model")
 
         redo_fb = state.pop("_redo_feedback_select_model", None)
         if redo_fb:
@@ -197,6 +197,7 @@ def create_simple_training_agent(
             state.pop("user_model_preference", None)
             return f"REJECTED by user: {fb}. Please redo model selection."
 
+        _completed_steps.add("select_model")
         return (
             f"Selected model: {state.get('selected_model', 'unknown')}\n"
             f"Reason: {state.get('model_explanation', 'N/A')}"
@@ -205,9 +206,17 @@ def create_simple_training_agent(
     def tool_data_collection() -> str:
         """Collect or load the dataset. Can be re-called to reload or change data sources."""
         nonlocal state
+        if "data_collection" in _completed_steps and not state.get("_redo_feedback_data_collection"):
+            return f"SKIP: Dataset already loaded: {state.get('collected_dataset_ref')}. Proceed to the next step."
         _invalidate_downstream("data_collection")
+
+        redo_fb = state.pop("_redo_feedback_data_collection", None)
+        if redo_fb:
+            state["_data_collection_redo_hint"] = redo_fb
+
         result = _data_collection_impl(state)
         state.update(result)
+        state.pop("_data_collection_redo_hint", None)
         audit = next(
             (t for t in state.get("audit_trace", []) if t.get("step") == "data_collection"),
             {},
@@ -221,8 +230,10 @@ def create_simple_training_agent(
         decision = _hitl_gate("data_collection", summary)
         if not decision.get("approved", True):
             fb = decision.get("feedback", "Please redo data collection.")
+            state["_redo_feedback_data_collection"] = fb
             return f"REJECTED by user: {fb}"
 
+        _completed_steps.add("data_collection")
         return (
             f"Dataset: {state.get('collected_dataset_ref', 'unknown')}\n"
             f"Rows: {audit.get('rows', '?')}, Columns: {cols}"
@@ -231,8 +242,14 @@ def create_simple_training_agent(
     def tool_cleaning() -> str:
         """Clean and standardize the collected dataset. Can be re-called to apply different cleaning."""
         nonlocal state
+        if "cleaning" in _completed_steps and not state.get("_redo_feedback_cleaning"):
+            return f"SKIP: Data already cleaned: {state.get('cleaned_dataset_ref')}. Proceed to the next step."
+
+        dataset_ref = state.get("collected_dataset_ref")
+        if not dataset_ref:
+            return "SKIP: Cannot run — data_collection must run first."
         _invalidate_downstream("cleaning")
-        dataset_ref = state["collected_dataset_ref"]
+        redo_fb = state.pop("_redo_feedback_cleaning", None)
         try:
             df = get_registered_dataset(dataset_ref)
             num_columns = len(df.columns) if df is not None else 20
@@ -240,9 +257,13 @@ def create_simple_training_agent(
         except Exception:
             max_iters = 50
 
+        cleaning_goal = state.get("goal", "")
+        if redo_fb:
+            cleaning_goal += f"\n\nIMPORTANT user feedback on previous cleaning: {redo_fb}"
+
         result = run_cleaning_simple(
             dataset_ref=dataset_ref,
-            goal=state.get("goal", ""),
+            goal=cleaning_goal,
             max_iterations=max_iters,
         )
         state["cleaned_dataset_ref"] = result["cleaned_ref"]
@@ -258,8 +279,10 @@ def create_simple_training_agent(
         decision = _hitl_gate("cleaning", summary)
         if not decision.get("approved", True):
             fb = decision.get("feedback", "Please redo cleaning.")
+            state["_redo_feedback_cleaning"] = fb
             return f"REJECTED by user: {fb}"
 
+        _completed_steps.add("cleaning")
         return (
             f"Cleaned dataset: {result['cleaned_ref']}\n"
             f"Transformations applied: {n_transforms}\n"
@@ -269,14 +292,27 @@ def create_simple_training_agent(
     def tool_label_split_definition() -> str:
         """Define the target column, split strategy, and create train/val/test splits. Can be re-called."""
         nonlocal state
+        if "label_split_definition" in _completed_steps and not state.get("_redo_feedback_label_split"):
+            ld = state.get("label_definition") or {}
+            return f"SKIP: Label/split already defined. Target: {ld.get('target_column')}. Proceed to the next step."
         dataset_ref = state.get("cleaned_dataset_ref")
         if not dataset_ref:
-            return "Cannot run yet — cleaning must run first to produce a cleaned dataset."
+            return "SKIP: Cannot run — cleaning must run first."
         _invalidate_downstream("label_split_definition")
+
+        redo_fb = state.pop("_redo_feedback_label_split", None)
+
         existing = state.get("label_definition") or {}
+        if redo_fb:
+            existing = {}
+
+        label_goal = state.get("goal", "")
+        if redo_fb:
+            label_goal += f"\n\nIMPORTANT user feedback on previous label/split: {redo_fb}"
+
         label_def = run_label_split_definition(
             dataset_ref=dataset_ref,
-            goal=state.get("goal", ""),
+            goal=label_goal,
             selected_model=state.get("selected_model"),
             model_explanation=state.get("model_explanation"),
             target_column=existing.get("target_column"),
@@ -319,8 +355,10 @@ def create_simple_training_agent(
         decision = _hitl_gate("label_split_definition", summary)
         if not decision.get("approved", True):
             fb = decision.get("feedback", "Please redo label/split definition.")
+            state["_redo_feedback_label_split"] = fb
             return f"REJECTED by user: {fb}"
 
+        _completed_steps.add("label_split_definition")
         return (
             f"Target column: {label_def.get('target_column', '?')}\n"
             f"Split strategy: {label_def.get('split_strategy', '?')}\n"
@@ -330,12 +368,15 @@ def create_simple_training_agent(
     def tool_feature_selection_specification() -> str:
         """Analyze data and specify which features to engineer. Can be re-called to redesign features."""
         nonlocal state
-        _invalidate_downstream("feature_selection_specification")
+        if "feature_selection_specification" in _completed_steps and not state.get("feature_redo_requested") and not state.get("_redo_feedback_feature_selection"):
+            fs = (state.get("feature_spec") or {}).get("features", [])
+            return f"SKIP: Features already specified ({len(fs)} features). Proceed to the next step."
         label_def = state.get("label_definition") or {}
         train_ref = state.get("train_dataset_ref")
         target_column = label_def.get("target_column", "")
         if not train_ref or not target_column:
-            return "Cannot run yet — label_split_definition must run first to define target and splits."
+            return "SKIP: Cannot run — label_split_definition must run first."
+        _invalidate_downstream("feature_selection_specification")
 
         redo_fb = state.pop("_redo_feedback_feature_selection", None)
         if redo_fb:
@@ -356,6 +397,7 @@ def create_simple_training_agent(
             forbidden_columns=label_def.get("forbidden_columns", []),
             as_of_cutoff=label_def.get("as_of_cutoff"),
             prediction_horizon=label_def.get("prediction_horizon"),
+            selected_model=state.get("selected_model"),
         )
 
         feature_spec = result.get("feature_spec")
@@ -390,18 +432,21 @@ def create_simple_training_agent(
             state["_redo_feedback_feature_selection"] = fb
             return f"REJECTED by user: {fb}"
 
+        _completed_steps.add("feature_selection_specification")
         return f"Features specified: {len(features)}\nNames: {', '.join(names)}"
 
     def tool_feature_engineering_executor() -> str:
         """Execute the feature specification to produce transformed train/val/test datasets. Can be re-called."""
         nonlocal state
-        _invalidate_downstream("feature_engineering_executor")
+        if "feature_engineering_executor" in _completed_steps and state.get("feature_validation_passed"):
+            return f"SKIP: Features already engineered. Proceed to the next step."
         label_def = state.get("label_definition") or {}
         train_ref = state.get("train_dataset_ref")
         feature_spec = state.get("feature_spec")
         target_column = label_def.get("target_column", "")
         if not train_ref or not feature_spec or not target_column:
-            return "Cannot run yet — feature_selection_specification must run first to define features."
+            return "SKIP: Cannot run — feature_selection_specification must run first."
+        _invalidate_downstream("feature_engineering_executor")
 
         result = execute_feature_spec_split(
             train_ref=train_ref,
@@ -431,6 +476,8 @@ def create_simple_training_agent(
             }],
         })
         shapes = result.get("shapes", {})
+        if passed:
+            _completed_steps.add("feature_engineering_executor")
         status = "PASSED" if passed else "FAILED"
         summary = (
             f"Validation: {status}\n"
@@ -445,6 +492,9 @@ def create_simple_training_agent(
     def tool_training_approval() -> str:
         """Propose a training configuration (hyperparameters, strategy). Re-call after changing model or features."""
         nonlocal state
+        if "training_approval" in _completed_steps and not state.get("_redo_feedback_training_approval"):
+            tp = state.get("training_plan") or {}
+            return f"SKIP: Training plan already approved ({tp.get('model_type')}). Proceed to the next step."
         _invalidate_downstream("training_approval")
         train_ref = state.get("transformed_train_ref")
         val_ref = state.get("transformed_val_ref")
@@ -456,7 +506,7 @@ def create_simple_training_agent(
         train_df = get_registered_dataset(train_ref)
         val_df = get_registered_dataset(val_ref) if val_ref else None
         if train_df is None:
-            return "Cannot run yet — feature_engineering_executor must run first to produce training data."
+            return "SKIP: Cannot run — feature_engineering_executor must run first."
 
         n_rows = len(train_df)
         n_features = len([c for c in train_df.columns if c != target_column])
@@ -538,6 +588,7 @@ Respond with JSON:
             state["_redo_feedback_training_approval"] = fb
             return f"REJECTED by user: {fb}"
 
+        _completed_steps.add("training_approval")
         return (
             f"Training plan proposed.\n"
             f"Model: {training_plan.get('model_type')}\n"
@@ -554,7 +605,7 @@ Respond with JSON:
         selected_model = state.get("selected_model", "logistic_regression")
         train_ref = state.get("transformed_train_ref")
         if not train_ref or not target_column:
-            return "Cannot run yet — feature_engineering_executor and label_split_definition must complete first."
+            return "SKIP: Cannot run — feature_engineering_executor and label_split_definition must complete first."
 
         model_name = f"{selected_model}_{int(time.time())}"
         result = _run_training(
@@ -569,12 +620,14 @@ Respond with JSON:
         )
 
         feature_redo_requested = result.get("feature_redo_requested", False)
+        best_model_type = result.get("model_type", selected_model)
         state.update({
             "model_weights_path": result.get("model_name"),
+            "selected_model": best_model_type,
             "training_metrics": {
                 "success": result.get("success"),
                 "model_name": result.get("model_name"),
-                "model_type": result.get("model_type"),
+                "model_type": best_model_type,
                 "val_accuracy": result.get("val_accuracy"),
                 "val_roc_auc": result.get("val_roc_auc"),
                 "test_accuracy": result.get("test_accuracy"),
@@ -582,9 +635,13 @@ Respond with JSON:
                 "train_r2": result.get("train_r2"),
                 "val_r2": result.get("val_r2"),
                 "val_rmse": result.get("val_rmse"),
+                "val_mae": result.get("val_mae"),
                 "test_r2": result.get("test_r2"),
                 "test_rmse": result.get("test_rmse"),
+                "test_mae": result.get("test_mae"),
+                "iterations": result.get("iterations", []),
                 "num_iterations": result.get("num_iterations", 0),
+                "best_iteration": result.get("best_iteration"),
                 "summary": result.get("summary"),
                 "recommendations": result.get("recommendations"),
                 "feature_redo_requested": feature_redo_requested,
@@ -596,6 +653,7 @@ Respond with JSON:
             "audit_trace": state.get("audit_trace", []) + [{
                 "step": "training",
                 "model_name": result.get("model_name"),
+                "model_type": best_model_type,
                 "success": result.get("success"),
                 "num_iterations": result.get("num_iterations", 0),
                 "feature_redo_requested": feature_redo_requested,
@@ -623,17 +681,24 @@ Respond with JSON:
         if not decision.get("approved", True):
             fb = decision.get("feedback", "Please adjust training approach.")
             fb_lower = fb.lower()
+            routed = False
             for m in KNOWN_MODELS:
                 if m in fb_lower or m.replace("_", " ") in fb_lower:
                     state["_redo_feedback_select_model"] = fb
+                    routed = True
                     break
+            if not routed:
+                state["_redo_feedback_training_approval"] = fb
             return f"REJECTED by user: {fb}"
 
+        _completed_steps.add("training")
         return "\n".join(lines)
 
     def tool_generate_report() -> str:
         """Generate and save the final training report. Call when satisfied with training results."""
         nonlocal state
+        if "generate_report" in _completed_steps:
+            return f"SKIP: Report already generated: {state.get('report_path')}."
         metrics = state.get("training_metrics", {})
         label_def = state.get("label_definition") or {}
 
@@ -668,6 +733,8 @@ Respond with JSON:
                     "accuracy": metrics.get("test_accuracy"),
                     "roc_auc": metrics.get("test_roc_auc"),
                 },
+                "iterations": metrics.get("iterations", []),
+                "best_iteration": metrics.get("best_iteration"),
                 "summary": metrics.get("summary"),
                 "recommendations": metrics.get("recommendations"),
             },
@@ -684,13 +751,14 @@ Respond with JSON:
         state["audit_trace"] = state.get("audit_trace", []) + [
             {"step": "generate_report", "path": str(report_path)}
         ]
+        _completed_steps.add("generate_report")
         return f"Report saved to {report_path}"
 
     # -- build the deep agent -----------------------------------------------
 
     all_tools = [
-        tool_select_model,
         tool_data_collection,
+        tool_select_model,
         tool_cleaning,
         tool_label_split_definition,
         tool_feature_selection_specification,

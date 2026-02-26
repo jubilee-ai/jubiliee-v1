@@ -250,6 +250,9 @@ def run_label_split_definition(
     Returns:
         Dict with all 6 label/split definition fields
     """
+    if not dataset_ref:
+        raise ValueError("dataset_ref is required but got None — cleaning must run first to produce a cleaned dataset.")
+
     # Get schema context
     schema_context = _get_schema_context(dataset_ref)
     

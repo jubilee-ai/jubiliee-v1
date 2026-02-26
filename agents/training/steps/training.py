@@ -294,51 +294,27 @@ def _get_task_type(selected_model: str, goal: str) -> Literal["classification", 
     return "classification"
 
 
-def _get_alternative_models(selected_model: str, task_type: str) -> list[str]:
+def _get_available_models(task_type: str) -> list[dict[str, str]]:
     """
-    Get alternative models that can be tried if the selected model plateaus.
+    Get all models available for a given task type.
     
-    Args:
-        selected_model: The initially selected model
-        task_type: Either 'classification' or 'regression'
-    
-    Returns:
-        List of alternative model names (tool names) that are compatible with the task
+    Returns list of dicts with 'tool' name and 'label' for display.
     """
-    # Define models by task type
     classification_models = [
-        "sklearn_logistic_regression",
-        "sklearn_random_forest", 
-        "xgboost_train",
+        {"tool": "sklearn_logistic_regression", "label": "Logistic Regression"},
+        {"tool": "sklearn_random_forest", "label": "Random Forest"},
+        {"tool": "xgboost_train", "label": "XGBoost"},
     ]
     
     regression_models = [
-        "sklearn_random_forest",
-        "xgboost_train",
-        "sklearn_glm",
+        {"tool": "sklearn_random_forest", "label": "Random Forest"},
+        {"tool": "xgboost_train", "label": "XGBoost"},
+        {"tool": "sklearn_glm", "label": "GLM"},
     ]
     
-    # Map selected_model to tool name for comparison
-    model_to_tool = {
-        "logistic_regression": "sklearn_logistic_regression",
-        "random_forest": "sklearn_random_forest",
-        "xgboost": "xgboost_train",
-        "glm": "sklearn_glm",
-        "survival": "survival_analysis",
-    }
-    
-    # Get the tool name for the selected model
-    selected_tool = model_to_tool.get(selected_model.lower(), selected_model)
-    
-    # Get all compatible models for this task type
     if task_type == "classification":
-        all_models = classification_models
-    else:
-        all_models = regression_models
-    
-    # Return alternatives (excluding the selected model)
-    alternatives = [m for m in all_models if m != selected_tool]
-    return alternatives
+        return classification_models
+    return regression_models
 
 
 # =============================================================================
@@ -393,9 +369,9 @@ def run_training_agent(
     val_data = _prepare_data_for_tool(val_df)
     test_data = _prepare_data_for_tool(test_df)
     
-    # Get task type and alternative models
+    # Get task type and all available models
     task_type = _get_task_type(selected_model, goal)
-    alternative_models = _get_alternative_models(selected_model, task_type)
+    available_models = _get_available_models(task_type)
     
     # Generate model name if not provided
     if not model_name:
@@ -420,62 +396,43 @@ def run_training_agent(
     minority_ratio = min(class_counts.values()) / total if total > 0 else 0
     is_imbalanced = minority_ratio < 0.3
     
-    # Build context for the agent
-    alt_models_str = ", ".join(alternative_models) if alternative_models else "None"
+    # Build model list for context
+    models_str = "\n".join(
+        f"- **{m['label']}** → tool: `{m['tool']}`" for m in available_models
+    )
+    imbalance_note = (
+        f"⚠️ IMBALANCED DATA — minority class is {minority_ratio:.1%}. "
+        "Use class_weight='balanced' (LR/RF) or scale_pos_weight (XGB)."
+        if is_imbalanced else "✓ Balanced classes"
+    )
     
-    context = f"""
-## Training Context
+    context = f"""## Goal
+{goal}
 
-**Goal:** {goal}
+## Available Models (use any, switch freely)
+{models_str}
 
-**Model Type:** {selected_model}
-**Task Type:** {task_type}
-**Target Column:** {target_column}
-**Base Model Name:** {model_name} (append _v1, _v2, _v3 for iterations)
-**Max Iterations:** {max_iterations}
+Start with **{selected_model}**, but switch to other models whenever you think it could improve performance. Try at least 2 different model types.
 
-**Alternative Models Available:** {alt_models_str}
-(You may switch to any of these if you think a different model would perform better)
+## Data
+- Task type: {task_type}
+- Target column: `{target_column}`
+- Training: {len(train_data)} rows (ref: `{train_ref}`)
+- Validation: {len(val_data)} rows (ref: `{val_ref}`)
+- Test: {len(test_data)} rows (ref: `{test_ref}`)
+- Features ({len(feature_columns)}): {feature_columns[:10]}{'...' if len(feature_columns) > 10 else ''}
 
-**Dataset Sizes:**
-- Training: {len(train_data)} rows
-- Validation: {len(val_data)} rows  
-- Test: {len(test_data)} rows
+**Class distribution:** {class_counts}
+{imbalance_note}
 
-**Dataset References:**
-- Training: train_dataset_ref="{train_ref}"
-- Validation: dataset_ref="{val_ref}"
-- Test: dataset_ref="{test_ref}"
+## Instructions
+- Max iterations: {max_iterations}
+- Name models descriptively: `lr_v1`, `rf_v1`, `xgb_v1`, `rf_v2`, etc.
+- For training tools: `train_dataset_ref="{train_ref}"`, `target_column="{target_column}"`
+- For evaluate_model: `dataset_ref="{val_ref}"` (validation) or `dataset_ref="{test_ref}"` (final test)
+- **Optimize aggressively** — try different models and hyperparameters to get the best validation metrics before running the final test evaluation.
 
-**Features ({len(feature_columns)}):** {feature_columns[:10]}{'...' if len(feature_columns) > 10 else ''}
-
-**Class Distribution (Training):**
-{class_counts}
-{"⚠️ IMBALANCED DATA - minority class is " + f"{minority_ratio:.1%}" + " - use class_weight='balanced'" if is_imbalanced else "✓ Balanced classes"}
-
-## Iterative Training Instructions
-
-1. **Train a model**: Start with {selected_model}
-   - model_name="{model_name}_v1"
-   - train_dataset_ref="{train_ref}"
-   - target_column="{target_column}"
-   {"- class_weight='balanced' (data is imbalanced)" if is_imbalanced else ""}
-   
-2. **Evaluate on validation** using evaluate_model tool:
-   - dataset_ref="{val_ref}"
-   - target_column="{target_column}"
-
-3. **Decide next action** based on results:
-   - Proceed to test if metrics are satisfactory
-   - Tune hyperparameters if you think adjustments will help
-   - Switch to a different model ({alt_models_str}) if you think it would perform better
-   - Use unique model names for each attempt (e.g., {model_name}_v2, rf_v1, xgb_v1)
-
-4. **Final test evaluation**: Use evaluate_model with dataset_ref="{test_ref}"
-
-5. **Report**: Summarize all iterations, final metrics, and chosen model
-
-## Sample Training Data (first 3 rows)
+## Sample Data (first 3 rows)
 {train_data[:3]}
 """
     
@@ -493,20 +450,7 @@ def run_training_agent(
     # Run the agent
     messages = [{"role": "user", "content": context}]
     
-    # Simple instruction message (no raw data needed - tools load from registry)
-    instruction_message = f"""
-Now please train the model using these dataset references:
-
-For training tools (sklearn_logistic_regression, sklearn_random_forest, xgboost_train, etc.):
-- train_dataset_ref="{train_ref}"
-- target_column="{target_column}"
-
-For evaluate_model tool:
-- Validation: dataset_ref="{val_ref}", target_column="{target_column}"
-- Test: dataset_ref="{test_ref}", target_column="{target_column}"
-
-Begin training now.
-"""
+    instruction_message = f"""Begin training now. Maximize validation performance by exploring different models and hyperparameters. Use the dataset refs above. Run final test evaluation on your best model before finishing."""
     
     messages.append({"role": "user", "content": instruction_message})
     

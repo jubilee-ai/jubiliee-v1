@@ -23,6 +23,7 @@ export function StepDetailModal({ stepId, agentState, steps, onClose }: StepDeta
     "label_split_definition": "label_split_definition",
     "feature_selection_specification": "feature_selection_specification",
     "feature_engineering_executor": "feature_engineering_executor",
+    "training_approval": "training_approval",
     "training": "training",
     "generate_report": "generate_report",
   }
@@ -38,6 +39,7 @@ export function StepDetailModal({ stepId, agentState, steps, onClose }: StepDeta
       case "label_split_definition": return "Label & Split Definition"
       case "feature_selection_specification": return "Feature Selection"
       case "feature_engineering_executor": return "Feature Engineering"
+      case "training_approval": return "Training Configuration"
       case "training": return "Model Training"
       case "generate_report": return "Report Generation"
       default: return step?.name || stepId
@@ -58,6 +60,8 @@ export function StepDetailModal({ stepId, agentState, steps, onClose }: StepDeta
         return <FeatureSelectionDetail agentState={agentState} />
       case "feature_engineering_executor":
         return <FeatureEngineeringDetail agentState={agentState} audit={audit} />
+      case "training_approval":
+        return <TrainingConfigDetail agentState={agentState} audit={audit} />
       case "training":
         return <TrainingDetail agentState={agentState} />
       case "generate_report":
@@ -714,6 +718,149 @@ function FeatureEngineeringDetail({ agentState, audit }: { agentState: TrainingA
               <li key={i}>• {e}</li>
             ))}
           </ul>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// Training Config Detail (training_approval step)
+function TrainingConfigDetail({ agentState, audit }: { agentState: TrainingAgentState; audit?: Record<string, unknown> }) {
+  const [expandedSection, setExpandedSection] = useState<number | null>(null)
+
+  const plan = (audit as Record<string, unknown> | undefined) || {}
+  const tp = (plan.training_plan as Record<string, unknown>) ||
+    (agentState.training_params as Record<string, unknown>) || {}
+  const hp = (tp.hyperparameters || plan.hyperparameters || {}) as Record<string, unknown>
+  const strategy = (tp.strategy_notes || plan.strategy_notes || []) as string[] | string
+  const dataSummary = (tp.data_summary || plan.data_summary || {}) as Record<string, unknown>
+  const modelType = String(tp.model_type || plan.model_type || "Unknown")
+  const taskType = String(tp.task_type || plan.task_type || "")
+  const classWeight = tp.class_weight || plan.class_weight
+  const maxIter = tp.max_iterations || plan.max_iterations
+
+  const strategyNotes = Array.isArray(strategy) ? strategy : strategy ? [String(strategy)] : []
+
+  const sectionTitles = [
+    "Objective & Data",
+    "Imbalance Handling",
+    "Hyperparameter Rationale",
+    "Training Iterations",
+    "Feature & Preprocessing",
+    "Validation Protocol",
+    "Deployment & Interpretability",
+    "Performance Tuning",
+  ]
+
+  const guessSectionTitle = (text: string, index: number): string => {
+    const lower = text.toLowerCase()
+    for (const title of sectionTitles) {
+      if (lower.startsWith(title.toLowerCase())) return title
+    }
+    const colonIdx = text.indexOf(":")
+    if (colonIdx > 0 && colonIdx < 50) return text.slice(0, colonIdx).trim()
+    return `Section ${index + 1}`
+  }
+
+  return (
+    <div className="space-y-6">
+      {/* Model & Task header */}
+      <div className="flex gap-4">
+        <div className="flex-1 bg-foreground/5 rounded-xl p-4">
+          <div className="text-xs text-muted-foreground mb-1">Model</div>
+          <div className="text-xl font-semibold">{modelType}</div>
+        </div>
+        {taskType && (
+          <div className="flex-1 bg-foreground/5 rounded-xl p-4">
+            <div className="text-xs text-muted-foreground mb-1">Task</div>
+            <div className="text-xl font-semibold">{taskType}</div>
+          </div>
+        )}
+      </div>
+
+      {/* Hyperparameters grid */}
+      {Object.keys(hp).length > 0 ? (
+        <div>
+          <div className="text-sm font-medium mb-3">Hyperparameters</div>
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+            {Object.entries(hp).map(([key, value]) => (
+              <div key={key} className="bg-muted/30 rounded-lg px-3 py-2">
+                <div className="text-[11px] text-muted-foreground font-mono truncate">{key}</div>
+                <div className="text-sm font-semibold font-mono mt-0.5">{String(value)}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : null}
+
+      {/* Class weight & max iterations */}
+      {(classWeight || maxIter) ? (
+        <div className="flex gap-4">
+          {classWeight ? (
+            <div className="bg-blue-50 dark:bg-blue-950/30 rounded-lg px-3 py-2">
+              <div className="text-[11px] text-blue-600 dark:text-blue-400">Class Weight</div>
+              <div className="text-sm font-medium">{String(classWeight)}</div>
+            </div>
+          ) : null}
+          {maxIter ? (
+            <div className="bg-blue-50 dark:bg-blue-950/30 rounded-lg px-3 py-2">
+              <div className="text-[11px] text-blue-600 dark:text-blue-400">Max Iterations</div>
+              <div className="text-sm font-medium">{String(maxIter)}</div>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+
+      {/* Data Summary */}
+      {Object.keys(dataSummary).length > 0 && (
+        <div>
+          <div className="text-sm font-medium mb-2">Data Summary</div>
+          <div className="grid grid-cols-2 gap-2 text-sm">
+            {Object.entries(dataSummary).map(([key, value]) => (
+              <div key={key} className="flex justify-between bg-muted/20 rounded-lg px-3 py-2">
+                <span className="text-muted-foreground">{key.replace(/_/g, " ")}</span>
+                <span className="font-medium">{typeof value === "number" ? value.toLocaleString() : String(value)}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Strategy sections */}
+      {strategyNotes.length > 0 && (
+        <div>
+          <div className="text-sm font-medium mb-3">Training Strategy</div>
+          <div className="space-y-2">
+            {strategyNotes.map((note, i) => {
+              const title = guessSectionTitle(note, i)
+              const isExpanded = expandedSection === i
+              const body = note.startsWith(title) ? note.slice(title.length).replace(/^[\s:–—-]+/, "") : note
+
+              return (
+                <div key={i} className="border border-border/50 rounded-lg overflow-hidden">
+                  <button
+                    onClick={() => setExpandedSection(isExpanded ? null : i)}
+                    className="w-full flex items-center justify-between px-4 py-2.5 text-left hover:bg-muted/30 transition-colors"
+                  >
+                    <div className="flex items-center gap-2">
+                      <span className="w-5 h-5 rounded-full bg-foreground/10 flex items-center justify-center text-[11px] font-medium text-muted-foreground">
+                        {i + 1}
+                      </span>
+                      <span className="text-sm font-medium">{title}</span>
+                    </div>
+                    <span className={`text-muted-foreground transition-transform ${isExpanded ? "rotate-180" : ""}`}>
+                      ▾
+                    </span>
+                  </button>
+                  {isExpanded && (
+                    <div className="px-4 pb-3 pt-0">
+                      <p className="text-sm leading-relaxed text-muted-foreground">{body}</p>
+                    </div>
+                  )}
+                </div>
+              )
+            })}
+          </div>
         </div>
       )}
     </div>

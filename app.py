@@ -49,8 +49,8 @@ training_jobs: dict[str, dict[str, Any]] = {}
 simple_agent_store: dict[str, dict[str, Any]] = {}
 
 TOOL_TO_STEP = {
-    "tool_select_model": "select_model",
     "tool_data_collection": "data_collection",
+    "tool_select_model": "select_model",
     "tool_cleaning": "cleaning",
     "tool_label_split_definition": "label_split_definition",
     "tool_feature_selection_specification": "feature_selection_specification",
@@ -595,6 +595,13 @@ def _extract_simple_interrupt(interrupt_data: list, thread_id: str | None = None
     return default
 
 
+def _should_skip_tool_message(content: str) -> bool:
+    """Return True if a tool message should not be emitted as a node_complete event."""
+    if not isinstance(content, str):
+        return False
+    return content.startswith("REJECTED") or content.startswith("SKIP:")
+
+
 def generate_simple_sse_events(
     goal: str,
     linked_datasets: Optional[list[str]],
@@ -635,6 +642,8 @@ def generate_simple_sse_events(
     }
 
     config = {"configurable": {"thread_id": thread_id}}
+    emitted_steps: set[str] = set()
+    simple_agent_store[thread_id]["emitted_steps"] = emitted_steps
 
     yield f"data: {json.dumps({'type': 'started', 'node': 'init', 'progress': 0, 'message': 'Simple agent started', 'thread_id': thread_id})}\n\n"
 
@@ -659,10 +668,13 @@ def generate_simple_sse_events(
                 tool_msgs = event["tools"].get("messages", [])
                 if tool_msgs:
                     content = getattr(tool_msgs[0], "content", "")
-                    if isinstance(content, str) and content.startswith("REJECTED"):
+                    if _should_skip_tool_message(content):
                         continue
                     tool_name = getattr(tool_msgs[0], "name", "unknown")
                     step_name = TOOL_TO_STEP.get(tool_name, tool_name)
+                    if step_name in emitted_steps:
+                        continue
+                    emitted_steps.add(step_name)
                     update = build_node_update(step_name, dict(shared_state))
                     update["thread_id"] = thread_id
                     yield f"data: {json.dumps(serialize_state(update))}\n\n"
@@ -691,6 +703,7 @@ def generate_simple_resume_sse_events(
     agent = store["agent"]
     shared_state = store["state"]
     config = {"configurable": {"thread_id": thread_id}}
+    emitted_steps: set[str] = store.get("emitted_steps", set())
 
     single_decision = {"approved": approved}
     if not approved:
@@ -733,10 +746,14 @@ def generate_simple_resume_sse_events(
                 tool_msgs = event["tools"].get("messages", [])
                 if tool_msgs:
                     content = getattr(tool_msgs[0], "content", "")
-                    if isinstance(content, str) and content.startswith("REJECTED"):
+                    if _should_skip_tool_message(content):
                         continue
                     tool_name = getattr(tool_msgs[0], "name", "unknown")
                     step_name = TOOL_TO_STEP.get(tool_name, tool_name)
+                    if step_name in emitted_steps:
+                        continue
+                    emitted_steps.add(step_name)
+                    store["emitted_steps"] = emitted_steps
                     update = build_node_update(step_name, dict(shared_state))
                     update["thread_id"] = thread_id
                     yield f"data: {json.dumps(serialize_state(update))}\n\n"
