@@ -32,7 +32,7 @@ State your reasoning before acting. "I'm switching to XGB because RF plateaued a
 
 ## Strategy
 
-**Available models (classification):** logistic_regression, random_forest, xgboost
+**Available models (classification):** logistic_regression, random_forest, xgboost, naive_bayes
 **Available models (regression):** random_forest, xgboost, glm
 
 ### Phase 1: Explore (first 2-3 iterations)
@@ -192,6 +192,85 @@ compensate by creating them explicitly.
 - DO NOT ignore class imbalance: when the minority class is <20%, the model
   may under-predict it. Features should be selected to maximize separation
   of the minority class.
+""",
+
+    "naive_bayes": """
+## Model-Specific Guidance: Naive Bayes
+
+Naive Bayes classifiers apply Bayes' theorem with the assumption that features are
+conditionally independent given the class. This simplifying assumption makes NB
+extremely fast and surprisingly effective, especially as a baseline. Feature
+engineering should focus on INDEPENDENCE and DISTRIBUTIONAL FIT rather than complex
+transformations.
+
+### Variant Selection Context
+- Gaussian NB (default): for CONTINUOUS numeric features. Assumes each feature
+  follows a normal distribution within each class.
+- Multinomial NB: for COUNT/FREQUENCY data (word counts, tf-idf scores, event
+  counts). Requires non-negative inputs.
+- Complement NB: improved multinomial for IMBALANCED datasets. Uses complement
+  class statistics and often outperforms standard multinomial NB.
+
+### Encoding Strategy
+- ONE-HOT encode nominal categoricals with ≤15 unique values (drop_first=true).
+  Each binary indicator becomes an independent feature — this aligns well with the
+  naive independence assumption since each category contributes independently.
+- ORDINAL encode only when a genuinely monotonic relationship exists (e.g., risk
+  grades, education levels). NB treats ordinal features as continuous and applies
+  the distributional assumption directly, so false orderings create meaningless
+  probability estimates.
+- For high-cardinality categoricals (>15 values), use GROUP_AGG to create
+  mean-target encodings. This compresses the category into one numeric feature
+  while preserving signal. Alternatively, BIN into meaningful groups, then one-hot.
+
+### Scaling & Transformations
+- PASSTHROUGH numeric features for Gaussian NB — the sklearn pipeline includes
+  StandardScaler, which does not affect Gaussian NB's accuracy (it re-estimates
+  mean and variance per class regardless) but keeps the pipeline consistent.
+- For Gaussian NB: LOG-TRANSFORM heavily skewed features (|skew| > 2). The Gaussian
+  assumption works best when features are approximately normal within each class.
+  Log or sqrt transforms can dramatically improve performance on skewed data.
+- For Multinomial/Complement NB: features MUST be non-negative. The pipeline uses
+  MinMaxScaler automatically. Count-based or frequency-based features work best.
+- BIN continuous features into 5-10 quantile bins when the Gaussian assumption is
+  clearly violated (e.g., multimodal or heavy-tailed distributions). Binned features
+  effectively become categorical — one-hot encode after binning.
+
+### Feature Independence (Critical for This Model)
+- The "naive" assumption is that P(x₁,x₂|y) = P(x₁|y)·P(x₂|y). Highly
+  correlated features DOUBLE-COUNT evidence, inflating NB's confidence and
+  distorting probabilities.
+- DROP one from each highly correlated pair (|r| > 0.7). This is MORE important
+  for NB than for most other models. Correlated features don't just hurt
+  interpretability — they directly violate the model's core assumption.
+- Prefer FEWER, MORE INDEPENDENT features over a large correlated set.
+  NB with 10 independent features typically outperforms NB with 30 correlated ones.
+- AVOID creating interaction terms (x₁ × x₂). NB cannot use interactions
+  effectively — the independence assumption treats the interaction the same as any
+  other feature, and it will be correlated with both parent features.
+
+### Feature Selection
+- Aim for 5-20 well-chosen, independent features. NB excels with moderate feature
+  counts — adding noisy or redundant features degrades performance more than for
+  tree-based models.
+- NB benefits from features with clear DISCRIMINATIVE POWER — features whose
+  distribution differs markedly between classes.
+- Remove features with near-zero variance — they contribute no discriminative
+  signal and add noise.
+- NB handles high-dimensional sparse data well (e.g., text features with thousands
+  of terms) but for structured tabular data, keep features focused.
+
+### What to Avoid
+- DO NOT include highly correlated features — this is the single biggest mistake
+  with NB. Violating independence inflates probability estimates.
+- DO NOT create polynomial or interaction features — NB cannot leverage them
+  properly and they add harmful correlation.
+- DO NOT use raw high-cardinality categoricals as one-hot — each binary column
+  independently shifts the posterior, creating instability with rare categories.
+- DO NOT expect well-calibrated probabilities — NB is a decent classifier but a
+  poor probability estimator. Use the predictions for ranking, not for precise
+  probability thresholds.
+- DO NOT use NB for regression tasks — it is classification-only.
 """,
 
     "random_forest": """

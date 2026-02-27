@@ -116,7 +116,7 @@ def create_simple_training_agent(
             return decision
         return {"approved": True}
 
-    KNOWN_MODELS = {"glm", "logistic_regression", "random_forest", "survival_analysis", "xgboost"}
+    KNOWN_MODELS = {"glm", "logistic_regression", "naive_bayes", "random_forest", "survival_analysis", "xgboost"}
 
     # -- tool wrappers (each closes over `state`) ---------------------------
 

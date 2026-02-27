@@ -105,7 +105,7 @@ export const STEP_PATTERNS: Array<{ stepId: string; patterns: RegExp[] }> = [
       /model selection complete/i,
       /selected.*as the optimal model/i,
       /selected model[:\s]/i,
-      /model:\s*(logistic_regression|random_forest|xgboost|gradient_boost)/i,
+      /model:\s*(logistic_regression|random_forest|xgboost|gradient_boost|naive_bayes)/i,
       /choosing.*model/i,
     ]
   },
@@ -135,7 +135,7 @@ export function detectStepFromMessage(content: string): string | null {
  * Maps step IDs to keywords for finding related messages
  */
 export const STEP_KEYWORDS: Record<string, string[]> = {
-  "select_model": ["Model Selection", "selected model", "xgboost", "random_forest", "logistic_regression"],
+  "select_model": ["Model Selection", "selected model", "xgboost", "random_forest", "logistic_regression", "naive_bayes"],
   "data_collection": ["Data Collection", "Dataset loaded", "dataset"],
   "cleaning": ["Cleaning", "cleaned", "transformations"],
   "label_split_definition": ["Label", "Split", "target column"],

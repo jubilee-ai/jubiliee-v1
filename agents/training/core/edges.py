@@ -18,6 +18,14 @@ def should_regen_model(state: TrainingAgentState) -> Literal["regen", "continue"
     return "continue"
 
 
+def data_collection_result(state: TrainingAgentState) -> Literal["success", "retry"]:
+    """Route to cleaning only if data collection produced a dataset ref."""
+    if state.get("collected_dataset_ref"):
+        return "success"
+    print("[data_collection_result] No collected_dataset_ref — routing back to data_collection")
+    return "retry"
+
+
 def should_skip_label_definition(state: TrainingAgentState) -> Literal["skip", "define"]:
     """Check if label/split definition is relevant or should be skipped"""
     # Always define labels for supervised learning

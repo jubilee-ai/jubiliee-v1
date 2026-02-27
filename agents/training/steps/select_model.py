@@ -37,6 +37,24 @@ TRAINING_MODELS = {
             "High-dimensional feature spaces",
         ],
     },
+    "naive_bayes": {
+        "name": "naive_bayes",
+        "description": "Naive Bayes - fast probabilistic classifier based on Bayes' theorem with feature independence assumption",
+        "when_to_use": [
+            "Fast baseline classifier before trying complex models",
+            "Small datasets where other models may overfit",
+            "Text or document classification tasks",
+            "High-dimensional feature spaces",
+            "When training speed is critical (extremely fast to train)",
+            "Imbalanced datasets (complement variant)",
+        ],
+        "when_not_to_use": [
+            "Regression tasks with continuous targets",
+            "When features have strong correlations or dependencies",
+            "Complex non-linear decision boundaries",
+            "When well-calibrated probability estimates are required",
+        ],
+    },
     "logistic_regression": {
         "name": "logistic_regression",
         "description": "Logistic Regression - binary/multiclass classification with interpretable coefficients",
@@ -108,6 +126,42 @@ def format_training_models_for_prompt() -> str:
     return "\n".join(lines)
 
 
+# Maps user-friendly aliases to canonical model keys in TRAINING_MODELS.
+_MODEL_ALIASES: dict[str, str] = {
+    "naive bayes": "naive_bayes",
+    "naivebayes": "naive_bayes",
+    "nb": "naive_bayes",
+    "naive_bayes": "naive_bayes",
+    "logistic regression": "logistic_regression",
+    "logistic_regression": "logistic_regression",
+    "logreg": "logistic_regression",
+    "random forest": "random_forest",
+    "random_forest": "random_forest",
+    "rf": "random_forest",
+    "xgboost": "xgboost",
+    "xgb": "xgboost",
+    "glm": "glm",
+    "generalized linear model": "glm",
+    "survival analysis": "survival_analysis",
+    "survival_analysis": "survival_analysis",
+    "cox": "survival_analysis",
+}
+
+
+def _extract_model_from_goal(goal: str) -> str | None:
+    """Detect an explicit model request in the user's goal text.
+
+    Returns the canonical model key if found, otherwise None.
+    Longer alias strings are checked first to avoid partial matches
+    (e.g. "naive bayes" before "nb").
+    """
+    goal_lower = goal.lower()
+    for alias in sorted(_MODEL_ALIASES, key=len, reverse=True):
+        if alias in goal_lower:
+            return _MODEL_ALIASES[alias]
+    return None
+
+
 # =============================================================================
 # STRUCTURED OUTPUT SCHEMA
 # =============================================================================
@@ -117,7 +171,7 @@ class ModelSelectionOutput(BaseModel):
     """Structured output for model selection."""
     # TODO: Add more models
     # TODO: Add clarification
-    selected_model: Literal["glm", "logistic_regression", "random_forest", "survival_analysis", "xgboost"] = Field(
+    selected_model: Literal["glm", "logistic_regression", "naive_bayes", "random_forest", "survival_analysis", "xgboost"] = Field(
         description="The selected model type for training"
     )
     explanation: str = Field(
@@ -148,10 +202,10 @@ MODEL_SELECTION_PROMPT = """You are an ML model selection expert. Based on the u
 {redo_section}
 ## Instructions
 
-1. Analyze the goal to understand what kind of prediction/modeling is needed
-2. Select the most appropriate model from the available options
-3. Explain your reasoning
-4. List any alternative models that could also work
+1. **If the user explicitly names a model** (e.g. "train a naive bayes", "use xgboost", "logistic regression"), you MUST select that model. The user's explicit request overrides your own preference.
+2. Otherwise, analyze the goal to understand what kind of prediction/modeling is needed and select the most appropriate model.
+3. Explain your reasoning.
+4. List any alternative models that could also work.
 """
 
 
@@ -168,10 +222,12 @@ def select_model(state: "TrainingAgentState") -> "TrainingAgentState":
     - Return an explanation if not given
     - User can comment and regenerate (3 total regens)
     """
-    # If user specified a model preference, use it directly
-    if state.get("user_model_preference"):
-        model_name = state["user_model_preference"]
-        
+    # Resolve explicit preference: state field first, then parse goal text.
+    explicit_pref = state.get("user_model_preference") or _extract_model_from_goal(state.get("goal", ""))
+
+    if explicit_pref:
+        model_name = explicit_pref
+
         # Validate the model exists
         if model_name not in TRAINING_MODELS:
             return {

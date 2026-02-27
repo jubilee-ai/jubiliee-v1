@@ -334,6 +334,7 @@ async def get_models():
         {"id": "logistic_regression", "name": "Logistic Regression", "description": "Binary/multiclass classification, interpretable"},
         {"id": "random_forest", "name": "Random Forest", "description": "Classification/regression, feature importance"},
         {"id": "xgboost", "name": "XGBoost", "description": "High-performance tabular data"},
+        {"id": "naive_bayes", "name": "Naive Bayes", "description": "Fast probabilistic classifier, great baseline"},
         {"id": "glm", "name": "GLM", "description": "Poisson/Gamma/Tweedie regression"},
         {"id": "survival_analysis", "name": "Survival Analysis", "description": "Time-to-event prediction with censoring"},
     ]

@@ -39,8 +39,9 @@ if str(_DATA_TOOLS_DIR) not in sys.path:
 from glm import sklearn_glm_tool
 from logistic_regression import sklearn_logistic_regression_tool
 from model_storage import (delete_model, evaluate_model_tool,
-                           get_model_info_tool, list_models,
+                           get_model_info_tool, list_models, load_model,
                            list_trained_models_tool, predict_with_model_tool)
+from naive_bayes import sklearn_naive_bayes_tool
 from random_forest import sklearn_random_forest_tool
 from survival_analysis import survival_analysis_tool
 from utils import get_registered_dataset
@@ -136,6 +137,7 @@ TRAINING_TOOLS = [
     sklearn_random_forest_tool,
     xgboost_train_tool,
     sklearn_glm_tool,
+    sklearn_naive_bayes_tool,
     survival_analysis_tool,
     list_trained_models_tool,
     predict_with_model_tool,
@@ -149,6 +151,7 @@ _AVAILABLE_MODELS: dict[str, list[dict[str, str]]] = {
         {"tool": "sklearn_logistic_regression", "label": "Logistic Regression"},
         {"tool": "sklearn_random_forest", "label": "Random Forest"},
         {"tool": "xgboost_train", "label": "XGBoost"},
+        {"tool": "sklearn_naive_bayes", "label": "Naive Bayes"},
     ],
     "regression": [
         {"tool": "sklearn_random_forest", "label": "Random Forest"},
@@ -276,15 +279,26 @@ def _extract_training_result(result: dict) -> TrainingResult:
 
 
 def _find_best_iteration(iterations: list[dict], task_type: str) -> Optional[dict]:
-    """Find the best successful iteration using task-appropriate metrics."""
-    best, best_score = None, -float("inf")
+    """Find the best successful iteration using task-appropriate metrics.
+
+    Classification: primary = val_accuracy, tiebreak = val_roc_auc.
+    Regression:     primary = val_r2, fallback = train_r2.
+    """
+    best, best_score = None, (-float("inf"), -float("inf"))
     for it in iterations:
         if not it.get("success"):
             continue
         if task_type == "regression":
-            score = it.get("val_r2") or it.get("train_r2") or -float("inf")
+            val_r2 = it.get("val_r2")
+            train_r2 = it.get("train_r2")
+            primary = val_r2 if val_r2 is not None else (train_r2 if train_r2 is not None else -float("inf"))
+            score = (primary, 0.0)
         else:
-            score = it.get("val_roc_auc") or it.get("val_accuracy") or -float("inf")
+            val_acc = it.get("val_accuracy")
+            val_roc = it.get("val_roc_auc")
+            primary = val_acc if val_acc is not None else -float("inf")
+            secondary = val_roc if val_roc is not None else -float("inf")
+            score = (primary, secondary)
         if score > best_score:
             best_score = score
             best = it
@@ -301,6 +315,77 @@ def _iteration_to_dict(it: TrainingIteration) -> dict:
         "roc_auc": it.val_roc_auc,
     }
     return d
+
+
+def _maybe_discretize_target(y_true, model_name: str):
+    """Apply target discretization if the model was trained with an auto-discretized target.
+
+    Checks the model registry for a stored discretization threshold and
+    binarizes y_true using that threshold so evaluation metrics are meaningful.
+    """
+    import numpy as np
+    from model_storage import get_model_info
+
+    info = get_model_info(model_name)
+    if info is None:
+        return y_true
+
+    hp = info.get("hyperparameters") or {}
+    if hp.get("target_discretized") and hp.get("target_discretization_threshold") is not None:
+        threshold = float(hp["target_discretization_threshold"])
+        y_true = (y_true > threshold).astype(int)
+    return y_true
+
+
+def _evaluate_model_on_test(
+    model_name: str,
+    test_ref: str,
+    target_column: str,
+    task_type: str,
+) -> dict[str, float | None]:
+    """Programmatically evaluate a model on the test set.
+
+    Returns a dict with test_accuracy, test_roc_auc (classification)
+    or test_r2, test_rmse, test_mae (regression). All values are None
+    on failure so callers can safely fall through.
+    """
+    import numpy as np
+    from sklearn.metrics import accuracy_score, roc_auc_score
+
+    result: dict[str, float | None] = {}
+    try:
+        model = load_model(model_name)
+        test_df = get_registered_dataset(test_ref)
+        if model is None or test_df is None:
+            return result
+
+        y_true = test_df[target_column]
+        X = test_df[[c for c in test_df.columns if c != target_column]]
+
+        if task_type == "classification":
+            y_true = _maybe_discretize_target(y_true, model_name)
+
+        if task_type == "regression":
+            from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+            y_pred = model.predict(X)
+            result["test_r2"] = float(r2_score(y_true, y_pred))
+            result["test_rmse"] = float(np.sqrt(mean_squared_error(y_true, y_pred)))
+            result["test_mae"] = float(mean_absolute_error(y_true, y_pred))
+        else:
+            y_pred = model.predict(X)
+            result["test_accuracy"] = float(accuracy_score(y_true, y_pred))
+            if hasattr(model, "predict_proba"):
+                y_proba = model.predict_proba(X)
+                if y_proba.shape[1] == 2:
+                    result["test_roc_auc"] = float(roc_auc_score(y_true, y_proba[:, 1]))
+                else:
+                    result["test_roc_auc"] = float(
+                        roc_auc_score(y_true, y_proba, multi_class="ovr", average="weighted")
+                    )
+        print(f"[training_agent] Programmatic test evaluation: {result}")
+    except Exception as exc:
+        print(f"[training_agent] Programmatic test evaluation failed: {exc}")
+    return result
 
 
 def _log_training_results(training_result: TrainingResult, task_type: str):
@@ -491,9 +576,8 @@ Start with **{selected_model}**, but switch to other models whenever you think i
 
         output = training_result.model_dump(exclude={"best_model_name", "feature_redo_requested", "iterations"})
 
-        # Override top-level metrics with best iteration's values so the
-        # report always reflects the actual best model, not whatever the
-        # LLM happened to put in the structured output.
+        # Override top-level val metrics with best iteration's values so
+        # the report always reflects the actual best model.
         if best_iteration:
             if task_type == "regression":
                 for key in ("val_r2", "val_rmse", "val_mae", "train_r2"):
@@ -503,6 +587,19 @@ Start with **{selected_model}**, but switch to other models whenever you think i
                 for key in ("val_accuracy", "val_roc_auc"):
                     if best_iteration.get(key) is not None:
                         output[key] = best_iteration[key]
+
+        # Programmatic test evaluation — always evaluate the best model
+        # on the test set ourselves instead of trusting the LLM's output.
+        if training_result.success and actual_best_name:
+            test_metrics = _evaluate_model_on_test(
+                model_name=actual_best_name,
+                test_ref=test_ref,
+                target_column=target_column,
+                task_type=task_type,
+            )
+            for key, val in test_metrics.items():
+                if val is not None:
+                    output[key] = val
 
         output.update({
             "model_name": actual_best_name,

@@ -103,7 +103,11 @@ def cleaning_node(state: TrainingAgentState) -> TrainingAgentState:
     def do_work(s: TrainingAgentState, feedback: Optional[str]) -> TrainingAgentState:
         dataset_ref = s.get("collected_dataset_ref")
         if not dataset_ref:
-            raise ValueError("No collected_dataset_ref in state — data_collection must complete first")
+            return {
+                **s,
+                "error": "No collected_dataset_ref in state — data_collection must complete first",
+                "current_step": "data_collection",
+            }
 
         try:
             df = get_registered_dataset(dataset_ref)

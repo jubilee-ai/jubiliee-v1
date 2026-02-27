@@ -142,7 +142,7 @@ export default function App() {
         </div>
 
         {/* Final Report Modal */}
-        {showReport && isComplete && (
+        {showReport && (
           <FinalReport
             agentState={agent.agentState}
             steps={agent.steps}
