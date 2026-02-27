@@ -15,11 +15,11 @@ export function SummaryTab({ agentState }: SummaryTabProps) {
     (t) => t.step === "feature_engineering_executor"
   ) as Record<string, unknown> | undefined
 
-  const lastIteration = metrics?.iterations?.[metrics.iterations.length - 1]
-  const testR2 = metrics?.test_r2 ?? lastIteration?.test_r2
-  const testRmse = metrics?.test_rmse ?? lastIteration?.test_rmse
-  const testMae = metrics?.test_mae ?? lastIteration?.test_mae
-  const valR2 = metrics?.val_r2 ?? lastIteration?.val_r2
+  const bestIter = metrics?.best_iteration as Record<string, unknown> | undefined
+  const testR2 = metrics?.test_r2 ?? (bestIter?.test_r2 as number | undefined)
+  const testRmse = metrics?.test_rmse ?? (bestIter?.test_rmse as number | undefined)
+  const testMae = metrics?.test_mae ?? (bestIter?.test_mae as number | undefined)
+  const valR2 = metrics?.val_r2 ?? (bestIter?.val_r2 as number | undefined)
 
   const hasClassificationMetrics = metrics?.test_accuracy != null || metrics?.test_roc_auc != null
   const hasRegressionMetrics = testR2 != null || testRmse != null || testMae != null

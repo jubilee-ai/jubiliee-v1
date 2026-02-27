@@ -876,15 +876,15 @@ function TrainingDetail({ agentState }: { agentState: TrainingAgentState }) {
   const hasClassification = metrics?.test_accuracy != null || metrics?.test_roc_auc != null
   const hasRegression = metrics?.test_r2 != null || metrics?.val_r2 != null || iterations[0]?.test_r2 != null
   
-  const lastIteration = iterations[iterations.length - 1]
-  const testR2 = metrics?.test_r2 ?? lastIteration?.test_r2
-  const testRmse = metrics?.test_rmse ?? lastIteration?.test_rmse
-  const testMae = metrics?.test_mae ?? lastIteration?.test_mae
-  const valR2 = metrics?.val_r2 ?? lastIteration?.val_r2
-  const valRmse = metrics?.val_rmse ?? lastIteration?.val_rmse
-  const valMae = metrics?.val_mae ?? lastIteration?.val_mae
-  const trainR2 = metrics?.train_r2 ?? lastIteration?.train_r2
-  const trainRmse = metrics?.train_rmse ?? lastIteration?.train_rmse
+  const bestIter = metrics?.best_iteration as Record<string, number | string | null | undefined> | undefined
+  const testR2 = metrics?.test_r2 ?? (bestIter?.test_r2 as number | undefined)
+  const testRmse = metrics?.test_rmse ?? (bestIter?.test_rmse as number | undefined)
+  const testMae = metrics?.test_mae ?? (bestIter?.test_mae as number | undefined)
+  const valR2 = metrics?.val_r2 ?? (bestIter?.val_r2 as number | undefined)
+  const valRmse = metrics?.val_rmse ?? (bestIter?.val_rmse as number | undefined)
+  const valMae = metrics?.val_mae ?? (bestIter?.val_mae as number | undefined)
+  const trainR2 = metrics?.train_r2 ?? (bestIter?.train_r2 as number | undefined)
+  const trainRmse = metrics?.train_rmse ?? (bestIter?.train_rmse as number | undefined)
 
   const displayedIterations = showAllIterations ? iterations : iterations.slice(0, 3)
 
@@ -977,7 +977,7 @@ function TrainingDetail({ agentState }: { agentState: TrainingAgentState }) {
                 <>
                   <tr className="border-t border-border/50">
                     <td className="py-2 px-3">Accuracy</td>
-                    <td className="text-right py-2 px-3 font-mono">{formatPercent(lastIteration?.train_accuracy)}</td>
+                    <td className="text-right py-2 px-3 font-mono">{formatPercent(bestIter?.train_accuracy as number | undefined)}</td>
                     <td className="text-right py-2 px-3 font-mono">{formatPercent(metrics?.val_accuracy)}</td>
                     <td className="text-right py-2 px-3 font-mono font-semibold">{formatPercent(metrics?.test_accuracy)}</td>
                   </tr>
@@ -1026,7 +1026,10 @@ function TrainingDetail({ agentState }: { agentState: TrainingAgentState }) {
           <div className="space-y-3">
             {displayedIterations.map((iter, i) => {
               const iterNum = iter.iteration ?? i + 1
-              const isBest = i === iterations.length - 1 || iter.iteration === metrics?.best_iteration
+              const bestIterName = bestIter?.model_name as string | undefined
+              const isBest = bestIterName
+                ? iter.model_name === bestIterName
+                : i === iterations.length - 1
               
               return (
                 <div 
