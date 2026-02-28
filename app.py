@@ -28,11 +28,17 @@ sys.path.insert(0, str(DATA_TOOLS_DIR))
 # Import dataset utilities
 from utils import get_registered_dataset, register_dataset
 
-# Import the training agent
-from agents.training.agent import (TrainingAgentState, invoke_training_agent,
-                                   resume_training_agent,
-                                   stream_training_agent_with_updates)
+# Import training agent utilities (simple agent only)
+from agents.training.core.state import TrainingAgentState
 from agents.training.utils.streaming import build_node_update, extract_interrupt_info
+
+# Import the main orchestrator agent (use importlib to avoid collision with
+# agents/data-retrieval/agent.py which is also on sys.path)
+import importlib.util as _ilu
+_spec = _ilu.spec_from_file_location("orchestrator_agent_mod", PROJECT_ROOT / "agent.py")
+_mod = _ilu.module_from_spec(_spec)
+_spec.loader.exec_module(_mod)  # type: ignore[union-attr]
+orchestrator_agent = _mod.agent
 
 # Import dataset catalog
 DATASETS_DIR = PROJECT_ROOT / "datasets"
@@ -47,6 +53,12 @@ training_jobs: dict[str, dict[str, Any]] = {}
 
 # Storage for simple agent instances (keyed by thread_id)
 simple_agent_store: dict[str, dict[str, Any]] = {}
+
+# Last completed training context, injected into the next chat so the
+# orchestrator knows which model was "just trained".
+_last_training_context: dict[str, Any] = {}
+# Chat threads that have already received the training context injection.
+_chat_threads_with_context: set[str] = set()
 
 TOOL_TO_STEP = {
     "tool_data_collection": "data_collection",
@@ -69,7 +81,6 @@ class TrainRequest(BaseModel):
     goal: str
     linked_datasets: Optional[list[str]] = None
     user_model_preference: Optional[str] = None
-    simple: bool = False
     hitl: bool = True
 
 
@@ -94,6 +105,12 @@ class JobStatus(BaseModel):
     error: Optional[str] = None
     started_at: Optional[str] = None
     completed_at: Optional[str] = None
+
+
+class ChatRequest(BaseModel):
+    message: str
+    thread_id: Optional[str] = None
+    training_context: Optional[str] = None
 
 
 # ============================================================================
@@ -241,51 +258,36 @@ def load_and_register_dataset(file_path: str) -> Optional[str]:
 
 
 def run_training_sync(job_id: str, goal: str, linked_datasets: Optional[list[str]], model_pref: Optional[str]):
-    """Run the training agent synchronously (called in background)"""
+    """Run the simple training agent synchronously (called in background)."""
+    from agents.training.agent_simple import invoke_simple_training_agent
+
     try:
         training_jobs[job_id]["status"] = "running"
         training_jobs[job_id]["current_step"] = "data_collection"
-        
-        print(f"[DEBUG] Starting training job {job_id}")
-        print(f"[DEBUG] Goal: {goal}")
-        print(f"[DEBUG] Linked datasets input: {linked_datasets}")
-        print(f"[DEBUG] Model preference: {model_pref}")
-        
-        # Pre-register linked datasets so the agent can find them
+
         registered_refs = []
         if linked_datasets:
             for dataset_path in linked_datasets:
-                print(f"[DEBUG] Attempting to load dataset: {dataset_path}")
                 ref = load_and_register_dataset(dataset_path)
                 if ref:
                     registered_refs.append(ref)
-                    print(f"[DEBUG] SUCCESS - Pre-registered dataset: {dataset_path} -> {ref}")
-                else:
-                    print(f"[DEBUG] FAILED - Could not load dataset: {dataset_path}")
-        
-        print(f"[DEBUG] Registered refs to pass to agent: {registered_refs}")
-        
-        # Update step
+
         training_jobs[job_id]["current_step"] = "select_model"
-        
-        # Run the actual training agent with the registered references
-        # IMPORTANT: Always pass the list, even if empty, so agent knows datasets were intended
+
         final_linked_datasets = registered_refs if registered_refs else linked_datasets
-        print(f"[DEBUG] Calling invoke_training_agent with linked_datasets={final_linked_datasets}")
-        
-        result = invoke_training_agent(
+
+        result = invoke_simple_training_agent(
             goal=goal,
             linked_datasets=final_linked_datasets,
             user_model_preference=model_pref,
         )
-        
-        # Update job with results
+
         training_jobs[job_id]["status"] = "completed"
         training_jobs[job_id]["progress"] = 100
         training_jobs[job_id]["current_step"] = "completed"
         training_jobs[job_id]["state"] = serialize_state(result)
         training_jobs[job_id]["completed_at"] = datetime.now().isoformat()
-        
+
     except Exception as e:
         training_jobs[job_id]["status"] = "error"
         training_jobs[job_id]["error"] = str(e)
@@ -436,16 +438,17 @@ async def train_sync(request: TrainRequest):
     Run training synchronously (blocks until complete).
     Use this for simpler integrations, but it may timeout for long runs.
     """
+    from agents.training.agent_simple import invoke_simple_training_agent
+
     try:
-        # Pre-register linked datasets
         registered_refs = []
         if request.linked_datasets:
             for dataset_path in request.linked_datasets:
                 ref = load_and_register_dataset(dataset_path)
                 if ref:
                     registered_refs.append(ref)
-        
-        result = invoke_training_agent(
+
+        result = invoke_simple_training_agent(
             goal=request.goal,
             linked_datasets=registered_refs if registered_refs else None,
             user_model_preference=request.user_model_preference,
@@ -472,94 +475,6 @@ async def cancel_training(job_id: str):
 # ============================================================================
 # SSE Streaming Endpoint
 # ============================================================================
-
-def generate_sse_events(goal: str, linked_datasets: Optional[list[str]], model_pref: Optional[str], thread_id: Optional[str] = None):
-    """
-    Generator that yields SSE-formatted events from the training agent.
-    With HITL, will yield interrupt events that pause for user approval.
-    """
-    import uuid
-
-    # Generate thread_id if not provided
-    if not thread_id:
-        thread_id = f"training-{uuid.uuid4().hex[:8]}"
-    
-    # Pre-register linked datasets
-    registered_refs = []
-    if linked_datasets:
-        for dataset_path in linked_datasets:
-            ref = load_and_register_dataset(dataset_path)
-            if ref:
-                registered_refs.append(ref)
-                yield f"data: {json.dumps({'type': 'dataset_loaded', 'dataset': dataset_path, 'ref': ref, 'thread_id': thread_id})}\n\n"
-    
-    final_linked = registered_refs if registered_refs else linked_datasets
-    
-    try:
-        for update in stream_training_agent_with_updates(
-            goal=goal,
-            linked_datasets=final_linked,
-            user_model_preference=model_pref,
-            thread_id=thread_id,
-        ):
-            # Add thread_id to all updates
-            update["thread_id"] = thread_id
-            
-            # Serialize the update, handling non-serializable values
-            serialized_update = serialize_state(update)
-            yield f"data: {json.dumps(serialized_update)}\n\n"
-            
-            # If this is an interrupt event, stop streaming (frontend will resume)
-            if update.get("type") == "interrupt":
-                return
-            
-    except Exception as e:
-        error_event = {
-            "type": "error",
-            "error": str(e),
-            "thread_id": thread_id,
-        }
-        yield f"data: {json.dumps(error_event)}\n\n"
-
-
-def generate_resume_sse_events(thread_id: str, approved: bool, feedback: Optional[str]):
-    """
-    Generator that yields SSE-formatted events when resuming after an interrupt.
-    """
-    try:
-        # Build the decision object
-        if approved:
-            decision = {"approved": True}
-        else:
-            decision = {"approved": False, "feedback": feedback or "Please redo this step."}
-        
-        # Resume the agent - this returns a generator
-        from agents.training.agent import \
-            stream_resume_training_agent_with_updates
-        
-        for update in stream_resume_training_agent_with_updates(
-            decision=decision,
-            thread_id=thread_id,
-        ):
-            # Add thread_id to all updates
-            update["thread_id"] = thread_id
-            
-            # Serialize the update
-            serialized_update = serialize_state(update)
-            yield f"data: {json.dumps(serialized_update)}\n\n"
-            
-            # If this is an interrupt event, stop streaming (frontend will resume again)
-            if update.get("type") == "interrupt":
-                return
-            
-    except Exception as e:
-        error_event = {
-            "type": "error",
-            "error": str(e),
-            "thread_id": thread_id,
-        }
-        yield f"data: {json.dumps(error_event)}\n\n"
-
 
 def _extract_simple_interrupt(interrupt_data: list, thread_id: str | None = None) -> dict:
     """Parse interrupt data from manual interrupt() calls in agent_simple tools.
@@ -680,6 +595,9 @@ def generate_simple_sse_events(
                     update["thread_id"] = thread_id
                     yield f"data: {json.dumps(serialize_state(update))}\n\n"
 
+        # Capture training results so the chat agent can reference them
+        _save_training_context(shared_state)
+
         yield f"data: {json.dumps({'type': 'completed', 'node': 'end', 'progress': 100, 'message': 'Training completed', 'thread_id': thread_id})}\n\n"
 
     except Exception as e:
@@ -759,6 +677,8 @@ def generate_simple_resume_sse_events(
                     update["thread_id"] = thread_id
                     yield f"data: {json.dumps(serialize_state(update))}\n\n"
 
+        _save_training_context(shared_state)
+
         yield f"data: {json.dumps({'type': 'completed', 'node': 'end', 'progress': 100, 'message': 'Training completed', 'thread_id': thread_id})}\n\n"
 
     except Exception as e:
@@ -771,29 +691,17 @@ def generate_simple_resume_sse_events(
 async def train_stream(request: TrainRequest):
     """
     Stream training progress via Server-Sent Events (SSE).
-    
-    With HITL enabled, returns events until an interrupt is hit:
-    - {type: "started", progress: 0, thread_id: "xxx"}
-    - {type: "node_complete", node: "select_model", ...}
-    - {type: "interrupt", node: "select_model", summary: "...", thread_id: "xxx"}
-    
-    Set simple=true to use the deep-agent pipeline instead of the graph agent.
-    Set hitl=false to run without human-in-the-loop interrupts.
-    When interrupt is received, call /api/train-resume to continue.
+
+    Uses the simple deep-agent pipeline. Set hitl=false to run without
+    human-in-the-loop interrupts.
+    When an interrupt is received, call /api/train-resume to continue.
     """
-    if request.simple:
-        generator = generate_simple_sse_events(
-            request.goal,
-            request.linked_datasets,
-            request.user_model_preference,
-            hitl=request.hitl,
-        )
-    else:
-        generator = generate_sse_events(
-            request.goal,
-            request.linked_datasets,
-            request.user_model_preference,
-        )
+    generator = generate_simple_sse_events(
+        request.goal,
+        request.linked_datasets,
+        request.user_model_preference,
+        hitl=request.hitl,
+    )
 
     return StreamingResponse(
         generator,
@@ -810,25 +718,206 @@ async def train_stream(request: TrainRequest):
 async def train_resume(request: ResumeRequest):
     """
     Resume training after an interrupt (human-in-the-loop).
-    
+
     Streams the next step's progress until the next interrupt or completion.
-    Automatically detects whether the thread belongs to the simple or complex agent.
     """
-    if request.thread_id in simple_agent_store:
-        generator = generate_simple_resume_sse_events(
-            request.thread_id,
-            request.approved,
-            request.feedback,
+    if request.thread_id not in simple_agent_store:
+        return StreamingResponse(
+            iter([f"data: {json.dumps({'type': 'error', 'error': 'Thread not found', 'thread_id': request.thread_id})}\n\n"]),
+            media_type="text/event-stream",
         )
-    else:
-        generator = generate_resume_sse_events(
-            request.thread_id,
-            request.approved,
-            request.feedback,
-        )
+
+    generator = generate_simple_resume_sse_events(
+        request.thread_id,
+        request.approved,
+        request.feedback,
+    )
 
     return StreamingResponse(
         generator,
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+# ============================================================================
+# Chat Endpoint (Orchestrator Agent)
+# ============================================================================
+
+
+def _save_training_context(shared_state: dict):
+    """Persist a summary of the completed training so the chat agent can
+    reference it when the user asks follow-up questions."""
+    metrics = shared_state.get("training_metrics", {})
+    label_def = shared_state.get("label_definition") or {}
+    _last_training_context.clear()
+    _last_training_context.update({
+        "model_name": metrics.get("model_name") or shared_state.get("model_weights_path"),
+        "model_type": metrics.get("model_type") or shared_state.get("selected_model"),
+        "goal": shared_state.get("goal"),
+        "target_column": label_def.get("target_column"),
+        "val_accuracy": metrics.get("val_accuracy"),
+        "val_roc_auc": metrics.get("val_roc_auc"),
+        "test_accuracy": metrics.get("test_accuracy"),
+        "test_roc_auc": metrics.get("test_roc_auc"),
+        "val_r2": metrics.get("val_r2"),
+        "test_r2": metrics.get("test_r2"),
+        "test_rmse": metrics.get("test_rmse"),
+        "test_mae": metrics.get("test_mae"),
+        "summary": metrics.get("summary"),
+        "num_iterations": metrics.get("num_iterations"),
+        "report_path": shared_state.get("report_path"),
+    })
+    _chat_threads_with_context.clear()
+
+
+def _build_training_context_message(ctx: dict) -> str:
+    """Build a human-readable summary of the last training run."""
+    lines = [
+        "[SYSTEM CONTEXT — a model was just trained via the training pipeline]",
+        f"  Model name  : {ctx.get('model_name', 'unknown')}",
+        f"  Model type  : {ctx.get('model_type', 'unknown')}",
+        f"  Goal        : {ctx.get('goal', 'N/A')}",
+        f"  Target col  : {ctx.get('target_column', 'N/A')}",
+    ]
+    metric_lines = []
+    for key, label in [
+        ("test_accuracy", "Test Accuracy"),
+        ("test_roc_auc", "Test ROC-AUC"),
+        ("val_accuracy", "Val Accuracy"),
+        ("val_roc_auc", "Val ROC-AUC"),
+        ("val_r2", "Val R²"),
+        ("test_r2", "Test R²"),
+        ("test_rmse", "Test RMSE"),
+        ("test_mae", "Test MAE"),
+    ]:
+        v = ctx.get(key)
+        if v is not None:
+            metric_lines.append(f"  {label:16s}: {v:.4f}" if isinstance(v, float) else f"  {label:16s}: {v}")
+    if metric_lines:
+        lines.append("  Metrics:")
+        lines.extend(metric_lines)
+    if ctx.get("num_iterations"):
+        lines.append(f"  Iterations  : {ctx['num_iterations']}")
+    if ctx.get("report_path"):
+        lines.append(f"  Report      : {ctx['report_path']}")
+    lines.append("[END CONTEXT — answer the user's question using this information]")
+    return "\n".join(lines)
+
+
+def _emit_training_step_events(thread_id: str):
+    """Yield training step SSE events from the last orchestrator training run.
+
+    After the orchestrator's ``train_model`` tool finishes, the final
+    training state is cached in ``_mod._last_training_state``.  We use
+    ``build_node_update`` to reconstruct per-step events so the frontend
+    can update the progress panel and chat.
+    """
+    from agents.training.core.state import STEP_ORDER
+
+    state = getattr(_mod, "_last_training_state", None)
+    if not state:
+        return
+
+    yield f"data: {json.dumps({'type': 'training_started', 'thread_id': thread_id})}\n\n"
+
+    for step_name in STEP_ORDER:
+        try:
+            update = build_node_update(step_name, state)
+            update["thread_id"] = thread_id
+            serialized = serialize_state(update)
+            yield f"data: {json.dumps(serialized)}\n\n"
+        except Exception:
+            pass
+
+    yield f"data: {json.dumps({'type': 'training_completed', 'thread_id': thread_id})}\n\n"
+
+
+def _generate_chat_sse(thread_id: str, message: str, training_context: Optional[str] = None):
+    """SSE generator that streams the orchestrator agent's response.
+
+    The orchestrator's checkpointer (MemorySaver in agent.py) keeps full
+    message history per thread, so we only pass the newest user message.
+
+    When the orchestrator invokes ``train_model``, we emit rich per-step
+    training events so the frontend can update its progress panel.
+    """
+    config = {"configurable": {"thread_id": thread_id}}
+
+    # Inject training context so the orchestrator knows about the most
+    # recent model trained via the training pipeline.
+    context_block = training_context or ""
+    if not context_block and _last_training_context and thread_id not in _chat_threads_with_context:
+        context_block = _build_training_context_message(_last_training_context)
+
+    if context_block:
+        _chat_threads_with_context.add(thread_id)
+        augmented_message = f"{context_block}\n\nUser message: {message}"
+    else:
+        augmented_message = message
+
+    agent_input = {"messages": [{"role": "user", "content": augmented_message}]}
+
+    yield f"data: {json.dumps({'type': 'start', 'thread_id': thread_id})}\n\n"
+
+    try:
+        for chunk in orchestrator_agent.stream(
+            agent_input,
+            config=config,
+            stream_mode="updates",
+        ):
+            if "model" in chunk:
+                msgs = chunk["model"].get("messages", [])
+                for msg in msgs:
+                    if hasattr(msg, "tool_calls") and msg.tool_calls:
+                        for tc in msg.tool_calls:
+                            yield f"data: {json.dumps({'type': 'tool_call', 'tool': tc['name'], 'args': serialize_state(tc.get('args', {})), 'thread_id': thread_id})}\n\n"
+                    raw_content = getattr(msg, "content", "")
+                    if isinstance(raw_content, list):
+                        content = "".join(
+                            block.get("text", "") if isinstance(block, dict) else str(block)
+                            for block in raw_content
+                        )
+                    else:
+                        content = raw_content or ""
+                    if content:
+                        yield f"data: {json.dumps({'type': 'token', 'content': content, 'thread_id': thread_id})}\n\n"
+
+            if "tools" in chunk:
+                tool_msgs = chunk["tools"].get("messages", [])
+                for tm in tool_msgs:
+                    name = getattr(tm, "name", "unknown")
+                    snippet = getattr(tm, "content", "")
+                    if len(snippet) > 500:
+                        snippet = snippet[:500] + "…"
+                    yield f"data: {json.dumps({'type': 'tool_result', 'tool': name, 'result': snippet, 'thread_id': thread_id})}\n\n"
+
+                    if name == "train_model":
+                        yield from _emit_training_step_events(thread_id)
+
+        yield f"data: {json.dumps({'type': 'end', 'thread_id': thread_id})}\n\n"
+
+    except Exception as exc:
+        yield f"data: {json.dumps({'type': 'error', 'error': str(exc), 'thread_id': thread_id})}\n\n"
+
+
+@app.post("/api/chat")
+async def chat(request: ChatRequest):
+    """Stream a chat response from the orchestrator agent via SSE.
+
+    The orchestrator decides whether to answer directly, run analysis,
+    train a model, or make predictions — then streams tokens back.
+
+    Training with full step-by-step events still uses /api/train-stream.
+    """
+    thread_id = request.thread_id or f"chat-{uuid.uuid4().hex[:8]}"
+
+    return StreamingResponse(
+        _generate_chat_sse(thread_id, request.message, request.training_context),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",

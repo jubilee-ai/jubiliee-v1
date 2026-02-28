@@ -1,8 +1,8 @@
 """
-Simple ML Training Agent using the Deep Agents SDK.
+Simple ML Training Agent using LangChain's create_agent.
 
-Replaces the rigid LangGraph StateGraph with a single deep agent
-whose LLM decides step ordering, guided by a system prompt.
+Uses a single tool-calling agent whose LLM decides step ordering,
+guided by a system prompt.
 All 9 pipeline steps are exposed as tools with shared state via closure.
 """
 
@@ -14,7 +14,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from deepagents import create_deep_agent
+from langchain.agents import create_agent
 from langchain.chat_models import init_chat_model
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import interrupt
@@ -771,15 +771,17 @@ Respond with JSON:
     if checkpointer is None and hitl:
         checkpointer = MemorySaver()
 
+    llm = init_chat_model(model) if isinstance(model, str) else model
+
     kwargs: dict = {
-        "model": model,
+        "model": llm,
         "tools": all_tools,
         "system_prompt": SYSTEM_PROMPT,
     }
     if checkpointer is not None:
         kwargs["checkpointer"] = checkpointer
 
-    agent = create_deep_agent(**kwargs)
+    agent = create_agent(**kwargs)
     return agent, state
 
 

@@ -320,6 +320,8 @@ export interface ChatMessage {
   role: "user" | "agent" | "system"
   content: string
   timestamp: number
+  /** True while the message is still receiving streamed tokens */
+  _streaming?: boolean
   links?: Array<{
     type: "dataset" | "model" | "step"
     id: string
