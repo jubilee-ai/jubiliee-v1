@@ -20,7 +20,7 @@ from langchain.chat_models import init_chat_model
 from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel, Field
 
-from ..utils.prompts import FEATURE_ENGINEERING_SIMPLE_SYSTEM_PROMPT
+from ..utils.prompts import get_feature_engineering_prompt
 
 load_dotenv(Path(__file__).parent.parent.parent.parent / ".env")
 
@@ -65,6 +65,7 @@ def _extract_key_stats(analysis_results: dict[str, Any], target_column: str) -> 
         "dataset_overview": {},
         "target_analysis": {},
         "feature_correlations": [],
+        "mutual_information": [],  # Non-linear feature-target association
         "correlation_matrix": {},  # Full matrix for heatmap
         "high_correlation_pairs": [],
         "distribution_stats": [],
@@ -72,6 +73,7 @@ def _extract_key_stats(analysis_results: dict[str, Any], target_column: str) -> 
         "leakage_warnings": [],
         "feature_health": [],  # From feature diagnostics
         "categorical_summaries": [],
+        "cardinality_analysis": [],  # Categorical encoding guidance
         "group_summaries": [],  # Detailed group summaries with default rates
         "concentration_analysis": [],
         "schema": [],  # Column schema
@@ -153,12 +155,17 @@ def _extract_key_stats(analysis_results: dict[str, Any], target_column: str) -> 
             "categorical_columns": num_categorical,
         }
         
-        # Target column analysis
+        # Target column analysis from EDA (fallback)
         if target_stats:
             key_stats["target_analysis"] = {
                 "type": "numeric",
                 **target_stats
             }
+    
+    # 1b. Override target analysis with dedicated result (has class balance info)
+    target_info = analysis_results.get("target_analysis")
+    if isinstance(target_info, dict) and "column" in target_info:
+        key_stats["target_analysis"] = target_info
     
     # 2. Extract correlation info from matrix
     corr = analysis_results.get("correlation_matrix")
@@ -333,23 +340,186 @@ def _extract_key_stats(analysis_results: dict[str, Any], target_column: str) -> 
                 })
         key_stats["concentration_analysis"] = conc_stats
     
-    # 7. Generate summary text
+    # 7. Extract mutual information scores
+    mi = analysis_results.get("mutual_information")
+    if isinstance(mi, list):
+        key_stats["mutual_information"] = mi
+    
+    # 8. Extract cardinality analysis
+    card = analysis_results.get("cardinality_analysis")
+    if isinstance(card, list):
+        key_stats["cardinality_analysis"] = card
+    
+    # 9. Generate summary text
     summary_parts = []
     if key_stats["dataset_overview"].get("rows"):
         summary_parts.append(f"Dataset has {key_stats['dataset_overview']['rows']:,} rows and {key_stats['dataset_overview']['columns']} columns")
-    if key_stats["numeric_summaries"]:
+    
+    # Target class balance summary
+    ta = key_stats.get("target_analysis", {})
+    if ta.get("task_type") == "classification" and ta.get("minority_class_count"):
+        minority_pct = ta["minority_class_count"] / ta.get("n_rows", 1)
+        summary_parts.append(
+            f"Target '{ta.get('column')}': {ta['n_classes']} classes, "
+            f"minority={ta['minority_class_count']:,} ({minority_pct:.1%}), "
+            f"imbalance ratio={ta.get('imbalance_ratio', '?')}"
+        )
+    
+    if key_stats.get("numeric_summaries"):
         summary_parts.append(f"{len(key_stats['numeric_summaries'])} numeric features analyzed")
-    if key_stats["feature_correlations"]:
+    if key_stats.get("feature_correlations"):
         top_corr = key_stats["feature_correlations"][0]
-        summary_parts.append(f"Top correlated feature: {top_corr['feature']} (r={top_corr['correlation']})")
-    if key_stats["leakage_warnings"]:
+        summary_parts.append(f"Top linear correlation: {top_corr['feature']} (r={top_corr['correlation']})")
+    if isinstance(mi, list) and mi:
+        top_mi = mi[0]
+        summary_parts.append(f"Top mutual information: {top_mi['feature']} (MI={top_mi['mutual_information']})")
+    if key_stats.get("leakage_warnings"):
         summary_parts.append(f"⚠️ {len(key_stats['leakage_warnings'])} features flagged for potential leakage")
-    if key_stats["high_correlation_pairs"]:
+    if key_stats.get("high_correlation_pairs"):
         summary_parts.append(f"{len(key_stats['high_correlation_pairs'])} highly correlated pairs found")
+    if isinstance(card, list):
+        high_card = [c for c in card if c.get("n_unique", 0) > 50]
+        if high_card:
+            summary_parts.append(f"{len(high_card)} high-cardinality categoricals (>50 values)")
     
     key_stats["summary_text"] = ". ".join(summary_parts) if summary_parts else "Analysis complete"
     
     return key_stats
+
+
+def _compute_target_analysis(df, target_column: str, task_type: str) -> dict[str, Any]:
+    """Compute detailed target column analysis including class balance and EPV info."""
+    target = df[target_column]
+    n_rows = len(df)
+    result = {"column": target_column, "task_type": task_type, "n_rows": n_rows}
+
+    if n_rows == 0:
+        return result
+
+    if task_type == "classification":
+        counts = target.value_counts().to_dict()
+        proportions = target.value_counts(normalize=True).to_dict()
+        n_classes = len(counts)
+        minority_count = min(counts.values())
+        majority_count = max(counts.values())
+        imbalance_ratio = round(majority_count / minority_count, 2) if minority_count > 0 else float("inf")
+
+        result.update({
+            "class_counts": {str(k): int(v) for k, v in counts.items()},
+            "class_proportions": {str(k): round(float(v), 4) for k, v in proportions.items()},
+            "n_classes": n_classes,
+            "minority_class_count": int(minority_count),
+            "majority_class_count": int(majority_count),
+            "imbalance_ratio": imbalance_ratio,
+            "is_imbalanced": imbalance_ratio > 3,
+        })
+    else:
+        result.update({
+            "mean": round(float(target.mean()), 4),
+            "median": round(float(target.median()), 4),
+            "std": round(float(target.std()), 4),
+            "min": float(target.min()),
+            "max": float(target.max()),
+            "skew": round(float(target.skew()), 3),
+            "zero_pct": round(float((target == 0).mean()), 4),
+        })
+
+    return result
+
+
+def _compute_mutual_information(df, feature_cols: list[str], target_column: str, task_type: str) -> list[dict]:
+    """
+    Compute mutual information between each feature and the target.
+    Works for both numeric and categorical features, captures non-linear associations.
+    """
+    from sklearn.feature_selection import mutual_info_classif, mutual_info_regression
+    from sklearn.preprocessing import LabelEncoder
+
+    target = df[target_column].copy()
+    if target.isna().any():
+        mask = target.notna()
+        df = df.loc[mask]
+        target = target.loc[mask]
+
+    mi_func = mutual_info_classif if task_type == "classification" else mutual_info_regression
+
+    if target.dtype == "object" or target.dtype.name == "category":
+        import pandas as pd
+        le_target = LabelEncoder()
+        target = pd.Series(le_target.fit_transform(target.astype(str)), index=target.index)
+
+    X = df[feature_cols].copy()
+    discrete_mask = []
+    usable_cols = []
+
+    for col in feature_cols:
+        if X[col].isna().all():
+            continue
+        if X[col].dtype == "object" or X[col].dtype.name == "category":
+            le = LabelEncoder()
+            X[col] = le.fit_transform(X[col].astype(str))
+            discrete_mask.append(True)
+        else:
+            X[col] = X[col].fillna(X[col].median())
+            discrete_mask.append(False)
+        usable_cols.append(col)
+
+    if not usable_cols:
+        return []
+
+    try:
+        mi_scores = mi_func(X[usable_cols], target, discrete_features=discrete_mask, random_state=42)
+    except Exception:
+        return []
+
+    results = [
+        {"feature": col, "mutual_information": round(float(score), 4), "is_discrete": disc}
+        for col, score, disc in zip(usable_cols, mi_scores, discrete_mask)
+    ]
+    results.sort(key=lambda x: x["mutual_information"], reverse=True)
+    return results
+
+
+def _compute_cardinality_analysis(df, cat_cols: list[str]) -> list[dict]:
+    """Analyze cardinality and value distribution for categorical columns."""
+    results = []
+    n_rows = len(df)
+
+    for col in cat_cols:
+        series = df[col].dropna()
+        n_unique = series.nunique()
+        value_counts = series.value_counts()
+
+        top_5 = [
+            {"value": str(v), "count": int(c), "pct": round(c / n_rows, 4)}
+            for v, c in value_counts.head(5).items()
+        ]
+
+        rare_threshold = max(10, n_rows * 0.01)
+        n_rare = int((value_counts < rare_threshold).sum())
+        rare_pct = round(n_rare / n_unique, 3) if n_unique > 0 else 0
+
+        if n_unique <= 5:
+            suggested_encoding = "one_hot"
+        elif n_unique <= 15:
+            suggested_encoding = "one_hot_or_ordinal"
+        elif n_unique <= 50:
+            suggested_encoding = "ordinal_or_group_agg"
+        else:
+            suggested_encoding = "group_agg"
+
+        results.append({
+            "column": col,
+            "n_unique": n_unique,
+            "null_pct": round(float(df[col].isna().mean()), 4),
+            "top_values": top_5,
+            "n_rare_categories": n_rare,
+            "rare_pct": rare_pct,
+            "suggested_encoding": suggested_encoding,
+        })
+
+    results.sort(key=lambda x: x["n_unique"], reverse=True)
+    return results
 
 
 def _run_all_analysis(dataset_ref: str, target_column: str, task_type: str = "classification") -> dict[str, Any]:
@@ -364,9 +534,24 @@ def _run_all_analysis(dataset_ref: str, target_column: str, task_type: str = "cl
     # Get column lists
     numeric_cols = df.select_dtypes(include=["number"]).columns.tolist()
     cat_cols = df.select_dtypes(include=["object", "category"]).columns.tolist()
-    feature_cols = [c for c in numeric_cols if c != target_column]
+    all_feature_cols = [c for c in df.columns if c != target_column]
+    numeric_feature_cols = [c for c in numeric_cols if c != target_column]
     
-    print(f"[feature_analysis] Analyzing {len(numeric_cols)} numeric columns, {len(cat_cols)} categorical columns")
+    # Adaptive limits based on dataset size — analyze more columns for smaller datasets
+    n_cols = len(all_feature_cols)
+    max_numeric = min(n_cols, 30)
+    max_cat = min(len(cat_cols), 15)
+    max_diag = min(n_cols, 25)
+    max_conc = min(len(numeric_feature_cols), 5)
+    
+    print(f"[feature_analysis] Analyzing {len(numeric_cols)} numeric, {len(cat_cols)} categorical columns")
+    
+    # 0. TARGET ANALYSIS — class balance, imbalance ratio, EPV context
+    try:
+        print(f"[feature_analysis] Analyzing target column '{target_column}'...")
+        results["target_analysis"] = _compute_target_analysis(df, target_column, task_type)
+    except Exception as e:
+        results["target_analysis"] = f"Error: {e}"
     
     # 1. EDA Report - always run
     try:
@@ -375,35 +560,36 @@ def _run_all_analysis(dataset_ref: str, target_column: str, task_type: str = "cl
     except Exception as e:
         results["eda_report"] = f"Error: {e}"
     
-    # 2. Correlation Matrix (all numeric columns)
+    # 2. Correlation Matrix (adaptive limit)
     try:
-        print(f"[feature_analysis] Computing correlation matrix...")
+        print(f"[feature_analysis] Computing correlation matrix ({min(len(numeric_cols), max_numeric)} columns)...")
         results["correlation_matrix"] = compute_correlation_matrix(
             dataset_ref=dataset_ref,
-            columns=numeric_cols[:15],  # Limit columns
+            columns=numeric_cols[:max_numeric],
             threshold=0.5,
         )
     except Exception as e:
         results["correlation_matrix"] = f"Error: {e}"
     
-    # 3. Feature Diagnostics - leakage detection
+    # 3. Feature Diagnostics - leakage, redundancy, skew (adaptive limit)
     try:
-        if feature_cols:
-            print(f"[feature_analysis] Running feature diagnostics on {len(feature_cols[:10])} features...")
+        diag_cols = all_feature_cols[:max_diag]
+        if diag_cols:
+            print(f"[feature_analysis] Running feature diagnostics on {len(diag_cols)} features...")
             results["feature_diagnostics"] = run_feature_diagnostics(
                 dataset_ref=dataset_ref,
-                feature_cols=feature_cols[:10],  # Limit to first 10
+                feature_cols=diag_cols,
                 target_col=target_column,
                 task_type=task_type,
             )
         else:
-            results["feature_diagnostics"] = "No numeric features to analyze"
+            results["feature_diagnostics"] = "No features to analyze"
     except Exception as e:
         results["feature_diagnostics"] = f"Error: {e}"
     
-    # 4. Distribution Analysis - for numeric columns
+    # 4. Distribution Analysis - for numeric feature columns
     try:
-        cols_to_analyze = [c for c in numeric_cols[:10] if c != target_column]
+        cols_to_analyze = [c for c in numeric_feature_cols[:max_numeric]]
         if cols_to_analyze:
             print(f"[feature_analysis] Analyzing distributions for {len(cols_to_analyze)} columns...")
             results["distribution_analysis"] = analyze_distribution(
@@ -415,12 +601,13 @@ def _run_all_analysis(dataset_ref: str, target_column: str, task_type: str = "cl
     except Exception as e:
         results["distribution_analysis"] = f"Error: {e}"
     
-    # 5. Group Summary - for categorical columns
+    # 5. Group Summary - for categorical columns (adaptive limit)
     try:
         if cat_cols:
-            print(f"[feature_analysis] Computing group summaries for {len(cat_cols[:5])} categorical columns...")
+            group_cats = cat_cols[:max_cat]
+            print(f"[feature_analysis] Computing group summaries for {len(group_cats)} categorical columns...")
             group_results = {}
-            for col in cat_cols[:5]:  # Limit to first 5
+            for col in group_cats:
                 try:
                     summary = compute_group_summary(
                         dataset_ref=dataset_ref,
@@ -437,13 +624,13 @@ def _run_all_analysis(dataset_ref: str, target_column: str, task_type: str = "cl
     except Exception as e:
         results["group_summary"] = f"Error: {e}"
     
-    # 6. Concentration Analysis - for key numeric columns
+    # 6. Concentration Analysis
     try:
-        # Analyze concentration of a few key columns
-        if feature_cols[:3]:
-            print(f"[feature_analysis] Computing concentration for {len(feature_cols[:3])} columns...")
+        conc_cols = numeric_feature_cols[:max_conc]
+        if conc_cols:
+            print(f"[feature_analysis] Computing concentration for {len(conc_cols)} columns...")
         concentration_results = {}
-        for col in feature_cols[:3]:
+        for col in conc_cols:
             try:
                 conc = analyze_concentration(
                     dataset_ref=dataset_ref,
@@ -456,29 +643,74 @@ def _run_all_analysis(dataset_ref: str, target_column: str, task_type: str = "cl
     except Exception as e:
         results["concentration_analysis"] = f"Error: {e}"
     
+    # 7. MUTUAL INFORMATION — non-linear feature-target association
+    try:
+        mi_cols = all_feature_cols[:max_numeric]
+        if mi_cols:
+            print(f"[feature_analysis] Computing mutual information for {len(mi_cols)} features...")
+            results["mutual_information"] = _compute_mutual_information(df, mi_cols, target_column, task_type)
+        else:
+            results["mutual_information"] = "No features to analyze"
+    except Exception as e:
+        results["mutual_information"] = f"Error: {e}"
+    
+    # 8. CARDINALITY ANALYSIS — encoding strategy input
+    try:
+        if cat_cols:
+            print(f"[feature_analysis] Analyzing cardinality for {len(cat_cols)} categorical columns...")
+            results["cardinality_analysis"] = _compute_cardinality_analysis(df, cat_cols)
+        else:
+            results["cardinality_analysis"] = "No categorical columns to analyze"
+    except Exception as e:
+        results["cardinality_analysis"] = f"Error: {e}"
+    
     print(f"[feature_analysis] Analysis complete")
     
     return results
 
 
+def _sanitize_for_json(obj: Any) -> Any:
+    """Replace NaN/Inf floats with None so json.dumps produces valid JSON."""
+    import math
+    if isinstance(obj, float) and (math.isnan(obj) or math.isinf(obj)):
+        return None
+    if isinstance(obj, dict):
+        return {k: _sanitize_for_json(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_sanitize_for_json(v) for v in obj]
+    return obj
+
+
 def _format_analysis_results(results: dict[str, Any]) -> str:
-    """Format analysis results into a readable string for the LLM."""
+    """Format analysis results into a readable string for the LLM.
+    
+    Uses per-section limits that prioritize high-value analyses (target, MI,
+    correlations, diagnostics) over less critical ones (concentration, distribution).
+    """
+    SECTION_LIMITS = {
+        "target_analysis": 2000,
+        "mutual_information": 4000,
+        "cardinality_analysis": 3000,
+        "correlation_matrix": 5000,
+        "feature_diagnostics": 5000,
+        "eda_report": 5000,
+    }
+    DEFAULT_LIMIT = 4000
+
     sections = []
     
     for tool_name, result in results.items():
+        limit = SECTION_LIMITS.get(tool_name, DEFAULT_LIMIT)
         sections.append(f"## {tool_name.replace('_', ' ').title()}")
         if isinstance(result, str):
             sections.append(result)
-        elif isinstance(result, dict):
-            # Pretty print dict, but truncate if too long
-            formatted = json.dumps(result, indent=2, default=str)
-            if len(formatted) > 3000:
-                formatted = formatted[:3000] + "\n... (truncated)"
+        elif isinstance(result, (dict, list)):
+            sanitized = _sanitize_for_json(result)
+            formatted = json.dumps(sanitized, indent=2, default=str)
+            if len(formatted) > limit:
+                item_info = f"{len(result)} items" if isinstance(result, list) else f"{len(formatted)} chars"
+                formatted = formatted[:limit] + f"\n... (truncated, {item_info} total)"
             sections.append(f"```json\n{formatted}\n```")
-        elif isinstance(result, list):
-            for item in result:
-                formatted = json.dumps(item, indent=2, default=str)
-                sections.append(formatted)
         else:
             sections.append(str(result)[:2000])
         sections.append("")
@@ -505,6 +737,7 @@ def run_feature_engineering_simple(
     forbidden_columns: list[str] = None,
     as_of_cutoff: Optional[str] = None,
     prediction_horizon: Optional[str] = None,
+    selected_model: Optional[str] = None,
     model: str = "openai:gpt-5.1",
 ) -> dict[str, Any]:
     """
@@ -527,6 +760,8 @@ def run_feature_engineering_simple(
         forbidden_columns: Columns not available at prediction time
         as_of_cutoff: Column representing the observation timestamp
         prediction_horizon: How far into the future we're predicting
+        selected_model: ML model type (e.g., "logistic_regression", "xgboost") —
+            used to tailor feature engineering strategy to the model's strengths
         model: Model to use for the LLM call
     
     Returns:
@@ -556,6 +791,7 @@ def run_feature_engineering_simple(
             " (predict a class/category)" if task_type == "classification" 
             else " (predict a continuous value)"
         ),
+        f"## Selected Model\n**{selected_model or 'unknown'}**",
         f"## Training Dataset\n`{train_ref}`",
         f"## Target Column\n`{target_column}`",
         f"## Grain\n{grain} (what one row represents)",
@@ -605,12 +841,13 @@ The previous feature set did not produce satisfactory model performance.
     user_message = "\n\n".join(context_parts)
     
     # Step 4: Make ONE LLM call with structured output
-    print("Making LLM call for feature selection...")
+    system_prompt = get_feature_engineering_prompt(selected_model)
+    print(f"Making LLM call for feature selection (model-specific guidance: {selected_model or 'generic'})...")
     llm = init_chat_model(model)
     llm_with_structure = llm.with_structured_output(FeatureSpec)
     
     messages = [
-        SystemMessage(content=FEATURE_ENGINEERING_SIMPLE_SYSTEM_PROMPT),
+        SystemMessage(content=system_prompt),
         HumanMessage(content=user_message),
     ]
     

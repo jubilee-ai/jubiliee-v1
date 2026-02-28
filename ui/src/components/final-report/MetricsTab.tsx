@@ -10,14 +10,16 @@ interface MetricsTabProps {
 
 export function MetricsTab({ agentState }: MetricsTabProps) {
   const metrics = agentState.training_metrics
-  const lastIteration = metrics?.iterations?.[metrics.iterations.length - 1]
-  const lastIterMetrics = lastIteration ? getIterationMetrics(lastIteration) : null
-  const testR2 = metrics?.test_r2 ?? lastIterMetrics?.test_r2
-  const testRmse = metrics?.test_rmse ?? lastIterMetrics?.test_rmse
-  const testMae = metrics?.test_mae ?? lastIterMetrics?.test_mae
-  const valR2 = metrics?.val_r2 ?? lastIterMetrics?.val_r2
-  const valRmse = metrics?.val_rmse ?? lastIterMetrics?.val_rmse
-  const valMae = metrics?.val_mae ?? lastIterMetrics?.val_mae
+  const bestIter = metrics?.best_iteration as Record<string, unknown> | undefined
+  const bestIterMetrics = bestIter
+    ? getIterationMetrics(bestIter as Parameters<typeof getIterationMetrics>[0])
+    : null
+  const testR2 = metrics?.test_r2 ?? bestIterMetrics?.test_r2
+  const testRmse = metrics?.test_rmse ?? bestIterMetrics?.test_rmse
+  const testMae = metrics?.test_mae ?? bestIterMetrics?.test_mae
+  const valR2 = metrics?.val_r2 ?? bestIterMetrics?.val_r2
+  const valRmse = metrics?.val_rmse ?? bestIterMetrics?.val_rmse
+  const valMae = metrics?.val_mae ?? bestIterMetrics?.val_mae
 
   const hasClassificationMetrics = metrics?.test_accuracy != null || metrics?.test_roc_auc != null
   const hasRegressionMetrics = testR2 != null || valR2 != null
@@ -74,7 +76,10 @@ export function MetricsTab({ agentState }: MetricsTabProps) {
           {metrics?.iterations && metrics.iterations.length > 0 ? (
             metrics.iterations.map((iter, i) => {
               const iterMetrics = getIterationMetrics(iter)
-              const isBest = i === (metrics.iterations?.length || 1) - 1
+              const bestIterName = bestIter?.model_name as string | undefined
+              const isBest = bestIterName
+                ? iterMetrics.model_name === bestIterName
+                : i === (metrics.iterations?.length || 1) - 1
               const hasIterClassificationMetrics =
                 iterMetrics.val_accuracy != null || iterMetrics.val_roc_auc != null
               const hasIterRegressionMetrics =

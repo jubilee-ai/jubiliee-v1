@@ -24,16 +24,17 @@ import {
 } from "@/lib/api"
 import { uid } from "@/lib/utils"
 
-// Step definitions matching the agent graph
+// Step definitions matching the agent's tool set (agent_simple.py _STEP_ORDER)
 const STEP_DEFINITIONS = [
-  { id: "select_model", name: "Model Selection", description: "Selecting the optimal model based on the goal" },
-  { id: "data_collection", name: "Data Collection", description: "Gathering and linking datasets" },
-  { id: "cleaning", name: "Cleaning & Standardization", description: "Cleaning and preparing data for training" },
-  { id: "label_split_definition", name: "Label & Split Definition", description: "Defining target column and split strategy" },
-  { id: "feature_selection_specification", name: "Feature Selection", description: "Selecting and specifying features to use" },
-  { id: "feature_engineering_executor", name: "Feature Engineering", description: "Executing feature transformations" },
-  { id: "training", name: "Training", description: "Training the model and evaluating metrics" },
-  { id: "generate_report", name: "Generate Report", description: "Creating final report with results" },
+  { id: "data_collection", name: "Data Collection", description: "Load or collect the dataset" },
+  { id: "select_model", name: "Model Selection", description: "Choose the ML model type for this task" },
+  { id: "cleaning", name: "Cleaning", description: "Clean and standardize the data" },
+  { id: "label_split_definition", name: "Label & Split", description: "Define target column and train/val/test splits" },
+  { id: "feature_selection_specification", name: "Feature Selection", description: "Analyze data and specify features" },
+  { id: "feature_engineering_executor", name: "Feature Engineering", description: "Execute feature transformations" },
+  { id: "training_approval", name: "Training Config", description: "Propose hyperparameters and strategy" },
+  { id: "training", name: "Training", description: "Train model and evaluate metrics" },
+  { id: "generate_report", name: "Report", description: "Save the final training report" },
 ]
 
 function createInitialSteps(): StepInfo[] {
@@ -102,7 +103,7 @@ export interface UseRealAgentReturn {
   modelTypes: ModelType[]
   
   // Actions
-  startAgent: (goal: string, datasets?: string[], modelPreference?: string) => Promise<void>
+  startAgent: (goal: string, datasets?: string[], modelPreference?: string, simple?: boolean, hitl?: boolean) => Promise<void>
   sendMessage: (content: string) => void
   handleConfirmation: (action: ConfirmationAction, comment?: string) => void
   reset: () => void
@@ -129,6 +130,7 @@ export function useRealAgent(): UseRealAgentReturn {
   
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const streamControllerRef = useRef<AbortController | null>(null)
+  const emittedStepsRef = useRef<Set<string>>(new Set())
   const useStreaming = true // Enable streaming by default
 
   // Add a message to the chat
@@ -500,6 +502,22 @@ export function useRealAgent(): UseRealAgentReturn {
       if (summary.validation_passed !== undefined) {
         lines.push(`Validation: ${summary.validation_passed ? "✓ Passed" : "⚠ Issues found"}`)
       }
+    } else if (nodeName === "training_approval" && summary) {
+      if (summary.model_type) lines.push(`Model: **${summary.model_type}**`)
+      if (summary.task_type) lines.push(`Task: ${summary.task_type}`)
+      const hp = summary.hyperparameters
+      if (hp && typeof hp === "object") {
+        const entries = Object.entries(hp as Record<string, unknown>)
+        const keyParams = entries.slice(0, 4).map(([k, v]) => `\`${k}=${v}\``).join(", ")
+        if (keyParams) {
+          lines.push(`Key params: ${keyParams}${entries.length > 4 ? ` (+${entries.length - 4} more)` : ""}`)
+        }
+      }
+      const strategy = summary.strategy_notes
+      if (strategy) {
+        const noteCount = Array.isArray(strategy) ? strategy.length : 1
+        lines.push(`\nStrategy: ${noteCount} section${noteCount !== 1 ? "s" : ""} — view details for full plan`)
+      }
     } else if (nodeName === "training" && summary) {
       if (summary.model_name) lines.push(`Model: **${summary.model_name}**`)
       if (summary.model_type) lines.push(`Type: ${summary.model_type}`)
@@ -534,6 +552,56 @@ export function useRealAgent(): UseRealAgentReturn {
     return lines.join("\n")
   }, [])
 
+  // Derive a brief subtitle for a completed step
+  const computeStepSubtitle = useCallback((nodeName: string, summary?: Record<string, unknown>): string => {
+    if (!summary) return ""
+    switch (nodeName) {
+      case "select_model":
+        return summary.selected_model ? String(summary.selected_model) : ""
+      case "data_collection": {
+        const rows = summary.rows
+        const cols = Array.isArray(summary.columns) ? summary.columns.length : summary.columns
+        return rows ? `${rows} rows, ${cols || "?"} cols` : ""
+      }
+      case "cleaning":
+      case "cleaning_and_standardization":
+        return summary.num_transformations != null
+          ? `${summary.num_transformations} transformations`
+          : ""
+      case "label_split_definition":
+        return summary.target_column
+          ? `Target: ${summary.target_column}`
+          : ""
+      case "feature_selection_specification":
+        return summary.num_features
+          ? `${summary.num_features} features specified`
+          : ""
+      case "feature_engineering_executor": {
+        const created = Array.isArray(summary.features_created) ? summary.features_created.length : 0
+        const passed = summary.validation_passed
+        return created ? `${created} features, ${passed ? "passed" : "issues"}` : ""
+      }
+      case "training_approval": {
+        const model = summary.model_type || ""
+        const hp = summary.hyperparameters
+        const hpCount = hp && typeof hp === "object" ? Object.keys(hp).length : 0
+        return model ? `${model}, ${hpCount} params` : ""
+      }
+      case "training": {
+        const parts: string[] = []
+        if (summary.test_accuracy != null) parts.push(`Acc: ${(Number(summary.test_accuracy) * 100).toFixed(1)}%`)
+        if (summary.test_roc_auc != null) parts.push(`AUC: ${Number(summary.test_roc_auc).toFixed(3)}`)
+        if (summary.test_r2 != null) parts.push(`R²: ${Number(summary.test_r2).toFixed(4)}`)
+        if (summary.test_rmse != null) parts.push(`RMSE: ${Number(summary.test_rmse).toFixed(0)}`)
+        return parts.join(", ") || (summary.success ? "Completed" : "Failed")
+      }
+      case "generate_report":
+        return "Saved"
+      default:
+        return ""
+    }
+  }, [])
+
   // Handle streaming event
   const handleStreamEvent = useCallback((event: StreamEvent) => {
     console.log("[stream]", event)
@@ -561,14 +629,43 @@ export function useRealAgent(): UseRealAgentReturn {
       console.log("[stream] Interrupt received:", event)
       
       const nodeName = event.node || "unknown"
-      const summary = typeof event.summary === "string" 
-        ? event.summary 
-        : JSON.stringify(event.summary || {}, null, 2)
+      let summary: string
+      if (typeof event.summary === "string") {
+        summary = event.summary
+      } else if (nodeName === "training_approval" && event.summary && typeof event.summary === "object") {
+        const s = event.summary as Record<string, unknown>
+        const lines: string[] = []
+        if (s.model_type) lines.push(`**Model:** ${s.model_type}`)
+        if (s.task_type) lines.push(`**Task:** ${s.task_type}`)
+        const hp = s.hyperparameters as Record<string, unknown> | undefined
+        if (hp && typeof hp === "object") {
+          const entries = Object.entries(hp)
+          const keyParams = entries.slice(0, 5).map(([k, v]) => `\`${k}=${v}\``).join("  ·  ")
+          lines.push("")
+          lines.push(`**Hyperparameters** (${entries.length} total)`)
+          lines.push(keyParams + (entries.length > 5 ? `  ·  *+${entries.length - 5} more*` : ""))
+        }
+        if (s.class_weight) lines.push(`\n**Class weight:** ${s.class_weight}`)
+        const strategy = s.strategy_notes
+        if (strategy) {
+          const notes = Array.isArray(strategy) ? strategy : [strategy]
+          lines.push("")
+          lines.push(`**Strategy** — ${notes.length} section${notes.length !== 1 ? "s" : ""}`)
+          lines.push("*View full details for the complete training plan*")
+        }
+        summary = lines.join("\n")
+      } else {
+        summary = JSON.stringify(event.summary || {}, null, 2)
+      }
       const stateSnapshot = (event.state_snapshot || {}) as Record<string, unknown>
       
       // Update step to awaiting confirmation with details
+      // Also mark preceding pending steps as completed (they must have run)
+      const stepOrder = STEP_DEFINITIONS.map((s) => s.id)
+      const interruptIndex = stepOrder.indexOf(nodeName)
+      
       setSteps((prev) =>
-        prev.map((step) => {
+        prev.map((step, index) => {
           if (step.id === nodeName) {
             return { 
               ...step, 
@@ -576,6 +673,9 @@ export function useRealAgent(): UseRealAgentReturn {
               endTime: Date.now(),
               details: summary,
             }
+          }
+          if (index < interruptIndex && step.status === "pending") {
+            return { ...step, status: "completed" }
           }
           return step
         })
@@ -633,32 +733,58 @@ export function useRealAgent(): UseRealAgentReturn {
       const nodeName = event.node || "unknown"
       const nodeProgress = event.progress || 0
       
+      // Deduplicate: skip if we already emitted a node_complete for this step
+      if (emittedStepsRef.current.has(nodeName)) {
+        console.log("[stream] Skipping duplicate node_complete for", nodeName)
+        return
+      }
+      emittedStepsRef.current.add(nodeName)
+      
       setProgress(nodeProgress)
       
-      // Update steps based on node:
-      // - Previous steps: completed
-      // - Current step: completed
-      // - Next step: running (with spinner)
-      // - Future steps: pending
       const stepOrder = STEP_DEFINITIONS.map((s) => s.id)
       const nodeIndex = stepOrder.indexOf(nodeName)
       
-      setSteps((prev) =>
-        prev.map((step, index) => {
-          if (index < nodeIndex) {
-            // Previous steps are completed
-            return { ...step, status: "completed" }
-          } else if (index === nodeIndex) {
-            // Current step just completed
-            return { ...step, status: "completed", endTime: Date.now() }
-          } else if (index === nodeIndex + 1) {
-            // Next step is now running (show spinner)
-            return { ...step, status: "running", startTime: Date.now() }
+      setSteps((prev) => {
+        const currentStepState = prev.find(s => s.id === nodeName)
+        const isRerun = (currentStepState?.runCount || 0) >= 1
+        
+        return prev.map((step, index) => {
+          if (step.id === nodeName) {
+            return { 
+              ...step, 
+              status: "completed", 
+              endTime: Date.now(),
+              runCount: (step.runCount || 0) + 1,
+            }
           }
-          // Future steps remain pending
+          // On re-run, downstream completed/stale steps become stale
+          if (isRerun && index > nodeIndex && (step.status === "completed" || step.status === "stale")) {
+            return { ...step, status: "stale" }
+          }
+          // On first pass, mark preceding pending steps as completed and next as running
+          if (!isRerun) {
+            if (index < nodeIndex && step.status === "pending") {
+              return { ...step, status: "completed" }
+            }
+            if (index === nodeIndex + 1 && step.status === "pending") {
+              return { ...step, status: "running", startTime: Date.now() }
+            }
+          }
           return step
         })
-      )
+      })
+      
+      // Compute a one-line subtitle for the step dropdown
+      const summary = event.summary as Record<string, unknown> | undefined
+      const subtitle = computeStepSubtitle(nodeName, summary)
+      if (subtitle) {
+        setSteps((prev) =>
+          prev.map((step) =>
+            step.id === nodeName ? { ...step, subtitle } : step
+          )
+        )
+      }
       
       // Update agent state from event
       if (event.state) {
@@ -831,7 +957,7 @@ export function useRealAgent(): UseRealAgentReturn {
   }, [addMessage, formatStreamDetails])
 
   // Start training with streaming
-  const startAgentStreaming = useCallback(async (goal: string, linkedDatasets?: string[], modelPreference?: string) => {
+  const startAgentStreaming = useCallback(async (goal: string, linkedDatasets?: string[], modelPreference?: string, simple?: boolean, hitl?: boolean) => {
     // Check connection first
     const connected = await checkConnection()
     if (!connected) {
@@ -842,6 +968,7 @@ export function useRealAgent(): UseRealAgentReturn {
     setIsRunning(true)
     setProgress(0)
     setSteps(createInitialSteps())
+    emittedStepsRef.current = new Set()
     
     // Update initial state
     const initialState = createInitialState()
@@ -850,7 +977,9 @@ export function useRealAgent(): UseRealAgentReturn {
     initialState.user_model_preference = modelPreference || null
     setAgentState(initialState)
     
-    addMessage("agent", `Starting training with goal: "${goal}"\n\nStreaming progress updates in real-time...`)
+    const modeLabel = simple ? "simple agent" : "graph agent"
+    const hitlLabel = hitl === false ? " (no human review)" : ""
+    addMessage("agent", `Starting training with goal: "${goal}"\n\nUsing ${modeLabel}${hitlLabel}. Streaming progress updates in real-time...`)
     
     // Start streaming
     streamControllerRef.current = streamTraining(
@@ -858,6 +987,8 @@ export function useRealAgent(): UseRealAgentReturn {
         goal,
         linked_datasets: linkedDatasets,
         user_model_preference: modelPreference,
+        simple,
+        hitl,
       },
       handleStreamEvent,
       (error) => {
@@ -1004,9 +1135,9 @@ export function useRealAgent(): UseRealAgentReturn {
   }, [addMessage, checkConnection, pollJob])
 
   // Start training (uses streaming by default)
-  const startAgent = useCallback(async (goal: string, linkedDatasets?: string[], modelPreference?: string) => {
+  const startAgent = useCallback(async (goal: string, linkedDatasets?: string[], modelPreference?: string, simple?: boolean, hitl?: boolean) => {
     if (useStreaming) {
-      await startAgentStreaming(goal, linkedDatasets, modelPreference)
+      await startAgentStreaming(goal, linkedDatasets, modelPreference, simple, hitl)
     } else {
       await startAgentPolling(goal, linkedDatasets, modelPreference)
     }
@@ -1066,6 +1197,7 @@ Note: The real agent runs the full pipeline at once. Progress updates show which
     setConfirmationRequest(null)
     setAcceptAllMode(false)
     acceptAllModeRef.current = false
+    emittedStepsRef.current = new Set()
   }, [])
 
   // Cleanup on unmount

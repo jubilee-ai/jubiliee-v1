@@ -12,6 +12,18 @@ export const STEP_PATTERNS: Array<{ stepId: string; patterns: RegExp[] }> = [
       /pipeline complete.*view report/i,
     ]
   },
+  // Training Approval - configuration proposal
+  {
+    stepId: "training_approval",
+    patterns: [
+      /training config/i,
+      /training configuration/i,
+      /hyperparameters/i,
+      /training plan/i,
+      /training_approval/i,
+      /training strategy/i,
+    ]
+  },
   // Training - specific training result patterns
   {
     stepId: "training",
@@ -93,7 +105,7 @@ export const STEP_PATTERNS: Array<{ stepId: string; patterns: RegExp[] }> = [
       /model selection complete/i,
       /selected.*as the optimal model/i,
       /selected model[:\s]/i,
-      /model:\s*(logistic_regression|random_forest|xgboost|gradient_boost)/i,
+      /model:\s*(logistic_regression|random_forest|xgboost|gradient_boost|naive_bayes)/i,
       /choosing.*model/i,
     ]
   },
@@ -123,12 +135,13 @@ export function detectStepFromMessage(content: string): string | null {
  * Maps step IDs to keywords for finding related messages
  */
 export const STEP_KEYWORDS: Record<string, string[]> = {
-  "select_model": ["Model Selection", "selected model", "xgboost", "random_forest", "logistic_regression"],
+  "select_model": ["Model Selection", "selected model", "xgboost", "random_forest", "logistic_regression", "naive_bayes"],
   "data_collection": ["Data Collection", "Dataset loaded", "dataset"],
   "cleaning": ["Cleaning", "cleaned", "transformations"],
   "label_split_definition": ["Label", "Split", "target column"],
   "feature_selection_specification": ["Feature Selection", "features specified"],
   "feature_engineering_executor": ["Feature Engineering", "features created"],
+  "training_approval": ["Training Config", "hyperparameters", "training plan", "training strategy"],
   "training": ["Training", "trained", "R²", "accuracy", "RMSE"],
   "generate_report": ["Report", "complete"],
 }

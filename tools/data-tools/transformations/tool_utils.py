@@ -19,7 +19,11 @@ except ImportError:
 
 
 def resolve_dataset(dataset_ref: str) -> pd.DataFrame:
-    """Resolve a dataset_ref to a DataFrame."""
+    """Resolve a dataset_ref to a DataFrame.
+    
+    Checks the in-memory registry first, then falls back to the data_loader.
+    If loaded from data_loader, the dataset is registered for faster subsequent access.
+    """
     df = get_registered_dataset(dataset_ref)
     if df is not None:
         return df
@@ -31,7 +35,9 @@ def resolve_dataset(dataset_ref: str) -> pd.DataFrame:
         except ImportError:
             from data_loader import dataset_get
         result = dataset_get(asset_id=dataset_ref, limit=-1, include_stats=False)
-        return pd.DataFrame(result.data)
+        df = pd.DataFrame(result.data)
+        register_dataset(dataset_ref, df)
+        return df
     except Exception:
         pass
     

@@ -612,12 +612,22 @@ def evaluate_model_tool(
     feature_cols = [c for c in df.columns if c != target_column]
     X = df[feature_cols]
     
+    # Apply target discretization if model was trained with auto-discretized target
+    hp = (info.get("hyperparameters") or {})
+    if hp.get("target_discretized") and hp.get("target_discretization_threshold") is not None:
+        import numpy as np
+        threshold = float(hp["target_discretization_threshold"])
+        y_true = (y_true > threshold).astype(int)
+    
     # Make predictions
     try:
         y_pred = model.predict(X)
         
-        # Check if classification or regression
-        is_classification = hasattr(model, 'predict_proba') or hasattr(model, 'classes_')
+        # Check if classification or regression based on the actual target values,
+        # not model attributes (XGBRegressor can have predict_proba/classes_ inherited).
+        from sklearn.utils.multiclass import type_of_target
+        target_type = type_of_target(y_true)
+        is_classification = target_type in ("binary", "multiclass", "multiclass-multioutput")
         
         if is_classification:
             # Classification metrics

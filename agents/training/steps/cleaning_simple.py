@@ -30,6 +30,7 @@ from analysis.eda_report import run_eda_report
 from transformations.clean_ops import clean_tools
 from transformations.column_ops import cast_tool, drop_columns_tool
 from transformations.row_ops import dedupe_tool, filter_rows_tool
+from transformations.tool_utils import resolve_dataset
 from utils import generate_unique_id, get_registered_dataset, register_dataset
 
 # =============================================================================
@@ -144,8 +145,9 @@ def mark_cleaning_complete(dataset_ref: str, reasoning: str) -> str:
     
     This registers the cleaned dataset and ends the cleaning process.
     """
-    df = get_registered_dataset(dataset_ref)
-    if df is None:
+    try:
+        df = resolve_dataset(dataset_ref)
+    except ValueError:
         return f"✗ Dataset '{dataset_ref}' not found. Check the dataset reference."
     
     cleaned_ref = generate_unique_id("cleaned")
@@ -256,10 +258,11 @@ def run_cleaning_simple(
 
 Start by calling `run_clean_tests` to analyze the dataset."""
     
-    # Run the agent
+    # Each tool call uses ~3 graph steps (model → middleware → tools),
+    # so multiply max_iterations to get the actual recursion limit.
     result = agent.invoke(
         {"messages": [{"role": "user", "content": initial_message}]},
-        {"recursion_limit": max_iterations},
+        {"recursion_limit": max_iterations * 3},
     )
     
     # Extract the cleaned dataset reference, summary, and transformations from tool output
@@ -308,6 +311,11 @@ Start by calling `run_clean_tests` to analyze the dataset."""
                         # Extract the reasoning
                         cleaning_reason = line.replace("Reason:", "").strip()
     
+    if cleaned_ref is None:
+        print(f"[cleaning_simple] WARNING: Could not extract cleaned_ref from agent output. "
+              f"Falling back to original dataset_ref: {dataset_ref}")
+        cleaned_ref = dataset_ref
+
     return {
         "cleaned_ref": cleaned_ref,
         "messages": result.get("messages", []),

@@ -101,16 +101,23 @@ def cleaning_node(state: TrainingAgentState) -> TrainingAgentState:
     """Step 3: Cleaning & Standardization with HITL approval."""
 
     def do_work(s: TrainingAgentState, feedback: Optional[str]) -> TrainingAgentState:
-        # Dynamically set max iterations based on dataset complexity
+        dataset_ref = s.get("collected_dataset_ref")
+        if not dataset_ref:
+            return {
+                **s,
+                "error": "No collected_dataset_ref in state — data_collection must complete first",
+                "current_step": "data_collection",
+            }
+
         try:
-            df = get_registered_dataset(s["collected_dataset_ref"])
+            df = get_registered_dataset(dataset_ref)
             num_columns = len(df.columns) if df is not None else 20
             max_iters = min(80, max(30, 30 + num_columns))
         except Exception:
             max_iters = 50
 
         result = run_cleaning_simple(
-            dataset_ref=s["collected_dataset_ref"],
+            dataset_ref=dataset_ref,
             goal=_add_feedback_to_goal(s.get("goal", ""), "cleaning", feedback),
             max_iterations=max_iters,
         )
@@ -137,12 +144,20 @@ def label_split_definition(state: TrainingAgentState) -> TrainingAgentState:
     """Step 3.5: Label + Split Definition + Data Splitting with HITL approval."""
 
     def do_work(s: TrainingAgentState, feedback: Optional[str]) -> TrainingAgentState:
+        dataset_ref = s.get("cleaned_dataset_ref")
+        if not dataset_ref:
+            return {
+                **s,
+                "error": "Cannot run label/split definition — cleaning must run first to produce a cleaned dataset.",
+                "current_step": "cleaning",
+            }
+
         existing = _get_label_def(s)
         goal = _add_feedback_to_goal(s.get("goal", ""), "label/split definition", feedback)
 
         # Get label definition from LLM
         label_def = run_label_split_definition(
-            dataset_ref=s["cleaned_dataset_ref"],
+            dataset_ref=dataset_ref,
             goal=goal,
             selected_model=s.get("selected_model"),
             model_explanation=s.get("model_explanation"),
@@ -155,7 +170,7 @@ def label_split_definition(state: TrainingAgentState) -> TrainingAgentState:
         )
 
         # Compute and apply split
-        df = get_registered_dataset(s["cleaned_dataset_ref"])
+        df = get_registered_dataset(dataset_ref)
         print(f"[label_split_definition] Computing {label_def.get('split_strategy', 'random')} split...")
         
         split_indices = compute_split_indices(df=df, label_definition=label_def, train_ratio=0.7, val_ratio=0.15, test_ratio=0.15)
@@ -163,8 +178,7 @@ def label_split_definition(state: TrainingAgentState) -> TrainingAgentState:
         print(f"[label_split_definition] Split sizes: train={len(train_df)}, val={len(val_df)}, test={len(test_df)}")
 
         # Register split datasets
-        base_ref = s["cleaned_dataset_ref"]
-        train_ref, val_ref, test_ref = f"{base_ref}_train", f"{base_ref}_val", f"{base_ref}_test"
+        train_ref, val_ref, test_ref = f"{dataset_ref}_train", f"{dataset_ref}_val", f"{dataset_ref}_test"
         register_dataset(train_ref, train_df)
         register_dataset(val_ref, val_df)
         register_dataset(test_ref, test_df)
@@ -232,6 +246,7 @@ def feature_selection_specification(state: TrainingAgentState) -> TrainingAgentS
             forbidden_columns=label_def.get("forbidden_columns", []),
             as_of_cutoff=label_def.get("as_of_cutoff"),
             prediction_horizon=label_def.get("prediction_horizon"),
+            selected_model=s.get("selected_model"),
         )
 
         feature_spec, validation = result.get("feature_spec"), result.get("validation", {})
@@ -530,11 +545,14 @@ def training(state: TrainingAgentState) -> TrainingAgentState:
             print(f"  Reason: {result.get('feature_redo_reason')}")
             print(f"  Recommendation: {result.get('feature_redo_recommendation')}")
 
+        best_model_type = result.get("model_type", selected_model)
+
         return {
             **s,
             "model_weights_path": result.get("model_name"),
+            "selected_model": best_model_type,
             "training_metrics": {
-                "success": result.get("success"), "model_name": result.get("model_name"), "model_type": result.get("model_type"),
+                "success": result.get("success"), "model_name": result.get("model_name"), "model_type": best_model_type,
                 "val_accuracy": result.get("val_accuracy"), "val_roc_auc": result.get("val_roc_auc"),
                 "test_accuracy": result.get("test_accuracy"), "test_roc_auc": result.get("test_roc_auc"),
                 "train_r2": result.get("train_r2"), "val_r2": result.get("val_r2"), "val_rmse": result.get("val_rmse"), "val_mae": result.get("val_mae"),
@@ -548,7 +566,7 @@ def training(state: TrainingAgentState) -> TrainingAgentState:
             "feature_redo_recommendation": result.get("feature_redo_recommendation"),
             "feature_redo_reason": result.get("feature_redo_reason"),
             "audit_trace": s.get("audit_trace", []) + [{
-                "step": "training", "model_name": result.get("model_name"), "success": result.get("success"),
+                "step": "training", "model_name": result.get("model_name"), "model_type": best_model_type, "success": result.get("success"),
                 "num_iterations": result.get("num_iterations", 0), "val_accuracy": result.get("val_accuracy"),
                 "val_roc_auc": result.get("val_roc_auc"), "test_accuracy": result.get("test_accuracy"),
                 "test_roc_auc": result.get("test_roc_auc"), "error": result.get("error"),

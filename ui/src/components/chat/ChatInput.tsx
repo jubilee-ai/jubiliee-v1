@@ -9,7 +9,12 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog"
-import { Send, Database, Cpu, X } from "lucide-react"
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip"
+import { Send, Database, Cpu, X, Zap, ShieldCheck } from "lucide-react"
 import type { Dataset } from "@/types/agent"
 import type { Dataset as ApiDataset, ModelType } from "@/lib/api"
 
@@ -27,6 +32,10 @@ interface ChatInputProps {
   onModelRemove: () => void
   availableDatasets: ApiDataset[]
   availableModels: ModelType[]
+  useSimple: boolean
+  onToggleSimple: () => void
+  useHitl: boolean
+  onToggleHitl: () => void
 }
 
 export function ChatInput({
@@ -43,6 +52,10 @@ export function ChatInput({
   onModelRemove,
   availableDatasets,
   availableModels,
+  useSimple,
+  onToggleSimple,
+  useHitl,
+  onToggleHitl,
 }: ChatInputProps) {
   const [showDatasetPicker, setShowDatasetPicker] = useState(false)
   const [showModelPicker, setShowModelPicker] = useState(false)
@@ -178,6 +191,40 @@ export function ChatInput({
                 </div>
               </DialogContent>
             </Dialog>
+
+            <div className="h-5 w-px bg-border mx-1" />
+
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant={useSimple ? "default" : "ghost"}
+                  size="sm"
+                  className={`h-8 px-3 ${useSimple ? "" : "text-muted-foreground hover:text-foreground"}`}
+                  onClick={onToggleSimple}
+                >
+                  <Zap className="h-4 w-4" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="top">
+                <p>{useSimple ? "Simple agent (on)" : "Simple agent (off)"}</p>
+              </TooltipContent>
+            </Tooltip>
+
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant={useHitl ? "default" : "ghost"}
+                  size="sm"
+                  className={`h-8 px-3 ${useHitl ? "" : "text-muted-foreground hover:text-foreground"}`}
+                  onClick={onToggleHitl}
+                >
+                  <ShieldCheck className="h-4 w-4" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="top">
+                <p>{useHitl ? "Human review (on)" : "Human review (off)"}</p>
+              </TooltipContent>
+            </Tooltip>
           </div>
 
           <Button

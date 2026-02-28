@@ -12,6 +12,14 @@ interface ProgressPanelProps {
   onStepClick?: (stepId: string) => void
 }
 
+const STEP_GROUPS: Array<{ label: string; ids: string[] }> = [
+  { label: "Setup", ids: ["select_model", "data_collection"] },
+  { label: "Preparation", ids: ["cleaning", "label_split_definition"] },
+  { label: "Features", ids: ["feature_selection_specification", "feature_engineering_executor"] },
+  { label: "Training", ids: ["training_approval", "training"] },
+  { label: "Output", ids: ["generate_report"] },
+]
+
 export function ProgressPanel({
   steps,
   currentStepId,
@@ -20,65 +28,64 @@ export function ProgressPanel({
   onStepClick,
 }: ProgressPanelProps) {
   const completedSteps = steps.filter((s) => s.status === "completed").length
-  const progress = Math.round((completedSteps / steps.length) * 100)
-
-  // Filter steps to only show those that have been started (running, completed, awaiting_confirmation, error)
-  // Steps only appear after the previous one is accepted and completed
-  const visibleSteps = steps.filter((step) => {
-    return step.status === "running" || step.status === "completed" || step.status === "awaiting_confirmation" || step.status === "error"
-  })
-
-  // Calculate the original step numbers for visible steps
-  const getOriginalStepNumber = (step: StepInfo) => {
-    return steps.findIndex(s => s.id === step.id) + 1
-  }
+  const totalSteps = steps.length
+  const progress = Math.round((completedSteps / totalSteps) * 100)
 
   return (
     <div className="h-full flex flex-col bg-muted/30">
       {/* Header */}
-      <div className="p-5">
-        <div className="flex items-baseline justify-between mb-1">
-          <span className="text-sm font-medium">Progress</span>
-          <span className="text-2xl font-semibold tracking-tight">{progress}%</span>
+      <div className="p-5 pb-4">
+        <div className="flex items-baseline justify-between mb-1.5">
+          <span className="text-sm font-medium">Pipeline</span>
+          <span className="text-xs text-muted-foreground">
+            {completedSteps}/{totalSteps} steps
+          </span>
         </div>
-        <div className="h-1.5 bg-border rounded-full overflow-hidden">
+        <div className="h-1.5 bg-border/60 rounded-full overflow-hidden">
           <div 
             className="h-full bg-foreground rounded-full transition-all duration-500 ease-out"
             style={{ width: `${progress}%` }}
           />
         </div>
 
-        {/* Context */}
+        {/* Goal */}
         {agentState.goal && (
-          <p className="mt-4 text-sm text-muted-foreground line-clamp-2 leading-relaxed">
+          <p className="mt-3 text-[13px] text-muted-foreground line-clamp-2 leading-relaxed">
             {agentState.goal}
           </p>
-        )}
-        {agentState.selected_model && (
-          <p className="mt-2 text-sm font-medium">{agentState.selected_model}</p>
         )}
       </div>
 
       <Separator />
 
-      {/* Steps List - only show visible steps */}
+      {/* Steps List - grouped */}
       <ScrollArea className="flex-1">
-        <div className="p-4 space-y-1">
-          {visibleSteps.length === 0 ? (
-            <div className="text-sm text-muted-foreground text-center py-8">
-              Steps will appear here as they start
-            </div>
-          ) : (
-            visibleSteps.map((step) => (
-              <StepNode
-                key={step.id}
-                step={step}
-                stepNumber={getOriginalStepNumber(step)}
-                isActive={step.id === currentStepId || step.status === "awaiting_confirmation"}
-                onSelect={() => onStepClick?.(step.id)}
-              />
-            ))
-          )}
+        <div className="p-3">
+          {STEP_GROUPS.map((group, gi) => {
+            const groupSteps = group.ids
+              .map((id) => steps.find((s) => s.id === id))
+              .filter(Boolean) as StepInfo[]
+
+            if (groupSteps.length === 0) return null
+
+            return (
+              <div key={group.label} className={gi > 0 ? "mt-3" : ""}>
+                <div className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground/60 px-2.5 mb-1">
+                  {group.label}
+                </div>
+                <div className="space-y-0.5">
+                  {groupSteps.map((step) => (
+                    <StepNode
+                      key={step.id}
+                      step={step}
+                      isActive={step.id === currentStepId || step.status === "awaiting_confirmation"}
+                      onSelect={() => onStepClick?.(step.id)}
+                    />
+                  ))}
+                </div>
+              </div>
+            )
+          })}
         </div>
       </ScrollArea>
 

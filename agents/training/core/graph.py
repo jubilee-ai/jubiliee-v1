@@ -10,6 +10,7 @@ from langgraph.graph import END, StateGraph
 from langgraph.types import Command
 
 from .edges import (
+    data_collection_result,
     feature_validation_result,
     should_regen_model,
     should_skip_label_definition,
@@ -80,8 +81,12 @@ def build_training_agent_graph() -> StateGraph:
         {"regen": "select_model", "continue": "data_collection"},  # Loop back for regeneration
     )
 
-    # Step 2 → Step 3
-    graph.add_edge("data_collection", "cleaning")
+    # Step 2 → Step 3 (only if data collection succeeded)
+    graph.add_conditional_edges(
+        "data_collection",
+        data_collection_result,
+        {"success": "cleaning", "retry": "data_collection"},
+    )
 
     # Step 3 → Step 3.5 (cleaning handles its own iteration internally)
     graph.add_edge("cleaning", "label_split_definition")

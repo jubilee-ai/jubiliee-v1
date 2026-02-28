@@ -24,7 +24,7 @@ interface ChatPanelProps {
   isRunning: boolean
   onSendMessage: (content: string) => void
   onConfirmation: (action: ConfirmationAction, comment?: string) => void
-  onStartAgent: (goal: string, datasets?: string[], modelPreference?: string) => void
+  onStartAgent: (goal: string, datasets?: string[], modelPreference?: string, simple?: boolean, hitl?: boolean) => void
   datasets?: ApiDataset[]
   modelTypes?: ModelType[]
   highlightedMessageId?: string | null
@@ -67,6 +67,8 @@ export const ChatPanel = forwardRef<ChatPanelRef, ChatPanelProps>(function ChatP
   const [selectedStepId, setSelectedStepId] = useState<string | null>(null)
   const [selectedDatasets, setSelectedDatasets] = useState<string[]>([])
   const [selectedModel, setSelectedModel] = useState<string | null>(null)
+  const [useSimple, setUseSimple] = useState(false)
+  const [useHitl, setUseHitl] = useState(true)
   
   // Refs
   const messageRefs = useRef<Map<string, HTMLDivElement>>(new Map())
@@ -161,14 +163,14 @@ export const ChatPanel = forwardRef<ChatPanelRef, ChatPanelProps>(function ChatP
 
     // Check if this is starting a new training
     if (messages.length === 0 || text.toLowerCase().includes("train")) {
-      onStartAgent(text, selectedDatasets.length > 0 ? selectedDatasets : undefined, selectedModel || undefined)
+      onStartAgent(text, selectedDatasets.length > 0 ? selectedDatasets : undefined, selectedModel || undefined, useSimple, useHitl)
       setSelectedDatasets([])
       setSelectedModel(null)
     } else {
       onSendMessage(text)
     }
     setDraft("")
-  }, [draft, messages.length, onStartAgent, onSendMessage, selectedDatasets, selectedModel])
+  }, [draft, messages.length, onStartAgent, onSendMessage, selectedDatasets, selectedModel, useSimple, useHitl])
 
   // Handle dataset selection
   const handleDatasetSelect = useCallback((dataset: Dataset) => {
@@ -271,6 +273,10 @@ export const ChatPanel = forwardRef<ChatPanelRef, ChatPanelProps>(function ChatP
         onModelRemove={() => setSelectedModel(null)}
         availableDatasets={availableDatasets}
         availableModels={availableModels}
+        useSimple={useSimple}
+        onToggleSimple={() => setUseSimple(v => !v)}
+        useHitl={useHitl}
+        onToggleHitl={() => setUseHitl(v => !v)}
       />
 
       {/* Step Detail Modal */}

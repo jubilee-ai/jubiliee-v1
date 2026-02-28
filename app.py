@@ -32,6 +32,7 @@ from utils import get_registered_dataset, register_dataset
 from agents.training.agent import (TrainingAgentState, invoke_training_agent,
                                    resume_training_agent,
                                    stream_training_agent_with_updates)
+from agents.training.utils.streaming import build_node_update, extract_interrupt_info
 
 # Import dataset catalog
 DATASETS_DIR = PROJECT_ROOT / "datasets"
@@ -44,6 +45,21 @@ MODELS_REGISTRY_PATH = PROJECT_ROOT / "trained_models" / "registry.json"
 # ============================================================================
 training_jobs: dict[str, dict[str, Any]] = {}
 
+# Storage for simple agent instances (keyed by thread_id)
+simple_agent_store: dict[str, dict[str, Any]] = {}
+
+TOOL_TO_STEP = {
+    "tool_data_collection": "data_collection",
+    "tool_select_model": "select_model",
+    "tool_cleaning": "cleaning",
+    "tool_label_split_definition": "label_split_definition",
+    "tool_feature_selection_specification": "feature_selection_specification",
+    "tool_feature_engineering_executor": "feature_engineering_executor",
+    "tool_training_approval": "training_approval",
+    "tool_training": "training",
+    "tool_generate_report": "generate_report",
+}
+
 
 # ============================================================================
 # Pydantic Models
@@ -53,6 +69,8 @@ class TrainRequest(BaseModel):
     goal: str
     linked_datasets: Optional[list[str]] = None
     user_model_preference: Optional[str] = None
+    simple: bool = False
+    hitl: bool = True
 
 
 class ResumeRequest(BaseModel):
@@ -316,6 +334,7 @@ async def get_models():
         {"id": "logistic_regression", "name": "Logistic Regression", "description": "Binary/multiclass classification, interpretable"},
         {"id": "random_forest", "name": "Random Forest", "description": "Classification/regression, feature importance"},
         {"id": "xgboost", "name": "XGBoost", "description": "High-performance tabular data"},
+        {"id": "naive_bayes", "name": "Naive Bayes", "description": "Fast probabilistic classifier, great baseline"},
         {"id": "glm", "name": "GLM", "description": "Poisson/Gamma/Tweedie regression"},
         {"id": "survival_analysis", "name": "Survival Analysis", "description": "Time-to-event prediction with censoring"},
     ]
@@ -542,6 +561,212 @@ def generate_resume_sse_events(thread_id: str, approved: bool, feedback: Optiona
         yield f"data: {json.dumps(error_event)}\n\n"
 
 
+def _extract_simple_interrupt(interrupt_data: list, thread_id: str | None = None) -> dict:
+    """Parse interrupt data from manual interrupt() calls in agent_simple tools.
+
+    Each tool calls interrupt({node, summary, message}) after completing its
+    work, so the value is a simple dict we pass through to the UI.
+    Also stores all interrupt IDs for proper multi-interrupt resume.
+    """
+    default = {"node": "unknown", "summary": "Step pending approval"}
+
+    if not interrupt_data:
+        return default
+
+    # Collect all interrupt IDs for resume
+    interrupt_ids = []
+    for item in interrupt_data:
+        iid = getattr(item, "id", None)
+        if iid:
+            interrupt_ids.append(iid)
+
+    if thread_id and thread_id in simple_agent_store:
+        simple_agent_store[thread_id]["interrupt_ids"] = interrupt_ids
+
+    # Find the first interrupt with our custom {node, summary} format
+    for item in interrupt_data:
+        val = item.value if hasattr(item, "value") else item
+        if isinstance(val, dict) and "node" in val:
+            return {
+                "node": val.get("node", "unknown"),
+                "summary": val.get("summary", ""),
+                "message": val.get("message", "Approve to continue, or provide feedback to redo."),
+            }
+
+    return default
+
+
+def _should_skip_tool_message(content: str) -> bool:
+    """Return True if a tool message should not be emitted as a node_complete event."""
+    if not isinstance(content, str):
+        return False
+    return content.startswith("REJECTED") or content.startswith("SKIP:")
+
+
+def generate_simple_sse_events(
+    goal: str,
+    linked_datasets: Optional[list[str]],
+    model_pref: Optional[str],
+    hitl: bool = True,
+    thread_id: Optional[str] = None,
+):
+    """SSE generator for the simple deep-agent pipeline."""
+    from agents.training.agent_simple import create_simple_training_agent
+    from langgraph.checkpoint.memory import MemorySaver
+    from langgraph.types import Command
+
+    thread_id = thread_id or f"simple-{uuid.uuid4().hex[:8]}"
+
+    registered_refs = []
+    if linked_datasets:
+        for dataset_path in linked_datasets:
+            ref = load_and_register_dataset(dataset_path)
+            if ref:
+                registered_refs.append(ref)
+                yield f"data: {json.dumps({'type': 'dataset_loaded', 'dataset': dataset_path, 'ref': ref, 'thread_id': thread_id})}\n\n"
+
+    final_linked = registered_refs if registered_refs else linked_datasets
+
+    checkpointer = MemorySaver()
+    agent, shared_state = create_simple_training_agent(
+        goal=goal,
+        linked_datasets=final_linked,
+        user_model_preference=model_pref,
+        hitl=hitl,
+        checkpointer=checkpointer,
+    )
+
+    simple_agent_store[thread_id] = {
+        "agent": agent,
+        "state": shared_state,
+        "checkpointer": checkpointer,
+    }
+
+    config = {"configurable": {"thread_id": thread_id}}
+    emitted_steps: set[str] = set()
+    simple_agent_store[thread_id]["emitted_steps"] = emitted_steps
+
+    yield f"data: {json.dumps({'type': 'started', 'node': 'init', 'progress': 0, 'message': 'Simple agent started', 'thread_id': thread_id})}\n\n"
+
+    try:
+        for event in agent.stream(
+            {"messages": [{"role": "user", "content": goal}]},
+            config=config,
+            stream_mode="updates",
+        ):
+            if "__interrupt__" in event:
+                info = _extract_simple_interrupt(event["__interrupt__"], thread_id)
+                interrupt_event = {
+                    "type": "interrupt",
+                    "thread_id": thread_id,
+                    **info,
+                    "state_snapshot": serialize_state(shared_state),
+                }
+                yield f"data: {json.dumps(serialize_state(interrupt_event))}\n\n"
+                return
+
+            if "tools" in event:
+                tool_msgs = event["tools"].get("messages", [])
+                if tool_msgs:
+                    content = getattr(tool_msgs[0], "content", "")
+                    if _should_skip_tool_message(content):
+                        continue
+                    tool_name = getattr(tool_msgs[0], "name", "unknown")
+                    step_name = TOOL_TO_STEP.get(tool_name, tool_name)
+                    if step_name in emitted_steps:
+                        continue
+                    emitted_steps.add(step_name)
+                    update = build_node_update(step_name, dict(shared_state))
+                    update["thread_id"] = thread_id
+                    yield f"data: {json.dumps(serialize_state(update))}\n\n"
+
+        yield f"data: {json.dumps({'type': 'completed', 'node': 'end', 'progress': 100, 'message': 'Training completed', 'thread_id': thread_id})}\n\n"
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        yield f"data: {json.dumps({'type': 'error', 'error': str(e), 'thread_id': thread_id})}\n\n"
+
+
+def generate_simple_resume_sse_events(
+    thread_id: str,
+    approved: bool,
+    feedback: Optional[str],
+):
+    """SSE generator for resuming the simple agent after an interrupt."""
+    from langgraph.types import Command
+
+    store = simple_agent_store.get(thread_id)
+    if not store:
+        yield f"data: {json.dumps({'type': 'error', 'error': 'Simple agent thread not found', 'thread_id': thread_id})}\n\n"
+        return
+
+    agent = store["agent"]
+    shared_state = store["state"]
+    config = {"configurable": {"thread_id": thread_id}}
+    emitted_steps: set[str] = store.get("emitted_steps", set())
+
+    single_decision = {"approved": approved}
+    if not approved:
+        single_decision["feedback"] = feedback or "Please redo this step."
+
+    # Query actual pending interrupts from the checkpoint state
+    try:
+        state_snapshot = agent.get_state(config)
+        interrupt_ids = [
+            intr.id
+            for task in (state_snapshot.tasks or [])
+            for intr in (task.interrupts or [])
+        ]
+    except Exception:
+        interrupt_ids = store.get("interrupt_ids", [])
+
+    if len(interrupt_ids) > 1:
+        resume_value = {iid: single_decision for iid in interrupt_ids}
+    else:
+        resume_value = single_decision
+
+    try:
+        for event in agent.stream(
+            Command(resume=resume_value),
+            config=config,
+            stream_mode="updates",
+        ):
+            if "__interrupt__" in event:
+                info = _extract_simple_interrupt(event["__interrupt__"], thread_id)
+                interrupt_event = {
+                    "type": "interrupt",
+                    "thread_id": thread_id,
+                    **info,
+                    "state_snapshot": serialize_state(shared_state),
+                }
+                yield f"data: {json.dumps(serialize_state(interrupt_event))}\n\n"
+                return
+
+            if "tools" in event:
+                tool_msgs = event["tools"].get("messages", [])
+                if tool_msgs:
+                    content = getattr(tool_msgs[0], "content", "")
+                    if _should_skip_tool_message(content):
+                        continue
+                    tool_name = getattr(tool_msgs[0], "name", "unknown")
+                    step_name = TOOL_TO_STEP.get(tool_name, tool_name)
+                    if step_name in emitted_steps:
+                        continue
+                    emitted_steps.add(step_name)
+                    store["emitted_steps"] = emitted_steps
+                    update = build_node_update(step_name, dict(shared_state))
+                    update["thread_id"] = thread_id
+                    yield f"data: {json.dumps(serialize_state(update))}\n\n"
+
+        yield f"data: {json.dumps({'type': 'completed', 'node': 'end', 'progress': 100, 'message': 'Training completed', 'thread_id': thread_id})}\n\n"
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        yield f"data: {json.dumps({'type': 'error', 'error': str(e), 'thread_id': thread_id})}\n\n"
+
+
 @app.post("/api/train-stream")
 async def train_stream(request: TrainRequest):
     """
@@ -549,22 +774,34 @@ async def train_stream(request: TrainRequest):
     
     With HITL enabled, returns events until an interrupt is hit:
     - {type: "started", progress: 0, thread_id: "xxx"}
-    - {type: "node_complete", node: "select_model", ...} (won't happen with HITL)
+    - {type: "node_complete", node: "select_model", ...}
     - {type: "interrupt", node: "select_model", summary: "...", thread_id: "xxx"}
     
+    Set simple=true to use the deep-agent pipeline instead of the graph agent.
+    Set hitl=false to run without human-in-the-loop interrupts.
     When interrupt is received, call /api/train-resume to continue.
     """
-    return StreamingResponse(
-        generate_sse_events(
+    if request.simple:
+        generator = generate_simple_sse_events(
             request.goal,
             request.linked_datasets,
             request.user_model_preference,
-        ),
+            hitl=request.hitl,
+        )
+    else:
+        generator = generate_sse_events(
+            request.goal,
+            request.linked_datasets,
+            request.user_model_preference,
+        )
+
+    return StreamingResponse(
+        generator,
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",  # Disable nginx buffering
+            "X-Accel-Buffering": "no",
         },
     )
 
@@ -575,18 +812,23 @@ async def train_resume(request: ResumeRequest):
     Resume training after an interrupt (human-in-the-loop).
     
     Streams the next step's progress until the next interrupt or completion.
-    
-    Args:
-        thread_id: The thread ID from the previous interrupt event
-        approved: True to accept and continue, False to redo with feedback
-        feedback: Optional feedback message when approved=False
+    Automatically detects whether the thread belongs to the simple or complex agent.
     """
-    return StreamingResponse(
-        generate_resume_sse_events(
+    if request.thread_id in simple_agent_store:
+        generator = generate_simple_resume_sse_events(
             request.thread_id,
             request.approved,
             request.feedback,
-        ),
+        )
+    else:
+        generator = generate_resume_sse_events(
+            request.thread_id,
+            request.approved,
+            request.feedback,
+        )
+
+    return StreamingResponse(
+        generator,
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",

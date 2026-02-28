@@ -274,8 +274,14 @@ def _apply_as_of_constraint(
         return df
     
     df = df.copy()
-    source_dt = pd.to_datetime(df[source_col])
-    cutoff_dt = pd.to_datetime(as_of_cutoff)
+    try:
+        source_dt = pd.to_datetime(df[source_col])
+        cutoff_dt = pd.to_datetime(as_of_cutoff)
+    except (ValueError, TypeError):
+        # as_of_cutoff may be a column name rather than a parseable datetime,
+        # or the source column may not contain datetime-like values (e.g. numeric
+        # period indices).  Skip the constraint silently.
+        return df
     
     # Mask values that violate the constraint (would be future data)
     if operator == "<":
