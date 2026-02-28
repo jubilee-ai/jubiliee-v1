@@ -14,7 +14,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip"
-import { Send, Database, Cpu, X, Zap, ShieldCheck } from "lucide-react"
+import { Send, Database, Cpu, X, ShieldCheck } from "lucide-react"
 import type { Dataset } from "@/types/agent"
 import type { Dataset as ApiDataset, ModelType } from "@/lib/api"
 
@@ -32,8 +32,6 @@ interface ChatInputProps {
   onModelRemove: () => void
   availableDatasets: ApiDataset[]
   availableModels: ModelType[]
-  useSimple: boolean
-  onToggleSimple: () => void
   useHitl: boolean
   onToggleHitl: () => void
 }
@@ -52,8 +50,6 @@ export function ChatInput({
   onModelRemove,
   availableDatasets,
   availableModels,
-  useSimple,
-  onToggleSimple,
   useHitl,
   onToggleHitl,
 }: ChatInputProps) {
@@ -193,22 +189,6 @@ export function ChatInput({
             </Dialog>
 
             <div className="h-5 w-px bg-border mx-1" />
-
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  variant={useSimple ? "default" : "ghost"}
-                  size="sm"
-                  className={`h-8 px-3 ${useSimple ? "" : "text-muted-foreground hover:text-foreground"}`}
-                  onClick={onToggleSimple}
-                >
-                  <Zap className="h-4 w-4" />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent side="top">
-                <p>{useSimple ? "Simple agent (on)" : "Simple agent (off)"}</p>
-              </TooltipContent>
-            </Tooltip>
 
             <Tooltip>
               <TooltipTrigger asChild>

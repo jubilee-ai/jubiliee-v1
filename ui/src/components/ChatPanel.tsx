@@ -24,7 +24,7 @@ interface ChatPanelProps {
   isRunning: boolean
   onSendMessage: (content: string) => void
   onConfirmation: (action: ConfirmationAction, comment?: string) => void
-  onStartAgent: (goal: string, datasets?: string[], modelPreference?: string, simple?: boolean, hitl?: boolean) => void
+  onStartAgent: (goal: string, datasets?: string[], modelPreference?: string, hitl?: boolean) => void
   datasets?: ApiDataset[]
   modelTypes?: ModelType[]
   highlightedMessageId?: string | null
@@ -67,7 +67,6 @@ export const ChatPanel = forwardRef<ChatPanelRef, ChatPanelProps>(function ChatP
   const [selectedStepId, setSelectedStepId] = useState<string | null>(null)
   const [selectedDatasets, setSelectedDatasets] = useState<string[]>([])
   const [selectedModel, setSelectedModel] = useState<string | null>(null)
-  const [useSimple, setUseSimple] = useState(false)
   const [useHitl, setUseHitl] = useState(true)
   
   // Refs
@@ -161,16 +160,17 @@ export const ChatPanel = forwardRef<ChatPanelRef, ChatPanelProps>(function ChatP
     const text = draft.trim()
     if (!text) return
 
-    // Check if this is starting a new training
-    if (messages.length === 0 || text.toLowerCase().includes("train")) {
-      onStartAgent(text, selectedDatasets.length > 0 ? selectedDatasets : undefined, selectedModel || undefined, useSimple, useHitl)
+    if (selectedDatasets.length > 0) {
+      // Datasets attached → start the training pipeline (full step-by-step events)
+      onStartAgent(text, selectedDatasets, selectedModel || undefined, useHitl)
       setSelectedDatasets([])
       setSelectedModel(null)
     } else {
+      // No datasets → route to the orchestrator chat agent
       onSendMessage(text)
     }
     setDraft("")
-  }, [draft, messages.length, onStartAgent, onSendMessage, selectedDatasets, selectedModel, useSimple, useHitl])
+  }, [draft, onStartAgent, onSendMessage, selectedDatasets, selectedModel, useHitl])
 
   // Handle dataset selection
   const handleDatasetSelect = useCallback((dataset: Dataset) => {
@@ -264,7 +264,7 @@ export const ChatPanel = forwardRef<ChatPanelRef, ChatPanelProps>(function ChatP
         onDraftChange={setDraft}
         onSend={handleSend}
         isDisabled={isRunning && !confirmationRequest}
-        placeholder={messages.length === 0 ? "Describe what you want to train..." : "Send a message..."}
+        placeholder={messages.length === 0 ? "Ask a question or attach a dataset to train..." : "Send a message..."}
         selectedDatasets={selectedDatasets}
         onDatasetSelect={handleDatasetSelect}
         onDatasetRemove={handleDatasetRemove}
@@ -273,8 +273,6 @@ export const ChatPanel = forwardRef<ChatPanelRef, ChatPanelProps>(function ChatP
         onModelRemove={() => setSelectedModel(null)}
         availableDatasets={availableDatasets}
         availableModels={availableModels}
-        useSimple={useSimple}
-        onToggleSimple={() => setUseSimple(v => !v)}
         useHitl={useHitl}
         onToggleHitl={() => setUseHitl(v => !v)}
       />

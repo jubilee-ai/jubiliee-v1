@@ -23,7 +23,7 @@ export default function App() {
     isRunning: realAgent.isRunning,
     currentStepId: realAgent.steps.find(s => s.status === "running" || s.status === "awaiting_confirmation")?.id || null,
     confirmationRequest: realAgent.confirmationRequest,
-    startAgent: realAgent.startAgent as (goal: string, datasets?: string[], modelPreference?: string, simple?: boolean, hitl?: boolean) => Promise<void>,
+    startAgent: realAgent.startAgent as (goal: string, datasets?: string[], modelPreference?: string, hitl?: boolean) => Promise<void>,
     handleConfirmation: realAgent.handleConfirmation,
     sendMessage: realAgent.sendMessage,
     reset: realAgent.reset,
