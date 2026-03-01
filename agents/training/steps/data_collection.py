@@ -26,6 +26,31 @@ from utils import get_registered_dataset
 if TYPE_CHECKING:
     from ..core.state import TrainingAgentState
 
+_MIN_ROWS = 10
+_MIN_COLUMNS = 2
+
+
+def _validate_collected_dataset(ref: str) -> list[str]:
+    """Validate a collected dataset meets minimum requirements for training.
+
+    Returns a list of issue strings (empty = passed).
+    """
+    df = get_registered_dataset(ref)
+    if df is None:
+        return [f"Dataset '{ref}' not found in registry"]
+    issues: list[str] = []
+    if len(df) < _MIN_ROWS:
+        issues.append(f"Too few rows: {len(df)} (minimum {_MIN_ROWS})")
+    if len(df.columns) < _MIN_COLUMNS:
+        issues.append(f"Too few columns: {len(df.columns)} (minimum {_MIN_COLUMNS})")
+    if df.shape[0] > 0 and df.isna().all(axis=0).any():
+        all_null = [c for c in df.columns if df[c].isna().all()]
+        issues.append(f"Entirely null columns: {all_null}")
+    if len(df) > 0 and len(df.drop_duplicates()) == 1:
+        issues.append("All rows are identical")
+    return issues
+
+
 # TODO: Potentially turn this into a subagent --> for example when merging datastes
 def data_collection(state: "TrainingAgentState") -> "TrainingAgentState":
     """
@@ -64,7 +89,12 @@ def data_collection(state: "TrainingAgentState") -> "TrainingAgentState":
         for ref in linked_datasets:
             df = get_registered_dataset(ref)
             if df is not None:
-                # Found a pre-registered dataset - use it directly
+                # Validate before accepting
+                validation_issues = _validate_collected_dataset(ref)
+                if validation_issues:
+                    print(f"[data_collection] Linked dataset '{ref}' failed validation: {validation_issues}")
+                    continue
+
                 audit_trace = list(state.get("audit_trace", []))
                 explanations = list(state.get("explanations", []))
                 
@@ -164,9 +194,23 @@ def data_collection(state: "TrainingAgentState") -> "TrainingAgentState":
         })
         error = error_msg
     
+    # Validate the collected dataset before passing downstream
+    if dataset_ref and not error:
+        validation_issues = _validate_collected_dataset(dataset_ref)
+        if validation_issues:
+            issues_str = "; ".join(validation_issues)
+            print(f"[data_collection] Retrieved dataset '{dataset_ref}' failed validation: {issues_str}")
+            audit_trace.append({
+                "step": "data_collection",
+                "action": "validation_failed",
+                "dataset_ref": dataset_ref,
+                "issues": validation_issues,
+            })
+            error = f"Dataset validation failed: {issues_str}"
+
     return {
         **state,
-        "collected_dataset_ref": dataset_ref,
+        "collected_dataset_ref": dataset_ref if not error else None,
         "audit_trace": audit_trace,
         "explanations": explanations,
         "current_step": "data_collection",

@@ -494,14 +494,23 @@ export function useRealAgent(): UseRealAgentReturn {
       }
     } else if (nodeName === "feature_engineering_executor" && summary) {
       if (summary.features_created && Array.isArray(summary.features_created)) {
-        lines.push(`Features created: ${summary.features_created.length}`)
+        const numCreated = summary.features_created.length
+        const numSpec = summary.num_spec_features
+        lines.push(`Features created: ${numCreated}`)
+        if (numSpec && numCreated !== numSpec) {
+          lines.push(`*(${numSpec} feature specs → ${numCreated} columns after one-hot encoding)*`)
+        }
         lines.push(`Names: ${summary.features_created.slice(0, 6).join(", ")}${summary.features_created.length > 6 ? "..." : ""}`)
       }
       if (summary.shapes && typeof summary.shapes === "object") {
-        const shapes = summary.shapes as Record<string, number[]>
-        if (shapes.train) lines.push(`Train shape: ${shapes.train[0]} × ${shapes.train[1]}`)
-        if (shapes.val) lines.push(`Val shape: ${shapes.val[0]} × ${shapes.val[1]}`)
-        if (shapes.test) lines.push(`Test shape: ${shapes.test[0]} × ${shapes.test[1]}`)
+        const shapes = summary.shapes as Record<string, unknown>
+        const fmtShape = (s: unknown) => {
+          if (Array.isArray(s) && s.length >= 2) return `${s[0]} × ${s[1]}`
+          return String(s || "?")
+        }
+        if (shapes.train) lines.push(`Train shape: ${fmtShape(shapes.train)}`)
+        if (shapes.val) lines.push(`Val shape: ${fmtShape(shapes.val)}`)
+        if (shapes.test) lines.push(`Test shape: ${fmtShape(shapes.test)}`)
       }
       if (summary.validation_passed !== undefined) {
         lines.push(`Validation: ${summary.validation_passed ? "✓ Passed" : "⚠ Issues found"}`)
@@ -583,7 +592,7 @@ export function useRealAgent(): UseRealAgentReturn {
       case "feature_engineering_executor": {
         const created = Array.isArray(summary.features_created) ? summary.features_created.length : 0
         const passed = summary.validation_passed
-        return created ? `${created} features, ${passed ? "passed" : "issues"}` : ""
+        return created ? `${created} features created, ${passed ? "passed" : "issues"}` : ""
       }
       case "training_approval": {
         const model = summary.model_type || ""

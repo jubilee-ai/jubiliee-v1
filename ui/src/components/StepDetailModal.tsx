@@ -674,12 +674,22 @@ function FeatureEngineeringDetail({ agentState, audit }: { agentState: TrainingA
         <div>
           <div className="text-sm font-medium mb-2">Dataset Shapes</div>
           <div className="grid grid-cols-3 gap-3">
-            {Object.entries(audit.shapes as Record<string, number[]>).map(([key, shape]) => (
-              <div key={key} className="bg-muted/30 rounded-lg p-3 text-center">
-                <div className="text-xs text-muted-foreground capitalize">{key}</div>
-                <div className="text-lg font-semibold">{Array.isArray(shape) ? `${shape[0]} × ${shape[1]}` : String(shape)}</div>
-              </div>
-            ))}
+            {Object.entries(audit.shapes as Record<string, unknown>).map(([key, shape]) => {
+              let label: string
+              if (Array.isArray(shape) && shape.length >= 2) {
+                label = `${Number(shape[0]).toLocaleString()} × ${shape[1]}`
+              } else if (shape != null) {
+                label = String(shape)
+              } else {
+                return null
+              }
+              return (
+                <div key={key} className="bg-muted/30 rounded-lg p-3 text-center">
+                  <div className="text-xs text-muted-foreground capitalize">{key}</div>
+                  <div className="text-lg font-semibold">{label}</div>
+                </div>
+              )
+            })}
           </div>
         </div>
       )}

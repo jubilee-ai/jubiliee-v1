@@ -28,10 +28,10 @@ from .cleaning_simple import run_cleaning_simple
 from .data_collection import data_collection as _data_collection_impl
 from .feature_engineering_executor import execute_feature_spec_split
 from .feature_engineering_simple import run_feature_engineering_simple
-from .label_and_split import apply_split, compute_split_indices, run_label_split_definition
+from .label_and_split import (apply_split, compute_split_indices,
+                              run_label_split_definition)
 from .select_model import select_model as _select_model_impl
 from .training import run_training_agent as _run_training
-
 
 # =============================================================================
 # HELPER FUNCTIONS
@@ -53,13 +53,69 @@ def _infer_task_type(goal: str, selected_model: str) -> str:
     goal_lower = goal.lower()
     model_lower = selected_model.lower()
     
-    if any(w in model_lower for w in ["regress", "continuous", "numeric"]):
-        return "regression"
+    if "logistic" not in model_lower:
+        if any(w in model_lower for w in ["regress", "continuous", "numeric"]):
+            return "regression"
     if any(w in goal_lower for w in ["regress", "predict value", "forecast", "amount", "price", "cost"]):
         return "regression"
     if any(w in model_lower for w in ["glm", "regression"]) and "logistic" not in model_lower:
         return "regression"
     return "classification"
+
+
+def _infer_target_column(goal: str, dataset_ref: str) -> Optional[str]:
+    """Best-effort inference of the target column from the goal text and dataset columns.
+
+    Uses three strategies in order:
+    1. Exact match — a column name appears as a standalone word in the goal.
+    2. Keyword mapping — goal contains a domain keyword that maps to common column
+       name patterns (e.g. "churn" in goal → column named "churn" / "is_churn").
+    3. Generic fallback — columns named "target", "label", "y", etc.
+
+    Returns None if no plausible target can be identified.
+    """
+    df = get_registered_dataset(dataset_ref)
+    if df is None:
+        return None
+
+    goal_lower = goal.lower()
+    goal_words = set(goal_lower.split())
+    columns_lower_map = {c.lower(): c for c in df.columns}
+
+    # Strategy 1: column name appears verbatim in the goal
+    for col_lower, col in columns_lower_map.items():
+        if len(col_lower) >= 2 and col_lower in goal_words:
+            return col
+
+    # Strategy 2: domain keyword → column name pattern mapping
+    _keyword_patterns: dict[str, list[str]] = {
+        "churn": ["churn", "churned", "is_churn", "has_churned"],
+        "default": ["default", "defaulted", "is_default", "loan_default"],
+        "fraud": ["fraud", "is_fraud", "fraudulent"],
+        "surviv": ["survived", "survival", "event"],
+        "cancel": ["cancelled", "canceled", "cancellation"],
+        "attrit": ["attrition", "attrition_flag", "attrited"],
+        "spam": ["spam", "is_spam"],
+        "click": ["clicked", "click"],
+        "conver": ["converted", "conversion"],
+        "diagnos": ["diagnosis", "diagnosed"],
+        "price": ["price", "sale_price", "selling_price"],
+        "salary": ["salary", "wage", "compensation"],
+        "revenue": ["revenue", "total_revenue"],
+        "satisf": ["satisfaction", "rating"],
+    }
+    for keyword, patterns in _keyword_patterns.items():
+        if keyword in goal_lower:
+            for pattern in patterns:
+                if pattern in columns_lower_map:
+                    return columns_lower_map[pattern]
+
+    # Strategy 3: generic target column names
+    for generic in ["target", "label", "y", "class", "outcome"]:
+        if generic in columns_lower_map:
+            return columns_lower_map[generic]
+
+    return None
 
 
 # =============================================================================
@@ -116,10 +172,24 @@ def cleaning_node(state: TrainingAgentState) -> TrainingAgentState:
         except Exception:
             max_iters = 50
 
+        # Infer target column and task type so cleaning is target-aware
+        goal = s.get("goal", "")
+        selected_model = s.get("selected_model", "")
+        target_col = _infer_target_column(goal, dataset_ref)
+        task_type = _infer_task_type(goal, selected_model) if target_col else None
+
+        if target_col:
+            print(f"[cleaning] Inferred target column: '{target_col}' (task: {task_type}) — will be protected during cleaning")
+        else:
+            print("[cleaning] Could not infer target column — cleaning will proceed without target awareness")
+
         result = run_cleaning_simple(
             dataset_ref=dataset_ref,
-            goal=_add_feedback_to_goal(s.get("goal", ""), "cleaning", feedback),
+            goal=_add_feedback_to_goal(goal, "cleaning", feedback),
             max_iterations=max_iters,
+            target_col=target_col,
+            task_type=task_type,
+            selected_model=selected_model,
         )
 
         return {
@@ -357,14 +427,19 @@ def feature_engineering_executor(state: TrainingAgentState) -> TrainingAgentStat
             }],
         }
 
+    def _fmt_shape(s):
+        if isinstance(s, (list, tuple)) and len(s) >= 2:
+            return f"{s[0]} × {s[1]}"
+        return str(s) if s else "?"
+
     def get_summary(r: TrainingAgentState) -> str:
         audit = next((t for t in r.get("audit_trace", []) if t.get("step") == "feature_engineering_executor"), {})
         shapes = audit.get("shapes", {})
         return (
             f"Features created: {len(audit.get('features_created', []))}\n"
-            f"Train shape: {shapes.get('train', '?')}\n"
-            f"Val shape: {shapes.get('val', '?')}\n"
-            f"Test shape: {shapes.get('test', '?')}\n"
+            f"Train shape: {_fmt_shape(shapes.get('train'))}\n"
+            f"Val shape: {_fmt_shape(shapes.get('val'))}\n"
+            f"Test shape: {_fmt_shape(shapes.get('test'))}\n"
             f"Errors: {len(audit.get('errors', []))}"
         )
 
@@ -440,7 +515,7 @@ Be specific with hyperparameter values. Consider:
 - Model type - choose appropriate hyperparameters for {selected_model}
 """
 
-        response = init_chat_model("openai:gpt-4o-mini").invoke([{"role": "user", "content": prompt}])
+        response = init_chat_model("openai:gpt-5.1").invoke([{"role": "user", "content": prompt}])
 
         # Parse JSON from response
         try:
