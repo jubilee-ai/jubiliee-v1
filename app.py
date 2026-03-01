@@ -156,15 +156,27 @@ app.add_middleware(
 
 def serialize_state(state: TrainingAgentState) -> dict:
     """Convert TrainingAgentState to JSON-serializable dict"""
-    # The state is already a TypedDict, so we can convert directly
-    # but we need to handle any non-serializable types
+    import math
+    import numpy as np
+
     def make_serializable(obj):
-        if isinstance(obj, dict):
-            return {k: make_serializable(v) for k, v in obj.items()}
-        elif isinstance(obj, list):
-            return [make_serializable(item) for item in obj]
-        elif isinstance(obj, (str, int, float, bool, type(None))):
+        if obj is None:
+            return None
+        elif isinstance(obj, (np.bool_, np.integer)):
+            return int(obj)
+        elif isinstance(obj, np.floating):
+            v = float(obj)
+            return None if (math.isnan(v) or math.isinf(v)) else v
+        elif isinstance(obj, np.ndarray):
+            return [make_serializable(x) for x in obj.tolist()]
+        elif isinstance(obj, float):
+            return None if (math.isnan(obj) or math.isinf(obj)) else obj
+        elif isinstance(obj, (str, int, bool)):
             return obj
+        elif isinstance(obj, dict):
+            return {k: make_serializable(v) for k, v in obj.items()}
+        elif isinstance(obj, (list, tuple)):
+            return [make_serializable(item) for item in obj]
         else:
             return str(obj)
     

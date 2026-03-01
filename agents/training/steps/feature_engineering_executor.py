@@ -382,7 +382,7 @@ def execute_feature_spec(
         "transformed_dataset_ref": output_ref,
         "features_created": features_created,
         "errors": errors,
-        "shape": df_final.shape,
+        "shape": list(df_final.shape),
         "temporal_constraints_applied": temporal_constraints_applied,
     }
 
@@ -661,9 +661,9 @@ def execute_feature_spec_split(
         "features_created": features_created,
         "errors": errors,
         "shapes": {
-            "train": train_df_final.shape,
-            "val": val_df_final.shape if val_df is not None else None,
-            "test": test_df_final.shape if test_df is not None else None,
+            "train": list(train_df_final.shape),
+            "val": list(val_df_final.shape) if val_df is not None else None,
+            "test": list(test_df_final.shape) if test_df is not None else None,
         },
         "temporal_constraints_applied": temporal_constraints_applied,
     }

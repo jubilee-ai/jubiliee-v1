@@ -167,14 +167,21 @@ def build_node_update(node_name: str, node_output: dict[str, Any]) -> dict[str, 
         audit = _get_audit_entry(node_output, "feature_engineering_executor")
         shapes = audit.get("shapes", {})
         created = audit.get("features_created", [])
+        fs = _get_or_empty(node_output, "feature_spec")
+        spec_features = fs.get("features", [])
         update["summary"] = {
             "train_ref": node_output.get("transformed_train_ref"), "val_ref": node_output.get("transformed_val_ref"),
             "test_ref": node_output.get("transformed_test_ref"), "validation_passed": node_output.get("feature_validation_passed"),
             "features_created": created, "shapes": shapes,
+            "num_spec_features": len(spec_features),
         }
+        description = f"Created {len(created)} features"
+        if len(created) != len(spec_features):
+            description += f" from {len(spec_features)} specifications (one-hot encoding expands categorical features)"
+        description += "."
         update["details"] = {
-            "title": "Feature Engineering Complete", "description": f"Created {len(created)} features.",
-            "features_created": created,
+            "title": "Feature Engineering Complete", "description": description,
+            "features_created": created, "num_spec_features": len(spec_features),
             "dataset_shapes": {"train": _format_shape(shapes, "train"), "validation": _format_shape(shapes, "val"), "test": _format_shape(shapes, "test")},
             "errors": audit.get("errors", []),
         }

@@ -32,6 +32,7 @@ from .steps.feature_engineering_executor import execute_feature_spec_split
 from .steps.feature_engineering_simple import run_feature_engineering_simple
 from .steps.label_and_split import (apply_split, compute_split_indices,
                                     run_label_split_definition)
+from .steps.orchestrator import _infer_target_column
 from .steps.select_model import select_model as _select_model_impl
 from .steps.training import run_training_agent as _run_training
 
@@ -45,8 +46,8 @@ You are an ML pipeline agent. Execute the pipeline steps to train the best model
 4. After each tool returns, briefly note the result, then call the next tool.
 
 ## First Pass — Execute in THIS EXACT ORDER
-1. data_collection — Load the dataset
-2. select_model — Choose the model type based on the goal
+1. data_collection — Retrieve the dataset(s) and load it
+2. select_model — Choose the model type based on the goal (you can execute this at any step if it makes sense)
 3. cleaning — Clean and standardize the data
 4. label_split_definition — Define target column and train/val/test splits
 5. feature_selection_specification — Analyze data and specify features
@@ -71,8 +72,9 @@ Summarize the final results.
 def _infer_task_type(goal: str, selected_model: str) -> str:
     goal_lower = goal.lower()
     model_lower = selected_model.lower()
-    if any(w in model_lower for w in ["regress", "continuous", "numeric"]):
-        return "regression"
+    if "logistic" not in model_lower:
+        if any(w in model_lower for w in ["regress", "continuous", "numeric"]):
+            return "regression"
     if any(w in goal_lower for w in ["regress", "predict value", "forecast", "amount", "price", "cost"]):
         return "regression"
     if any(w in model_lower for w in ["glm", "regression"]) and "logistic" not in model_lower:
@@ -261,10 +263,17 @@ def create_simple_training_agent(
         if redo_fb:
             cleaning_goal += f"\n\nIMPORTANT user feedback on previous cleaning: {redo_fb}"
 
+        sel_model = state.get("selected_model", "")
+        target_col = _infer_target_column(cleaning_goal, dataset_ref)
+        task_type = _infer_task_type(cleaning_goal, sel_model) if target_col else None
+
         result = run_cleaning_simple(
             dataset_ref=dataset_ref,
             goal=cleaning_goal,
             max_iterations=max_iters,
+            target_col=target_col,
+            task_type=task_type,
+            selected_model=sel_model,
         )
         state["cleaned_dataset_ref"] = result["cleaned_ref"]
         state["cleaning_summary"] = result.get("cleaning_summary")
@@ -479,11 +488,19 @@ def create_simple_training_agent(
         if passed:
             _completed_steps.add("feature_engineering_executor")
         status = "PASSED" if passed else "FAILED"
+
+        def _fmt_shape(s):
+            if isinstance(s, (list, tuple)) and len(s) >= 2:
+                return f"{s[0]} × {s[1]}"
+            return str(s) if s else "?"
+
         summary = (
             f"Validation: {status}\n"
             f"Features created: {len(features_created)}\n"
             f"Errors: {len(errors)}\n"
-            f"Train shape: {shapes.get('train', '?')} | Val: {shapes.get('val', '?')} | Test: {shapes.get('test', '?')}"
+            f"Train shape: {_fmt_shape(shapes.get('train'))} | "
+            f"Val: {_fmt_shape(shapes.get('val'))} | "
+            f"Test: {_fmt_shape(shapes.get('test'))}"
         )
         if not passed:
             summary += "\n\nFeature engineering had issues. Consider going back to feature_selection_specification."
