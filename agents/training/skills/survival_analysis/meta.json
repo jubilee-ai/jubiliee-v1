@@ -1,0 +1,17 @@
+{
+  "name": "survival_analysis",
+  "label": "Survival Analysis",
+  "task_types": ["survival"],
+  "brief": "Time-to-event models with censoring support. Cox PH, Weibull AFT, Log-Normal AFT. For policy lapse, claim timing, mortality, and customer lifetime value.",
+  "aliases": ["survival analysis", "survival_analysis", "cox"],
+  "when_to_use": [
+    "Time-to-event prediction (churn, default, failure)",
+    "When data has censoring (incomplete observations)",
+    "Customer lifetime value modeling",
+    "Policy lapse prediction"
+  ],
+  "when_not_to_use": [
+    "Standard classification without time component",
+    "When there's no natural event/censoring structure"
+  ]
+}

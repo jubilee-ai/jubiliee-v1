@@ -1,0 +1,21 @@
+{
+  "name": "naive_bayes",
+  "label": "Naive Bayes",
+  "task_types": ["classification"],
+  "brief": "Fast probabilistic classifier. Good baseline for small datasets, text-like features, and when training speed matters. Supports Gaussian, Multinomial, and Complement variants.",
+  "aliases": ["naive bayes", "naivebayes", "naive_bayes", "nb"],
+  "when_to_use": [
+    "Fast baseline classifier before trying complex models",
+    "Small datasets where other models may overfit",
+    "Text or document classification tasks",
+    "High-dimensional feature spaces",
+    "When training speed is critical (extremely fast to train)",
+    "Imbalanced datasets (complement variant)"
+  ],
+  "when_not_to_use": [
+    "Regression tasks with continuous targets",
+    "When features have strong correlations or dependencies",
+    "Complex non-linear decision boundaries",
+    "When well-calibrated probability estimates are required"
+  ]
+}

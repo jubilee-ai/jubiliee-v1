@@ -1,0 +1,17 @@
+{
+  "name": "glm",
+  "label": "Generalized Linear Model",
+  "task_types": ["regression"],
+  "brief": "GLM for insurance pricing and actuarial modeling. Supports Poisson (claim frequency), Gamma (severity), and Tweedie (pure premium) distributions.",
+  "aliases": ["glm", "generalized linear model"],
+  "when_to_use": [
+    "Modeling non-normal response variables (counts, binary, proportions)",
+    "When interpretability is important",
+    "Poisson regression for count data",
+    "Gamma regression for positive continuous data"
+  ],
+  "when_not_to_use": [
+    "Complex non-linear relationships",
+    "High-dimensional feature spaces"
+  ]
+}

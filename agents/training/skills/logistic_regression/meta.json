@@ -1,0 +1,17 @@
+{
+  "name": "logistic_regression",
+  "label": "Logistic Regression",
+  "task_types": ["classification"],
+  "brief": "Linear classifier with interpretable coefficients. Strong baseline for binary/multiclass classification, underwriting, and governed decisioning.",
+  "aliases": ["logistic regression", "logistic_regression", "logreg"],
+  "when_to_use": [
+    "Binary classification (yes/no, default/no-default)",
+    "When you need interpretable feature weights",
+    "Baseline model for classification",
+    "Regulatory environments requiring explainability"
+  ],
+  "when_not_to_use": [
+    "Non-linear decision boundaries",
+    "Regression tasks with continuous targets"
+  ]
+}

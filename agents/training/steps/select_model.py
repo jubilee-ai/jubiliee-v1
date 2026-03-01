@@ -1,164 +1,67 @@
 """
 Step 1: Model Selection Node
 Selects the appropriate ML model based on the user's goal.
+
+All model metadata is loaded dynamically from the skill registry —
+no hard-coded model lists. Adding a new skill directory automatically
+makes it available for selection.
 """
 
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING
 
 from dotenv import load_dotenv
 from langchain.chat_models import init_chat_model
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 # Load environment variables
 # Path: steps -> training -> agents -> root
 load_dotenv(Path(__file__).parent.parent.parent.parent / ".env")
+
+from ..skill_registry import (
+    build_alias_map,
+    get_all_skill_names,
+    get_all_skills_for_selection,
+)
 
 if TYPE_CHECKING:
     from ..core.state import TrainingAgentState
 
 
 # =============================================================================
-# AVAILABLE TRAINING MODELS
+# DYNAMIC MODEL HELPERS (driven by skill metadata)
 # =============================================================================
-
-TRAINING_MODELS = {
-    "glm": {
-        "name": "glm",
-        "description": "Generalized Linear Model - flexible regression for various response distributions",
-        "when_to_use": [
-            "Modeling non-normal response variables (counts, binary, proportions)",
-            "When interpretability is important",
-            "Poisson regression for count data",
-            "Gamma regression for positive continuous data",
-        ],
-        "when_not_to_use": [
-            "Complex non-linear relationships",
-            "High-dimensional feature spaces",
-        ],
-    },
-    "naive_bayes": {
-        "name": "naive_bayes",
-        "description": "Naive Bayes - fast probabilistic classifier based on Bayes' theorem with feature independence assumption",
-        "when_to_use": [
-            "Fast baseline classifier before trying complex models",
-            "Small datasets where other models may overfit",
-            "Text or document classification tasks",
-            "High-dimensional feature spaces",
-            "When training speed is critical (extremely fast to train)",
-            "Imbalanced datasets (complement variant)",
-        ],
-        "when_not_to_use": [
-            "Regression tasks with continuous targets",
-            "When features have strong correlations or dependencies",
-            "Complex non-linear decision boundaries",
-            "When well-calibrated probability estimates are required",
-        ],
-    },
-    "logistic_regression": {
-        "name": "logistic_regression",
-        "description": "Logistic Regression - binary/multiclass classification with interpretable coefficients",
-        "when_to_use": [
-            "Binary classification (yes/no, default/no-default)",
-            "When you need interpretable feature weights",
-            "Baseline model for classification",
-            "Regulatory environments requiring explainability",
-        ],
-        "when_not_to_use": [
-            "Non-linear decision boundaries",
-            "Regression tasks with continuous targets",
-        ],
-    },
-    "random_forest": {
-        "name": "random_forest",
-        "description": "Random Forest - ensemble of decision trees for robust predictions",
-        "when_to_use": [
-            "Both classification and regression tasks",
-            "Handling missing values and outliers",
-            "Feature importance ranking",
-            "When accuracy matters more than interpretability",
-        ],
-        "when_not_to_use": [
-            "Very high-dimensional sparse data",
-            "Real-time inference with strict latency requirements",
-        ],
-    },
-    "survival_analysis": {
-        "name": "survival_analysis",
-        "description": "Survival Analysis - time-to-event modeling with censoring support",
-        "when_to_use": [
-            "Time-to-event prediction (churn, default, failure)",
-            "When data has censoring (incomplete observations)",
-            "Customer lifetime value modeling",
-            "Policy lapse prediction",
-        ],
-        "when_not_to_use": [
-            "Standard classification without time component",
-            "When there's no natural event/censoring structure",
-        ],
-    },
-    "xgboost": {
-        "name": "xgboost",
-        "description": "XGBoost - gradient boosted trees for high-performance predictions",
-        "when_to_use": [
-            "Structured/tabular data with complex patterns",
-            "When maximum predictive accuracy is needed",
-            "Competitions and benchmarking",
-            "Large datasets with many features",
-        ],
-        "when_not_to_use": [
-            "Small datasets (may overfit)",
-            "When full interpretability is required",
-        ],
-    },
-}
 
 
 def format_training_models_for_prompt() -> str:
-    """Format training models for LLM selection prompt."""
-    lines = []
-    for model in TRAINING_MODELS.values():
-        lines.append(f"**{model['name']}**")
-        lines.append(f"Description: {model['description']}")
-        lines.append(f"When to use: {', '.join(model['when_to_use'])}")
-        lines.append(f"When NOT to use: {', '.join(model['when_not_to_use'])}")
+    """Format all discovered skills into a prompt-friendly string."""
+    skills = get_all_skills_for_selection()
+    lines: list[str] = []
+    for meta in skills.values():
+        lines.append(f"**{meta['name']}**")
+        lines.append(f"Description: {meta.get('brief', '')}")
+        when = meta.get("when_to_use", [])
+        not_when = meta.get("when_not_to_use", [])
+        if when:
+            lines.append(f"When to use: {', '.join(when)}")
+        if not_when:
+            lines.append(f"When NOT to use: {', '.join(not_when)}")
         lines.append("")
     return "\n".join(lines)
-
-
-# Maps user-friendly aliases to canonical model keys in TRAINING_MODELS.
-_MODEL_ALIASES: dict[str, str] = {
-    "naive bayes": "naive_bayes",
-    "naivebayes": "naive_bayes",
-    "nb": "naive_bayes",
-    "naive_bayes": "naive_bayes",
-    "logistic regression": "logistic_regression",
-    "logistic_regression": "logistic_regression",
-    "logreg": "logistic_regression",
-    "random forest": "random_forest",
-    "random_forest": "random_forest",
-    "rf": "random_forest",
-    "xgboost": "xgboost",
-    "xgb": "xgboost",
-    "glm": "glm",
-    "generalized linear model": "glm",
-    "survival analysis": "survival_analysis",
-    "survival_analysis": "survival_analysis",
-    "cox": "survival_analysis",
-}
 
 
 def _extract_model_from_goal(goal: str) -> str | None:
     """Detect an explicit model request in the user's goal text.
 
-    Returns the canonical model key if found, otherwise None.
+    Returns the canonical skill name if found, otherwise None.
     Longer alias strings are checked first to avoid partial matches
     (e.g. "naive bayes" before "nb").
     """
+    alias_map = build_alias_map()
     goal_lower = goal.lower()
-    for alias in sorted(_MODEL_ALIASES, key=len, reverse=True):
+    for alias in sorted(alias_map, key=len, reverse=True):
         if alias in goal_lower:
-            return _MODEL_ALIASES[alias]
+            return alias_map[alias]
     return None
 
 
@@ -169,21 +72,30 @@ def _extract_model_from_goal(goal: str) -> str | None:
 
 class ModelSelectionOutput(BaseModel):
     """Structured output for model selection."""
-    # TODO: Add more models
-    # TODO: Add clarification
-    selected_model: Literal["glm", "logistic_regression", "naive_bayes", "random_forest", "survival_analysis", "xgboost"] = Field(
+
+    selected_model: str = Field(
         description="The selected model type for training"
     )
     explanation: str = Field(
         description="Explanation of why this model was selected based on the goal"
     )
-    confidence: Literal["high", "medium", "low"] = Field(
-        description="Confidence level in the model selection"
+    confidence: str = Field(
+        description="Confidence level in the model selection: high, medium, or low"
     )
     alternative_models: list[str] = Field(
         default_factory=list,
         description="Alternative models that could also work for this goal"
     )
+
+    @field_validator("selected_model")
+    @classmethod
+    def must_be_known_skill(cls, v: str) -> str:
+        known = get_all_skill_names()
+        if v not in known:
+            raise ValueError(
+                f"Unknown model '{v}'. Must be one of: {sorted(known)}"
+            )
+        return v
 
 
 # =============================================================================
@@ -206,6 +118,7 @@ MODEL_SELECTION_PROMPT = """You are an ML model selection expert. Based on the u
 2. Otherwise, analyze the goal to understand what kind of prediction/modeling is needed and select the most appropriate model.
 3. Explain your reasoning.
 4. List any alternative models that could also work.
+5. The selected_model value MUST be one of these exact names: {model_names}
 """
 
 
@@ -222,25 +135,26 @@ def select_model(state: "TrainingAgentState") -> "TrainingAgentState":
     - Return an explanation if not given
     - User can comment and regenerate (3 total regens)
     """
+    skills = get_all_skills_for_selection()
+
     # Resolve explicit preference: state field first, then parse goal text.
     explicit_pref = state.get("user_model_preference") or _extract_model_from_goal(state.get("goal", ""))
 
     if explicit_pref:
         model_name = explicit_pref
 
-        # Validate the model exists
-        if model_name not in TRAINING_MODELS:
+        if model_name not in skills:
             return {
                 **state,
-                "error": f"Unknown model: {model_name}. Available: {list(TRAINING_MODELS.keys())}",
+                "error": f"Unknown model: {model_name}. Available: {sorted(skills.keys())}",
                 "current_step": "select_model",
             }
-        
-        model_info = TRAINING_MODELS[model_name]
+
+        model_info = skills[model_name]
         return {
             **state,
             "selected_model": model_name,
-            "model_explanation": f"User specified {model_name}: {model_info['description']}",
+            "model_explanation": f"User specified {model_name}: {model_info.get('brief', '')}",
             "audit_trace": [
                 *state.get("audit_trace", []),
                 {
@@ -255,11 +169,11 @@ def select_model(state: "TrainingAgentState") -> "TrainingAgentState":
             ],
             "current_step": "select_model",
         }
-    
+
     # Use LLM to select model based on goal
     llm = init_chat_model(model="gpt-5.1", temperature=0)
     structured_llm = llm.with_structured_output(ModelSelectionOutput)
-    
+
     redo_hint = state.get("_select_model_redo_hint", "")
     redo_section = ""
     if redo_hint:
@@ -274,10 +188,11 @@ def select_model(state: "TrainingAgentState") -> "TrainingAgentState":
         models=format_training_models_for_prompt(),
         goal=state.get("goal", ""),
         redo_section=redo_section,
+        model_names=", ".join(sorted(skills.keys())),
     )
-    
+
     result: ModelSelectionOutput = structured_llm.invoke(prompt)
-    
+
     return {
         **state,
         "selected_model": result.selected_model,

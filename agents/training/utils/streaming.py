@@ -10,8 +10,12 @@ from typing import Any, Generator
 
 from langgraph.types import Command
 
-from ..core.graph import create_training_agent
 from ..core.state import STEP_ORDER, TrainingAgentState, create_initial_state
+
+
+def _get_training_agent():
+    from ..core.graph import create_training_agent
+    return create_training_agent()
 
 # Configure logger
 logger = logging.getLogger(__name__)
@@ -293,7 +297,7 @@ def stream_training_agent(
     thread_id = thread_id or _gen_thread_id()
     try:
         yield from _stream_values(
-            create_training_agent(),
+            _get_training_agent(),
             create_initial_state(goal, linked_datasets, user_model_preference),
             {"configurable": {"thread_id": thread_id}},
             thread_id,
@@ -313,7 +317,7 @@ def stream_resume_training_agent(
     """Resume streaming the training agent after an interrupt (values mode)."""
     try:
         yield from _stream_values(
-            create_training_agent(),
+            _get_training_agent(),
             Command(resume=decision),
             {"configurable": {"thread_id": thread_id}},
             thread_id,
@@ -339,7 +343,7 @@ def stream_training_agent_with_updates(
     
     try:
         yield from _stream_updates(
-            create_training_agent(),
+            _get_training_agent(),
             create_initial_state(goal, linked_datasets, user_model_preference),
             {"configurable": {"thread_id": thread_id}},
             thread_id,
@@ -360,7 +364,7 @@ def stream_resume_training_agent_with_updates(
     """Resume streaming the training agent after an interrupt (updates mode)."""
     try:
         yield from _stream_updates(
-            create_training_agent(),
+            _get_training_agent(),
             Command(resume=decision),
             {"configurable": {"thread_id": thread_id}},
             thread_id,

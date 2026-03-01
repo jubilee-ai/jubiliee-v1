@@ -35,6 +35,7 @@ def make_serializable(obj: Any) -> Any:
     elif isinstance(obj, (str, int, float, bool)):
         return obj
     else:
+        # Try to convert to string as last resort
         try:
             return str(obj)
         except Exception:
@@ -42,7 +43,7 @@ def make_serializable(obj: Any) -> Any:
 
 
 # =============================================================================
-# DECISION PARSING
+# DECISION PARSING (extracted from duplication)
 # =============================================================================
 
 
@@ -62,6 +63,7 @@ def parse_decision(decision: Any) -> tuple[bool, Optional[str]]:
     if isinstance(decision, bool):
         return decision, None
     elif isinstance(decision, str):
+        # String response - "yes"/"y" means approved, anything else is feedback
         if decision.lower() in ["yes", "y", "ok", "approve", "approved", "continue"]:
             return True, None
         else:
@@ -71,6 +73,7 @@ def parse_decision(decision: Any) -> tuple[bool, Optional[str]]:
         feedback = decision.get("feedback")
         return approved, feedback
     else:
+        # Default to approved if unclear
         return True, None
 
 
@@ -82,7 +85,16 @@ def parse_decision(decision: Any) -> tuple[bool, Optional[str]]:
 def extract_state_snapshot(
     state: dict[str, Any], keys: Optional[list[str]] = None
 ) -> dict[str, Any]:
-    """Extract a serializable snapshot from state with only key fields."""
+    """
+    Extract a serializable snapshot from state with only key fields.
+
+    Args:
+        state: Full state dict
+        keys: Optional list of keys to extract. Defaults to STATE_SNAPSHOT_KEYS.
+
+    Returns:
+        Dict with only the specified keys that exist in state
+    """
     if keys is None:
         keys = STATE_SNAPSHOT_KEYS
 
@@ -106,20 +118,36 @@ def run_with_hitl(
     After the work completes, pauses for human review. User can:
     - Approve: continue to next node
     - Reject with feedback: re-run the node with the feedback
+
+    Args:
+        node_name: Name of the node (for display)
+        state: Current agent state
+        work_fn: Function that takes (state, feedback) and returns updated state
+        get_summary_fn: Optional function to create human-readable summary from result
+
+    Returns:
+        Updated state after human approval
     """
     feedback = None
 
     while True:
+        # Run the actual work (passing feedback if this is a redo)
         result = work_fn(state, feedback)
+
+        # Sanitize the entire result to ensure all values are serializable
+        # This is critical for LangGraph's checkpointer (msgpack)
         result = {k: make_serializable(v) for k, v in result.items()}
 
+        # Create summary for human review
         if get_summary_fn:
             summary = get_summary_fn(result)
         else:
             summary = f"Node '{node_name}' completed successfully."
 
+        # Build state snapshot with only key fields
         state_snapshot = extract_state_snapshot(result)
 
+        # Interrupt for human review
         decision = interrupt(
             {
                 "node": node_name,
@@ -129,10 +157,12 @@ def run_with_hitl(
             }
         )
 
+        # Parse the decision using shared helper
         approved, new_feedback = parse_decision(decision)
 
         if approved:
             return result
         else:
+            # User rejected - loop will redo with feedback
             feedback = new_feedback if new_feedback else "Please redo this step."
             print(f"[HITL] Node '{node_name}' rejected. Feedback: {feedback}")

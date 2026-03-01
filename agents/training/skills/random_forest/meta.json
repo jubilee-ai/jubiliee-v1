@@ -1,0 +1,17 @@
+{
+  "name": "random_forest",
+  "label": "Random Forest",
+  "task_types": ["classification", "regression"],
+  "brief": "Ensemble of decision trees. Captures non-linearities and interactions with minimal feature engineering. Good for fraud detection, risk scoring.",
+  "aliases": ["random forest", "random_forest", "rf"],
+  "when_to_use": [
+    "Both classification and regression tasks",
+    "Handling missing values and outliers",
+    "Feature importance ranking",
+    "When accuracy matters more than interpretability"
+  ],
+  "when_not_to_use": [
+    "Very high-dimensional sparse data",
+    "Real-time inference with strict latency requirements"
+  ]
+}

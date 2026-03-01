@@ -1,13 +1,10 @@
 """
 Training Agent - Step 7 of the ML Training Pipeline.
 
-Uses LangChain's create_agent to orchestrate model training with:
-- Train on training set
-- Evaluate on validation set
-- LLM decides to iterate or proceed to testing
-- Final evaluation on test set
-
-Tools: logistic_regression, random_forest, xgboost, glm, survival_analysis, model_storage
+Uses a standard LangChain agent with skill docs injected into the context:
+- Selected skill's SKILL.md is loaded once and embedded in the prompt
+- Alternative skills can be loaded on-demand via get_skill_prompt tool
+- Training executed via train_with_skill tool
 """
 
 import json
@@ -22,6 +19,7 @@ from langchain.agents import create_agent
 from langchain.agents.structured_output import ToolStrategy
 from langchain.chat_models import init_chat_model
 from langchain_core.tools import tool
+from langgraph.checkpoint.memory import MemorySaver
 from pydantic import BaseModel, Field
 
 from ..utils.prompts import TRAINING_SYSTEM_PROMPT
@@ -36,17 +34,14 @@ _DATA_TOOLS_DIR = Path(__file__).parent.parent.parent.parent / "tools" / "data-t
 if str(_DATA_TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(_DATA_TOOLS_DIR))
 
-from glm import sklearn_glm_tool
-from logistic_regression import sklearn_logistic_regression_tool
 from model_storage import (delete_model, evaluate_model_tool,
-                           get_model_info_tool, list_models, load_model,
-                           list_trained_models_tool, predict_with_model_tool)
-from naive_bayes import sklearn_naive_bayes_tool
-from random_forest import sklearn_random_forest_tool
-from survival_analysis import survival_analysis_tool
+                           get_model_info_tool, list_models,
+                           list_trained_models_tool, load_model,
+                           predict_with_model_tool)
 from utils import get_registered_dataset
-from xgboost_model import xgboost_train_tool
 
+from ..skill_registry import (_load_skill_prompt, get_available_models_for_task,
+                              get_skill_prompt_tool, train_with_skill_tool)
 
 # =============================================================================
 # FEATURE ENGINEERING REDO TOOL
@@ -133,32 +128,14 @@ def request_feature_engineering_redo_tool(
 # =============================================================================
 
 TRAINING_TOOLS = [
-    sklearn_logistic_regression_tool,
-    sklearn_random_forest_tool,
-    xgboost_train_tool,
-    sklearn_glm_tool,
-    sklearn_naive_bayes_tool,
-    survival_analysis_tool,
+    train_with_skill_tool,
+    get_skill_prompt_tool,
     list_trained_models_tool,
     predict_with_model_tool,
     get_model_info_tool,
     evaluate_model_tool,
     request_feature_engineering_redo_tool,
 ]
-
-_AVAILABLE_MODELS: dict[str, list[dict[str, str]]] = {
-    "classification": [
-        {"tool": "sklearn_logistic_regression", "label": "Logistic Regression"},
-        {"tool": "sklearn_random_forest", "label": "Random Forest"},
-        {"tool": "xgboost_train", "label": "XGBoost"},
-        {"tool": "sklearn_naive_bayes", "label": "Naive Bayes"},
-    ],
-    "regression": [
-        {"tool": "sklearn_random_forest", "label": "Random Forest"},
-        {"tool": "xgboost_train", "label": "XGBoost"},
-        {"tool": "sklearn_glm", "label": "GLM"},
-    ],
-}
 
 
 # =============================================================================
@@ -366,7 +343,8 @@ def _evaluate_model_on_test(
             y_true = _maybe_discretize_target(y_true, model_name)
 
         if task_type == "regression":
-            from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+            from sklearn.metrics import (mean_absolute_error,
+                                         mean_squared_error, r2_score)
             y_pred = model.predict(X)
             result["test_r2"] = float(r2_score(y_true, y_pred))
             result["test_rmse"] = float(np.sqrt(mean_squared_error(y_true, y_pred)))
@@ -469,7 +447,7 @@ def run_training_agent(
         raise ValueError(f"Test dataset not found: {test_ref}")
 
     task_type = _get_task_type(selected_model, goal)
-    available_models = _AVAILABLE_MODELS[task_type]
+    available_skills = get_available_models_for_task(task_type)
 
     if not model_name:
         model_name = f"{selected_model}_{int(time.time())}"
@@ -490,8 +468,10 @@ def run_training_agent(
     minority_ratio = min(class_counts.values()) / total if total > 0 else 0
     is_imbalanced = minority_ratio < 0.3
 
-    models_str = "\n".join(
-        f"- **{m['label']}** \u2192 tool: `{m['tool']}`" for m in available_models
+    other_skills = [s for s in available_skills if s["skill"] != selected_model]
+    other_skills_str = (
+        "\n".join(f"- `{s['skill']}` — {s['label']}" for s in other_skills)
+        if other_skills else "(none for this task type)"
     )
     imbalance_note = (
         f"\u26a0\ufe0f IMBALANCED DATA \u2014 minority class is {minority_ratio:.1%}. "
@@ -503,13 +483,27 @@ def run_training_agent(
     features_preview = feature_columns[:10]
     ellipsis = "..." if len(feature_columns) > 10 else ""
 
+    # Load the selected skill's documentation directly into context
+    try:
+        skill_docs = _load_skill_prompt(selected_model)
+    except ValueError:
+        skill_docs = f"(No SKILL.md found for '{selected_model}')"
+
     context = f"""## Goal
 {goal}
 
-## Available Models (use any, switch freely)
-{models_str}
+## Selected Model: `{selected_model}`
 
-Start with **{selected_model}**, but switch to other models whenever you think it could improve performance. Try at least 2 different model types.
+The full documentation for this skill is below. Use it to set hyperparameters.
+
+<skill_documentation>
+{skill_docs}
+</skill_documentation>
+
+## Alternative Skills (use `get_skill_prompt` to load docs before trying)
+{other_skills_str}
+
+Start with **{selected_model}**. If you want to try a different model, call `get_skill_prompt(skill_name)` first to get its parameters, then `train_with_skill`.
 
 ## Data
 - Task type: {task_type}
@@ -525,9 +519,9 @@ Start with **{selected_model}**, but switch to other models whenever you think i
 ## Instructions
 - Max iterations: {max_iterations}
 - Name models descriptively: `lr_v1`, `rf_v1`, `xgb_v1`, `rf_v2`, etc.
-- For training tools: `train_dataset_ref="{train_ref}"`, `target_column="{target_column}"`
+- For train_with_skill params: `"train_dataset_ref": "{train_ref}"`, `"target_column": "{target_column}"`
 - For evaluate_model: `dataset_ref="{val_ref}"` (validation) or `dataset_ref="{test_ref}"` (final test)
-- **Optimize aggressively** \u2014 try different models and hyperparameters to get the best validation metrics before running the final test evaluation.
+- **Optimize aggressively** — try different models and hyperparameters to get the best validation metrics before running the final test evaluation.
 
 ## Sample Data (first 3 rows)
 {sample_rows}
@@ -539,6 +533,7 @@ Start with **{selected_model}**, but switch to other models whenever you think i
         tools=TRAINING_TOOLS,
         system_prompt=TRAINING_SYSTEM_PROMPT,
         response_format=ToolStrategy(schema=TrainingResult),
+        checkpointer=MemorySaver(),
     )
 
     messages = [
@@ -551,7 +546,10 @@ Start with **{selected_model}**, but switch to other models whenever you think i
     ]
 
     try:
-        result = agent.invoke({"messages": messages})
+        result = agent.invoke(
+            {"messages": messages},
+            config={"configurable": {"thread_id": f"training_{int(time.time())}"}},
+        )
         final_messages = result.get("messages", [])
         training_result = _extract_training_result(result)
 

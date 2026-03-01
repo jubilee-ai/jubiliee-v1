@@ -1,0 +1,17 @@
+{
+  "name": "xgboost",
+  "label": "XGBoost",
+  "task_types": ["classification", "regression"],
+  "brief": "Gradient boosted trees with early stopping, regularization, and loss curve tracking. Often achieves best performance on tabular data.",
+  "aliases": ["xgboost", "xgb"],
+  "when_to_use": [
+    "Structured/tabular data with complex patterns",
+    "When maximum predictive accuracy is needed",
+    "Competitions and benchmarking",
+    "Large datasets with many features"
+  ],
+  "when_not_to_use": [
+    "Small datasets (may overfit)",
+    "When full interpretability is required"
+  ]
+}

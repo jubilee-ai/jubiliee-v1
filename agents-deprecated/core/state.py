@@ -4,10 +4,12 @@ State definitions and constants for the ML Training Agent.
 
 from typing import Any, Literal, Optional, TypedDict
 
+
 # =============================================================================
 # CONSTANTS
 # =============================================================================
 
+# Keys to include in state snapshots for HITL review
 STATE_SNAPSHOT_KEYS = [
     "selected_model",
     "model_explanation",
@@ -28,6 +30,7 @@ STATE_SNAPSHOT_KEYS = [
     "error",
 ]
 
+# Step order for progress calculation and routing
 STEP_ORDER = [
     "select_model",
     "data_collection",
@@ -60,7 +63,9 @@ class LabelDefinition(TypedDict):
 class FeatureSpec(TypedDict):
     """Feature specification output from step 4"""
 
-    features: list[dict[str, Any]]
+    features: list[
+        dict[str, Any]
+    ]  # Each feature has: name, formula, source_tables, window, grain, as_of_constraint, encoding
 
 
 class TrainingAgentState(TypedDict):
@@ -82,31 +87,31 @@ class TrainingAgentState(TypedDict):
     # Step 3: Cleaning & Standardization
     cleaned_dataset_ref: Optional[str]
     cleaning_transformations: list[dict[str, Any]]
-    cleaning_summary: Optional[str]
+    cleaning_summary: Optional[str]  # Summary message from cleaning agent
 
     # Step 3.5: Label & Split Definition
     label_definition: Optional[LabelDefinition]
-    split_indices: Optional[dict[str, Any]]
-    train_dataset_ref: Optional[str]
-    val_dataset_ref: Optional[str]
-    test_dataset_ref: Optional[str]
+    split_indices: Optional[dict[str, Any]]  # Output of compute_split_indices
+    train_dataset_ref: Optional[str]  # Registered train dataset
+    val_dataset_ref: Optional[str]  # Registered val dataset
+    test_dataset_ref: Optional[str]  # Registered test dataset
 
     # Step 4: Feature Selection & Specification
     feature_spec: Optional[FeatureSpec]
     analysis_trace: list[dict[str, Any]]
 
     # Step 5: Feature Engineering
-    transformed_dataset_ref: Optional[str]
-    transformed_train_ref: Optional[str]
-    transformed_val_ref: Optional[str]
-    transformed_test_ref: Optional[str]
+    transformed_dataset_ref: Optional[str]  # Legacy - for backward compat
+    transformed_train_ref: Optional[str]  # NEW: transformed train dataset
+    transformed_val_ref: Optional[str]  # NEW: transformed val dataset
+    transformed_test_ref: Optional[str]  # NEW: transformed test dataset
     feature_validation_passed: bool
 
     # Step 6: Human Confirmation
     human_confirmed: bool
 
-    # Step 6.5: Training Approval
-    training_plan: Optional[dict[str, Any]]
+    # Step 6.5: Training Approval (pre-training plan)
+    training_plan: Optional[dict[str, Any]]  # Approved training configuration
     training_plan_approved: bool
 
     # Step 7: Training
@@ -115,11 +120,11 @@ class TrainingAgentState(TypedDict):
     training_metrics: Optional[dict[str, Any]]
     training_iteration: int
 
-    # Feature Engineering Redo
+    # Feature Engineering Redo (loop back from training)
     feature_redo_requested: bool
     feature_redo_recommendation: Optional[str]
     feature_redo_reason: Optional[str]
-    feature_redo_iteration: int
+    feature_redo_iteration: int  # Track how many times we've looped back
 
     # Step 8: Report
     report_path: Optional[str]
@@ -145,9 +150,11 @@ def create_initial_state(
 ) -> TrainingAgentState:
     """Create the initial state for the training agent."""
     return {
+        # Inputs
         "goal": goal,
         "linked_datasets": linked_datasets,
         "user_model_preference": user_model_preference,
+        # Initialize all other fields
         "selected_model": None,
         "model_explanation": None,
         "model_regen_count": 0,
