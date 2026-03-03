@@ -6,6 +6,7 @@ langchain-core
 langchain-openai
 langgraph
 pydantic
+pydantic-settings
 pandas
 numpy
 scikit-learn
