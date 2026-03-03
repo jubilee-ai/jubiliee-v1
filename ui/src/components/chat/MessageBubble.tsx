@@ -55,6 +55,7 @@ export const MessageBubble = forwardRef<HTMLDivElement, MessageBubbleProps>(
     return (
       <div 
         ref={ref}
+        data-step-id={stepId}
         className={cn(
           "flex gap-3 transition-all duration-300",
           isUser && "flex-row-reverse",

@@ -2,7 +2,6 @@ import { useState } from "react"
 import { Badge } from "@/components/ui/badge"
 import { CheckCircle2, ChevronDown, ChevronRight } from "lucide-react"
 import type { TrainingAgentState, StepInfo, KeyStats } from "@/types/agent"
-import { formatNumber, formatPercent } from "@/lib/utils"
 import { Section, InfoBox } from "./shared"
 import { getIterationMetrics, renderValue } from "./utils"
 
