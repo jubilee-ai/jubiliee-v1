@@ -1,4 +1,4 @@
-import React, { useState, forwardRef } from "react"
+import { useState, forwardRef } from "react"
 import ReactMarkdown from "react-markdown"
 import { cn } from "@/lib/utils"
 import { User, Bot, FileText, ChevronRight } from "lucide-react"

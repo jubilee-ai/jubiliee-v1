@@ -1,4 +1,3 @@
-import React from "react"
 import { SuggestionChip } from "./SuggestionChip"
 
 interface EmptyStateProps {

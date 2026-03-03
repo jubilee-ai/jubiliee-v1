@@ -1,4 +1,4 @@
-import React, { useState } from "react"
+import { useState } from "react"
 import ReactMarkdown from "react-markdown"
 import { Bot, Check, FastForward, RotateCcw, ChevronRight } from "lucide-react"
 import type { ConfirmationRequest, ConfirmationAction, TrainingAgentState, StepInfo } from "@/types/agent"
