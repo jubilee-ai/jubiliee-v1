@@ -197,14 +197,32 @@ class TrainingResult(BaseModel):
 # HELPER FUNCTIONS
 # =============================================================================
 
+_REGRESSION_ESTIMATORS = {
+    "svr", "linearsvr", "kneighborsregressor", "decisiontreeregressor",
+    "gradientboostingregressor", "adaboostregressor", "baggingregressor",
+    "extratreesregressor", "mlpregressor", "linearregression", "ridge",
+    "lasso", "elasticnet", "huberregressor", "sgdregressor",
+}
+
+_REGRESSION_GOAL_KEYWORDS = (
+    "regress", "predict value", "forecast", "amount", "price", "cost",
+    "revenue", "salary", "estimate number", "continuous",
+)
+
+
 def _get_task_type(selected_model: str, goal: str) -> Literal["classification", "regression"]:
     """Infer task type from model selection and goal."""
     goal_lower = goal.lower()
     model_lower = selected_model.lower()
-    if any(w in goal_lower for w in ("regress", "predict value", "forecast", "amount", "price", "cost")):
+    if any(w in goal_lower for w in _REGRESSION_GOAL_KEYWORDS):
         return "regression"
     if any(w in model_lower for w in ("glm", "regression")) and "logistic" not in model_lower:
         return "regression"
+    # Detect regression estimators mentioned in goal for sklearn_generic
+    if model_lower == "sklearn_generic":
+        for est in _REGRESSION_ESTIMATORS:
+            if est in goal_lower:
+                return "regression"
     return "classification"
 
 
@@ -417,6 +435,7 @@ def run_training_agent(
     model_name: Optional[str] = None,
     max_iterations: int = 6,
     llm_model: str = "openai:gpt-5.1",
+    estimator_hint: Optional[str] = None,
 ) -> dict[str, Any]:
     """
     Run the training agent to train and evaluate a model.
@@ -426,11 +445,12 @@ def run_training_agent(
         val_ref: Reference to validation dataset
         test_ref: Reference to test dataset
         target_column: Column to predict
-        selected_model: Model type to use (logistic_regression, random_forest, xgboost, glm)
+        selected_model: Skill name (e.g. "sklearn_generic")
         goal: The ML goal/objective
         model_name: Optional name for the model (auto-generated if not provided)
         max_iterations: Maximum training iterations
         llm_model: LLM to use for the agent
+        estimator_hint: Specific sklearn estimator class name (e.g. "GradientBoostingClassifier")
     
     Returns:
         Dict with training results
@@ -455,7 +475,9 @@ def run_training_agent(
     feature_columns = [c for c in train_df.columns if c != target_column]
 
     print(f"[training_agent] Starting training...")
-    print(f"  Model: {selected_model}")
+    print(f"  Skill: {selected_model}")
+    if estimator_hint:
+        print(f"  Estimator: {estimator_hint}")
     print(f"  Target: {target_column}")
     print(f"  Task type: {task_type}")
     print(f"  Train size: {len(train_df)}")
@@ -475,7 +497,8 @@ def run_training_agent(
     )
     imbalance_note = (
         f"\u26a0\ufe0f IMBALANCED DATA \u2014 minority class is {minority_ratio:.1%}. "
-        "Use class_weight='balanced' (LR/RF) or scale_pos_weight (XGB)."
+        "Use class_weight='balanced' (LR/RF/SVC/DT/GradientBoosting/ExtraTrees) "
+        "or scale_pos_weight (XGB)."
         if is_imbalanced else "\u2713 Balanced classes"
     )
 
@@ -489,21 +512,31 @@ def run_training_agent(
     except ValueError:
         skill_docs = f"(No SKILL.md found for '{selected_model}')"
 
+    estimator_section = ""
+    if estimator_hint:
+        estimator_section = (
+            f"\n## IMPORTANT: Preferred Estimator\n"
+            f"The user specifically requested **{estimator_hint}**. "
+            f"You MUST start with `\"{estimator_hint}\"` as the `estimator` parameter "
+            f"in your first `train_with_skill` call. Focus on tuning this estimator. "
+            f"Only try alternatives if it clearly under-performs.\n"
+        )
+
     context = f"""## Goal
 {goal}
 
-## Selected Model: `{selected_model}`
+## Selected Skill: `{selected_model}`
 
 The full documentation for this skill is below. Use it to set hyperparameters.
 
 <skill_documentation>
 {skill_docs}
 </skill_documentation>
-
+{estimator_section}
 ## Alternative Skills (use `get_skill_prompt` to load docs before trying)
 {other_skills_str}
 
-Start with **{selected_model}**. If you want to try a different model, call `get_skill_prompt(skill_name)` first to get its parameters, then `train_with_skill`.
+Start with **{selected_model}**{f' using `{estimator_hint}`' if estimator_hint else ''}. If you want to try a different model, call `get_skill_prompt(skill_name)` first to get its parameters, then `train_with_skill`.
 
 ## Data
 - Task type: {task_type}
@@ -521,7 +554,9 @@ Start with **{selected_model}**. If you want to try a different model, call `get
 - Name models descriptively: `lr_v1`, `rf_v1`, `xgb_v1`, `rf_v2`, etc.
 - For train_with_skill params: `"train_dataset_ref": "{train_ref}"`, `"target_column": "{target_column}"`
 - For evaluate_model: `dataset_ref="{val_ref}"` (validation) or `dataset_ref="{test_ref}"` (final test)
-- **Optimize aggressively** — try different models and hyperparameters to get the best validation metrics before running the final test evaluation.
+- **Focus on the {'preferred estimator (' + estimator_hint + ')' if estimator_hint else 'selected model'} first** — tune its hyperparameters for 1-2 iterations before considering alternatives.
+- Only switch to a different model if the selected model clearly under-performs despite tuning.
+- **AVOID slow models on large datasets** (>{len(train_df)} rows): GradientBoosting, SVC, KNeighbors, and MLP are very slow at this scale. Prefer LogisticRegression, RandomForest, ExtraTrees, LinearSVC, Ridge, or SGD for fast iteration.
 
 ## Sample Data (first 3 rows)
 {sample_rows}

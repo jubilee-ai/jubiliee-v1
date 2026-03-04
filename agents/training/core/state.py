@@ -10,6 +10,7 @@ from typing import Any, Literal, Optional, TypedDict
 
 STATE_SNAPSHOT_KEYS = [
     "selected_model",
+    "estimator_hint",
     "model_explanation",
     "collected_dataset_ref",
     "cleaned_dataset_ref",
@@ -73,6 +74,7 @@ class TrainingAgentState(TypedDict):
 
     # Step 1: Model Selection
     selected_model: Optional[str]
+    estimator_hint: Optional[str]
     model_explanation: Optional[str]
     model_regen_count: int
 
@@ -148,7 +150,8 @@ def create_initial_state(
         "goal": goal,
         "linked_datasets": linked_datasets,
         "user_model_preference": user_model_preference,
-        "selected_model": None,
+        "selected_model": "sklearn_generic",
+        "estimator_hint": None,
         "model_explanation": None,
         "model_regen_count": 0,
         "collected_dataset_ref": None,

@@ -19,6 +19,7 @@ import {
   streamTraining,
   streamResumeTraining,
   streamChat,
+  submitChatTrainingDecision,
   type Dataset,
   type ModelType,
   type StreamEvent,
@@ -135,6 +136,7 @@ export function useRealAgent(): UseRealAgentReturn {
   const streamControllerRef = useRef<AbortController | null>(null)
   const chatControllerRef = useRef<AbortController | null>(null)
   const emittedStepsRef = useRef<Set<string>>(new Set())
+  const chatTrainingActiveRef = useRef(false)
   const useStreaming = true // Enable streaming by default
 
   // Add a message to the chat
@@ -742,6 +744,25 @@ export function useRealAgent(): UseRealAgentReturn {
       
     } else if (event.type === "dataset_loaded") {
       addMessage("system", `Dataset loaded: ${event.dataset} → ${event.ref}`)
+    } else if (event.type === "node_started") {
+      const nodeName = event.node || "unknown"
+      const nodeProgress = event.progress || 0
+      setProgress(nodeProgress)
+
+      const stepOrder = STEP_DEFINITIONS.map((s) => s.id)
+      const nodeIndex = stepOrder.indexOf(nodeName)
+
+      setSteps((prev) =>
+        prev.map((step, index) => {
+          if (step.id === nodeName && step.status === "pending") {
+            return { ...step, status: "running", startTime: Date.now() }
+          }
+          if (index < nodeIndex && step.status === "pending") {
+            return { ...step, status: "completed" }
+          }
+          return step
+        })
+      )
     } else if (event.type === "node_complete") {
       const nodeName = event.node || "unknown"
       const nodeProgress = event.progress || 0
@@ -1008,8 +1029,14 @@ export function useRealAgent(): UseRealAgentReturn {
 
   // Handle confirmation actions (human-in-the-loop)
   const handleConfirmation = useCallback((action: ConfirmationAction, comment?: string) => {
-    if (!confirmationRequest || !threadId) {
-      console.warn("[handleConfirmation] No confirmation request or thread_id")
+    if (!confirmationRequest) {
+      console.warn("[handleConfirmation] No confirmation request")
+      return
+    }
+
+    const isChatMode = chatTrainingActiveRef.current
+    if (!isChatMode && !threadId) {
+      console.warn("[handleConfirmation] No thread_id and not in chat training mode")
       return
     }
     
@@ -1020,79 +1047,88 @@ export function useRealAgent(): UseRealAgentReturn {
       case "accept":
         addMessage("system", "✓ Step accepted")
         
-        // Mark step as completed
         setSteps((prev) =>
           prev.map((step) =>
             step.id === currentStep ? { ...step, status: "completed" } : step
           )
         )
         
-        // Clear confirmation and resume
         setConfirmationRequest(null)
         setIsRunning(true)
         
-        // Resume streaming with approval
-        streamControllerRef.current = streamResumeTraining(
-          { thread_id: threadId, approved: true },
-          handleStreamEvent,
-          (error) => {
-            setIsRunning(false)
-            addMessage("system", `Stream error: ${error.message}`)
-          }
-        )
+        if (isChatMode) {
+          submitChatTrainingDecision({ approved: true }).catch((err) =>
+            addMessage("system", `Decision error: ${err.message}`)
+          )
+        } else {
+          streamControllerRef.current = streamResumeTraining(
+            { thread_id: threadId!, approved: true },
+            handleStreamEvent,
+            (error) => {
+              setIsRunning(false)
+              addMessage("system", `Stream error: ${error.message}`)
+            }
+          )
+        }
         break
         
       case "accept_all":
         addMessage("system", "Auto-accepting remaining steps")
         setAcceptAllMode(true)
-        acceptAllModeRef.current = true // Set ref immediately to avoid stale closure
+        acceptAllModeRef.current = true
         
-        // Mark step as completed
         setSteps((prev) =>
           prev.map((step) =>
             step.id === currentStep ? { ...step, status: "completed" } : step
           )
         )
         
-        // Clear confirmation and resume
         setConfirmationRequest(null)
         setIsRunning(true)
         
-        // Resume streaming with approval
-        streamControllerRef.current = streamResumeTraining(
-          { thread_id: threadId, approved: true },
-          handleStreamEvent,
-          (error) => {
-            setIsRunning(false)
-            addMessage("system", `Stream error: ${error.message}`)
-          }
-        )
+        if (isChatMode) {
+          submitChatTrainingDecision({ approved: true }).catch((err) =>
+            addMessage("system", `Decision error: ${err.message}`)
+          )
+        } else {
+          streamControllerRef.current = streamResumeTraining(
+            { thread_id: threadId!, approved: true },
+            handleStreamEvent,
+            (error) => {
+              setIsRunning(false)
+              addMessage("system", `Stream error: ${error.message}`)
+            }
+          )
+        }
         break
         
       case "redo":
         addMessage("system", `↻ Requested redo${comment ? `: ${comment}` : ""}`)
         addMessage("agent", `Got it. I'll redo **${stepDef?.name || currentStep}**${comment ? ` with your feedback: "${comment}"` : ""}.`)
         
-        // Mark step as running (will be redone)
         setSteps((prev) =>
           prev.map((step) =>
             step.id === currentStep ? { ...step, status: "running", startTime: Date.now() } : step
           )
         )
         
-        // Clear confirmation and resume with feedback
         setConfirmationRequest(null)
         setIsRunning(true)
         
-        // Resume streaming with rejection and feedback
-        streamControllerRef.current = streamResumeTraining(
-          { thread_id: threadId, approved: false, feedback: comment || "Please redo this step." },
-          handleStreamEvent,
-          (error) => {
-            setIsRunning(false)
-            addMessage("system", `Stream error: ${error.message}`)
-          }
-        )
+        if (isChatMode) {
+          submitChatTrainingDecision({ approved: false, feedback: comment || "Please redo this step." }).catch((err) =>
+            addMessage("system", `Decision error: ${err.message}`)
+          )
+        } else {
+          streamControllerRef.current = streamResumeTraining(
+            { thread_id: threadId!, approved: false, feedback: comment || "Please redo this step." },
+            handleStreamEvent,
+            (error) => {
+              setIsRunning(false)
+              addMessage("system", `Stream error: ${error.message}`)
+            }
+          )
+        }
         break
     }
   }, [confirmationRequest, threadId, addMessage, handleStreamEvent])
@@ -1174,9 +1210,103 @@ export function useRealAgent(): UseRealAgentReturn {
     } else if (event.type === "tool_result") {
       // tool results are consumed by the agent; no separate message needed
     } else if (event.type === "training_started") {
+      chatTrainingActiveRef.current = true
       setSteps(createInitialSteps())
       emittedStepsRef.current = new Set()
       setProgress(0)
+      addMessage("system", "Training pipeline started — streaming progress…")
+    } else if (event.type === "interrupt") {
+      // HITL interrupt from training agent running inside the chat SSE
+      const nodeName = event.node || "unknown"
+      let summary: string
+      if (typeof event.summary === "string") {
+        summary = event.summary
+      } else if (nodeName === "training_approval" && event.summary && typeof event.summary === "object") {
+        const s = event.summary as Record<string, unknown>
+        const lines: string[] = []
+        if (s.model_type) lines.push(`**Model:** ${s.model_type}`)
+        if (s.task_type) lines.push(`**Task:** ${s.task_type}`)
+        const hp = s.hyperparameters as Record<string, unknown> | undefined
+        if (hp && typeof hp === "object") {
+          const entries = Object.entries(hp)
+          const keyParams = entries.slice(0, 5).map(([k, v]) => `\`${k}=${v}\``).join("  ·  ")
+          lines.push("")
+          lines.push(`**Hyperparameters** (${entries.length} total)`)
+          lines.push(keyParams + (entries.length > 5 ? `  ·  *+${entries.length - 5} more*` : ""))
+        }
+        if (s.class_weight) lines.push(`\n**Class weight:** ${s.class_weight}`)
+        const strategy = s.strategy_notes
+        if (strategy) {
+          const notes = Array.isArray(strategy) ? strategy : [strategy]
+          lines.push("")
+          lines.push(`**Strategy** — ${notes.length} section${notes.length !== 1 ? "s" : ""}`)
+          lines.push("*View full details for the complete training plan*")
+        }
+        summary = lines.join("\n")
+      } else {
+        summary = JSON.stringify(event.summary || {}, null, 2)
+      }
+      const stateSnapshot = (event.state_snapshot || {}) as Record<string, unknown>
+
+      // Update step to awaiting confirmation
+      const stepOrder = STEP_DEFINITIONS.map((s) => s.id)
+      const interruptIndex = stepOrder.indexOf(nodeName)
+
+      setSteps((prev) =>
+        prev.map((step, index) => {
+          if (step.id === nodeName) {
+            return { ...step, status: "awaiting_confirmation", endTime: Date.now(), details: summary }
+          }
+          if (index < interruptIndex && step.status === "pending") {
+            return { ...step, status: "completed" }
+          }
+          return step
+        })
+      )
+
+      if (stateSnapshot && Object.keys(stateSnapshot).length > 0) {
+        setAgentState((prev) => ({ ...prev, ...stateSnapshot as Partial<TrainingAgentState> }))
+      }
+
+      // Auto-accept if in accept-all mode
+      if (acceptAllModeRef.current) {
+        console.log("[chat] Auto-accepting interrupt in accept-all mode")
+        setSteps((prev) =>
+          prev.map((step) => step.id === nodeName ? { ...step, status: "completed" } : step)
+        )
+        submitChatTrainingDecision({ approved: true }).catch((err) =>
+          console.error("[chat] Auto-accept error:", err)
+        )
+        return
+      }
+
+      const stepDef = STEP_DEFINITIONS.find((s) => s.id === nodeName)
+      setConfirmationRequest({
+        step: nodeName,
+        stepName: stepDef?.name || nodeName,
+        summary,
+        details: stateSnapshot,
+      })
+      setIsRunning(false)
+    } else if (event.type === "node_started") {
+      const nodeName = event.node || "unknown"
+      const nodeProgress = event.progress || 0
+      setProgress(nodeProgress)
+
+      const stepOrder = STEP_DEFINITIONS.map((s) => s.id)
+      const nodeIndex = stepOrder.indexOf(nodeName)
+
+      setSteps((prev) =>
+        prev.map((step, index) => {
+          if (step.id === nodeName && step.status === "pending") {
+            return { ...step, status: "running", startTime: Date.now() }
+          }
+          if (index < nodeIndex && step.status === "pending") {
+            return { ...step, status: "completed" }
+          }
+          return step
+        })
+      )
     } else if (event.type === "node_complete") {
       const nodeName = event.node || "unknown"
       if (emittedStepsRef.current.has(nodeName)) return
@@ -1216,7 +1346,24 @@ export function useRealAgent(): UseRealAgentReturn {
           ...(event.state as Partial<TrainingAgentState>),
         }))
       }
+
+      // Add a chat message for the completed step (same as handleStreamEvent)
+      const streamEvent = event as unknown as StreamEvent
+      let formattedDetails = ""
+      try {
+        formattedDetails = formatStreamDetails(streamEvent)
+      } catch (err) {
+        console.error("[chat] Error formatting step details:", err)
+      }
+
+      if (formattedDetails && formattedDetails.trim()) {
+        addMessage("agent", formattedDetails)
+      } else {
+        const stepDef = STEP_DEFINITIONS.find((s) => s.id === nodeName)
+        addMessage("agent", `✓ ${stepDef?.name || nodeName} complete`)
+      }
     } else if (event.type === "training_completed") {
+      chatTrainingActiveRef.current = false
       setProgress(100)
       setSteps((prev) => prev.map((step) => ({ ...step, status: step.status === "pending" ? "completed" : step.status, endTime: step.endTime || Date.now() })))
     } else if (event.type === "token") {
@@ -1233,6 +1380,10 @@ export function useRealAgent(): UseRealAgentReturn {
           { id: uid("msg"), role: "agent", content: event.content || "", timestamp: Date.now(), _streaming: true },
         ]
       })
+    } else if (event.type === "heartbeat") {
+      if (event.training) {
+        setIsRunning(true)
+      }
     } else if (event.type === "end") {
       setMessages((prev) =>
         prev.map((m) => (m._streaming ? { ...m, _streaming: undefined } : m))
@@ -1242,7 +1393,7 @@ export function useRealAgent(): UseRealAgentReturn {
       addMessage("system", `Error: ${event.error || "Unknown error"}`)
       setIsRunning(false)
     }
-  }, [addMessage, computeStepSubtitle])
+  }, [addMessage, computeStepSubtitle, formatStreamDetails])
 
   // Build a training context string from the current agent state so the
   // orchestrator knows about the most recently trained model.
@@ -1322,6 +1473,7 @@ export function useRealAgent(): UseRealAgentReturn {
     setConfirmationRequest(null)
     setAcceptAllMode(false)
     acceptAllModeRef.current = false
+    chatTrainingActiveRef.current = false
     emittedStepsRef.current = new Set()
   }, [])
 

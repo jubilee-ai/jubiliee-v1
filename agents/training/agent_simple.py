@@ -33,8 +33,9 @@ from .steps.feature_engineering_simple import run_feature_engineering_simple
 from .steps.label_and_split import (apply_split, compute_split_indices,
                                     run_label_split_definition)
 from .steps.orchestrator import _infer_target_column
-from .steps.select_model import select_model as _select_model_impl
+from .steps.select_model import _resolve_alias
 from .steps.training import run_training_agent as _run_training
+from .skill_registry import build_alias_map, get_all_skills_for_selection
 
 SYSTEM_PROMPT = """\
 You are an ML pipeline agent. Execute the pipeline steps to train the best model.
@@ -47,19 +48,17 @@ You are an ML pipeline agent. Execute the pipeline steps to train the best model
 
 ## First Pass — Execute in THIS EXACT ORDER
 1. data_collection — Retrieve the dataset(s) and load it
-2. select_model — Choose the model type based on the goal (you can execute this at any step if it makes sense)
-3. cleaning — Clean and standardize the data
-4. label_split_definition — Define target column and train/val/test splits
-5. feature_selection_specification — Analyze data and specify features
-6. feature_engineering_executor — Execute feature transformations
-7. training_approval — Propose training configuration
-8. training — Train the model and evaluate metrics
-9. generate_report — Save the final report
+2. cleaning — Clean and standardize the data
+3. label_split_definition — Define target column and train/val/test splits
+4. feature_selection_specification — Analyze data and specify features
+5. feature_engineering_executor — Execute feature transformations
+6. training_approval — Propose training configuration
+7. training — Train the model and evaluate metrics
+8. generate_report — Save the final report
 
 ## After Training — Optimization (Optional)
 After training completes, evaluate the metrics. If they are unsatisfactory:
 - Weak features → go back to feature_selection_specification
-- Wrong model → go back to select_model
 - Poor hyperparameters → go back to training_approval
 After changing any step, re-run all downstream steps in order.
 Do not loop more than 4 total training iterations.
@@ -86,7 +85,7 @@ def create_simple_training_agent(
     goal: str,
     linked_datasets: Optional[list[str]] = None,
     user_model_preference: Optional[str] = None,
-    model: str = "openai:gpt-4o-mini",
+    model: str = "openai:gpt-5.1",
     hitl: bool = True,
     checkpointer=None,
 ):
@@ -105,6 +104,28 @@ def create_simple_training_agent(
     """
     state: dict = create_initial_state(goal, linked_datasets, user_model_preference)
 
+    # Resolve user_model_preference → selected_model + estimator_hint.
+    # All individual skills (logistic_regression, random_forest, etc.) have
+    # been consolidated into sklearn_generic, so we always set
+    # selected_model="sklearn_generic" and use estimator_hint for the
+    # specific sklearn class (e.g. "RandomForestClassifier").
+    _pref = user_model_preference
+    if not _pref:
+        goal_lower = goal.lower()
+        _alias_map = build_alias_map()
+        for alias in sorted(_alias_map, key=len, reverse=True):
+            if alias in goal_lower:
+                _pref = alias
+                break
+
+    if _pref:
+        _skills = get_all_skills_for_selection()
+        _resolved_skill, _resolved_hint = _resolve_alias(_pref, _skills)
+        state["selected_model"] = _resolved_skill
+        state["estimator_hint"] = _resolved_hint
+    else:
+        state["selected_model"] = "sklearn_generic"
+
     def _hitl_gate(node_name: str, summary: str) -> dict:
         """Interrupt for human review after a step completes. Returns the decision."""
         if not hitl:
@@ -118,8 +139,6 @@ def create_simple_training_agent(
             return decision
         return {"approved": True}
 
-    KNOWN_MODELS = {"glm", "logistic_regression", "naive_bayes", "random_forest", "survival_analysis", "xgboost"}
-
     # -- tool wrappers (each closes over `state`) ---------------------------
 
     # Track which steps have successfully completed to prevent redundant calls
@@ -127,7 +146,6 @@ def create_simple_training_agent(
 
     # Keys produced by each step, used to invalidate downstream state on re-runs
     _STEP_OUTPUTS = {
-        "select_model": ["selected_model", "model_explanation"],
         "data_collection": ["collected_dataset_ref"],
         "cleaning": ["cleaned_dataset_ref", "cleaning_summary", "cleaning_transformations"],
         "label_split_definition": [
@@ -153,7 +171,7 @@ def create_simple_training_agent(
         "generate_report": ["report_path"],
     }
     _STEP_ORDER = [
-        "data_collection", "select_model", "cleaning", "label_split_definition",
+        "data_collection", "cleaning", "label_split_definition",
         "feature_selection_specification", "feature_engineering_executor",
         "training_approval", "training", "generate_report",
     ]
@@ -165,45 +183,6 @@ def create_simple_training_agent(
             for key in _STEP_OUTPUTS.get(later_step, []):
                 state.pop(key, None)
             _completed_steps.discard(later_step)
-
-    def tool_select_model() -> str:
-        """Select the best ML model type for the training goal. Can be re-called to switch models."""
-        nonlocal state
-        if "select_model" in _completed_steps and not state.get("_redo_feedback_select_model"):
-            return f"SKIP: Model already selected: {state.get('selected_model')}. Proceed to the next step."
-        if state.get("selected_model") is not None:
-            _invalidate_downstream("select_model")
-
-        redo_fb = state.pop("_redo_feedback_select_model", None)
-        if redo_fb:
-            fb_lower = redo_fb.lower()
-            for m in KNOWN_MODELS:
-                if m in fb_lower or m.replace("_", " ") in fb_lower:
-                    state["user_model_preference"] = m
-                    break
-            else:
-                state["_select_model_redo_hint"] = redo_fb
-
-        result = _select_model_impl(state)
-        state.update(result)
-        state.pop("_select_model_redo_hint", None)
-
-        summary = (
-            f"Selected **{state.get('selected_model', 'unknown')}** for this task.\n"
-            f"Reason: {state.get('model_explanation', 'N/A')}"
-        )
-        decision = _hitl_gate("select_model", summary)
-        if not decision.get("approved", True):
-            fb = decision.get("feedback", "Please reconsider the model choice.")
-            state["_redo_feedback_select_model"] = fb
-            state.pop("user_model_preference", None)
-            return f"REJECTED by user: {fb}. Please redo model selection."
-
-        _completed_steps.add("select_model")
-        return (
-            f"Selected model: {state.get('selected_model', 'unknown')}\n"
-            f"Reason: {state.get('model_explanation', 'N/A')}"
-        )
 
     def tool_data_collection() -> str:
         """Collect or load the dataset. Can be re-called to reload or change data sources."""
@@ -517,7 +496,7 @@ def create_simple_training_agent(
         val_ref = state.get("transformed_val_ref")
         label_def = state.get("label_definition") or {}
         target_column = label_def.get("target_column", "")
-        selected_model = state.get("selected_model", "logistic_regression")
+        selected_model = state.get("selected_model", "sklearn_generic")
         task_type = _infer_task_type(state.get("goal", ""), selected_model)
 
         train_df = get_registered_dataset(train_ref)
@@ -619,12 +598,13 @@ Respond with JSON:
         _invalidate_downstream("training")
         label_def = state.get("label_definition") or {}
         target_column = label_def.get("target_column", "")
-        selected_model = state.get("selected_model", "logistic_regression")
+        selected_model = state.get("selected_model", "sklearn_generic")
         train_ref = state.get("transformed_train_ref")
         if not train_ref or not target_column:
             return "SKIP: Cannot run — feature_engineering_executor and label_split_definition must complete first."
 
-        model_name = f"{selected_model}_{int(time.time())}"
+        estimator_hint = state.get("estimator_hint")
+        model_name = f"{estimator_hint or selected_model}_{int(time.time())}"
         result = _run_training(
             train_ref=train_ref,
             val_ref=state.get("transformed_val_ref"),
@@ -634,6 +614,7 @@ Respond with JSON:
             goal=state.get("goal", ""),
             model_name=model_name,
             max_iterations=3,
+            estimator_hint=estimator_hint,
         )
 
         feature_redo_requested = result.get("feature_redo_requested", False)
@@ -697,15 +678,7 @@ Respond with JSON:
         decision = _hitl_gate("training", summary)
         if not decision.get("approved", True):
             fb = decision.get("feedback", "Please adjust training approach.")
-            fb_lower = fb.lower()
-            routed = False
-            for m in KNOWN_MODELS:
-                if m in fb_lower or m.replace("_", " ") in fb_lower:
-                    state["_redo_feedback_select_model"] = fb
-                    routed = True
-                    break
-            if not routed:
-                state["_redo_feedback_training_approval"] = fb
+            state["_redo_feedback_training_approval"] = fb
             return f"REJECTED by user: {fb}"
 
         _completed_steps.add("training")
@@ -723,9 +696,10 @@ Respond with JSON:
             "generated_at": datetime.now().isoformat(),
             "goal": state.get("goal"),
             "model": {
-                "type": state.get("selected_model"),
+                "type": metrics.get("model_type") or state.get("estimator_hint") or state.get("selected_model"),
                 "name": metrics.get("model_name"),
                 "explanation": state.get("model_explanation"),
+                "skill": state.get("selected_model"),
             },
             "data": {
                 "collected_dataset": state.get("collected_dataset_ref"),
@@ -775,7 +749,6 @@ Respond with JSON:
 
     all_tools = [
         tool_data_collection,
-        tool_select_model,
         tool_cleaning,
         tool_label_split_definition,
         tool_feature_selection_specification,
@@ -806,11 +779,11 @@ def invoke_simple_training_agent(
     goal: str,
     linked_datasets: Optional[list[str]] = None,
     user_model_preference: Optional[str] = None,
-    model: str = "openai:gpt-4o-mini",
+    model: str = "openai:gpt-5.1",
 ):
     """Convenience function: create and invoke the simple training agent (no HITL)."""
     agent, _state = create_simple_training_agent(
-        goal, linked_datasets, user_model_preference, model, hitl=False,
+        goal, linked_datasets, user_model_preference, model, hitl=True,
     )
     result = agent.invoke({"messages": [{"role": "user", "content": goal}]})
     return result

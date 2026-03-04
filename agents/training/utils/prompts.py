@@ -421,6 +421,52 @@ counts may differ from features predicting claim amounts.
   variance structure → inefficient estimates.
 """,
 
+    "sklearn_generic": """
+## Model-Specific Guidance: Sklearn Generic (Any Estimator)
+
+The sklearn_generic skill trains any scikit-learn estimator with automatic
+preprocessing (StandardScaler + OneHotEncoder). Feature engineering should
+cover the BROADEST useful set of estimators since the specific model may vary.
+
+### Encoding Strategy
+- ONE-HOT encode nominal categoricals with ≤15 unique values (drop_first=true).
+  Works well for both linear models (SVM, Ridge, MLP) and tree-based models.
+- ORDINAL encode ordered categoricals when a clear natural order exists.
+- For high-cardinality categoricals (>15 values), use GROUP_AGG for mean-target
+  encoding or BIN into meaningful groups.
+
+### Transformations
+- PASSTHROUGH numeric features — the pipeline applies StandardScaler automatically,
+  which benefits distance-based (SVM, KNN) and gradient-based (MLP, SGD) models
+  without hurting tree-based models.
+- LOG-TRANSFORM heavily skewed features (|skew| > 2) — improves linearity for
+  linear models and SVM with RBF kernel.
+- CREATE ratio features for related quantities (e.g., debt/income) — benefits
+  all model types since even tree-based models learn explicit ratios faster.
+- SKIP manual binning — tree-based estimators find optimal splits natively,
+  and linear models benefit more from continuous features.
+
+### Feature Interactions
+- CREATE 2-5 domain-motivated interaction terms (e.g., feature_a * feature_b).
+  Critical for linear models (Ridge, Lasso, SVM linear kernel) which cannot
+  discover interactions. Tree-based models can find them but benefit from
+  explicit features with limited data.
+- Always keep main-effect features alongside interactions.
+
+### Feature Selection
+- Include a GENEROUS set of features (15-40). The auto-tuning in sklearn_generic
+  uses cross-validation which penalizes overfitting naturally.
+- DROP one from each highly correlated pair (|r| > 0.9) — hurts both linear
+  and distance-based models.
+- Remove features with near-zero variance.
+
+### What to Avoid
+- DO NOT pass raw high-cardinality categoricals (>30 categories) as one-hot.
+- DO NOT include features with >50% missing values unless meaningfully imputed.
+- DO NOT over-engineer — the auto-tuning handles hyperparameters, so focus on
+  providing clean, meaningful features.
+""",
+
     "survival_analysis": """
 ## Model-Specific Guidance: Survival Analysis (Cox PH / AFT)
 

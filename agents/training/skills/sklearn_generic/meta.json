@@ -1,0 +1,41 @@
+{
+  "name": "sklearn_generic",
+  "label": "Sklearn Generic (Any Estimator)",
+  "task_types": ["classification", "regression"],
+  "brief": "Train any scikit-learn estimator with automatic hyperparameter tuning and preprocessing. Supports SVM, KNN, Decision Trees, Gradient Boosting, AdaBoost, Extra Trees, MLP, Ridge, Lasso, ElasticNet, and more.",
+  "aliases": [
+    "sklearn generic",
+    "svm", "support vector machine", "svc", "svr",
+    "knn", "k-nearest neighbors", "nearest neighbors",
+    "decision tree", "dt",
+    "gradient boosting", "gbm", "gradient boosted",
+    "adaboost", "ada boost",
+    "bagging",
+    "extra trees", "extremely randomized trees",
+    "mlp", "neural network", "multi-layer perceptron",
+    "ridge", "ridge classifier",
+    "lasso",
+    "elastic net", "elasticnet",
+    "linear regression",
+    "sgd", "stochastic gradient descent",
+    "huber", "huber regressor",
+    "logistic regression", "logistic_regression", "logreg",
+    "random forest", "random_forest", "rf",
+    "naive bayes", "naive_bayes", "nb",
+    "xgboost", "xgb"
+  ],
+  "when_to_use": [
+    "Any scikit-learn model for classification or regression",
+    "SVM for high-dimensional or small datasets",
+    "KNN for instance-based learning",
+    "Gradient Boosting for high-accuracy tabular data",
+    "MLP for neural-network-based classification/regression",
+    "Ridge/Lasso/ElasticNet for regularized linear regression",
+    "Decision Trees for simple interpretable models",
+    "When you want automatic hyperparameter tuning via cross-validation"
+  ],
+  "when_not_to_use": [
+    "Survival Analysis — use the survival_analysis skill (if available)",
+    "GLM with Poisson/Gamma/Tweedie distributions — use the glm skill (if available)"
+  ]
+}

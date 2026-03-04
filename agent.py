@@ -19,6 +19,7 @@ On top of that the orchestrator can:
 
 import json
 import sys
+import threading
 import uuid
 from pathlib import Path
 from typing import Any, Optional
@@ -94,7 +95,8 @@ def analyze_data(question: str) -> str:
 
 class TrainModelInput(BaseModel):
     goal: str = Field(
-        description="Training objective (e.g. 'Train a loan-default prediction model on the Loan_default dataset')"
+        description="Training objective — INCLUDE the model type the user wants "
+        "(e.g. 'Train a GradientBoostingClassifier for loan-default prediction on the Loan_default dataset')"
     )
     linked_datasets: Optional[list[str]] = Field(
         default=None,
@@ -102,11 +104,55 @@ class TrainModelInput(BaseModel):
     )
     model_preference: Optional[str] = Field(
         default=None,
-        description="Preferred algorithm: logistic_regression | random_forest | xgboost | naive_bayes | glm | survival_analysis",
+        description="Preferred algorithm. Common values: logistic_regression, random_forest, "
+        "gradient_boosting, xgboost, naive_bayes, svm, knn, decision_tree, "
+        "ridge, lasso, mlp, extra_trees, adaboost, sgd, glm. "
+        "All sklearn estimators are supported via the sklearn_generic skill.",
     )
 
 
 _last_training_state: dict[str, Any] = {}
+
+# Queue that receives real-time training step events.  Set by the SSE
+# generator in app.py before invoking the orchestrator, cleared after.
+_training_step_sink: Optional[Any] = None  # queue.Queue | None
+
+# Queue through which the frontend sends HITL decisions back to the
+# blocked _run_training_to_completion function.
+_training_decision_queue: Optional[Any] = None  # queue.Queue | None
+
+_training_lock = threading.Lock()
+
+
+def set_training_step_sink(q) -> None:
+    """Set (or clear) the queue that receives training step events."""
+    global _training_step_sink
+    _training_step_sink = q
+
+
+def set_training_decision_queue(q) -> None:
+    """Set (or clear) the queue used to receive HITL decisions."""
+    global _training_decision_queue
+    _training_decision_queue = q
+
+
+def submit_training_decision(decision: dict) -> None:
+    """Submit a HITL decision for the in-flight chat training agent."""
+    if _training_decision_queue is not None:
+        _training_decision_queue.put(decision)
+
+
+TOOL_TO_STEP = {
+    "tool_data_collection": "data_collection",
+    "tool_select_model": "select_model",
+    "tool_cleaning": "cleaning",
+    "tool_label_split_definition": "label_split_definition",
+    "tool_feature_selection_specification": "feature_selection_specification",
+    "tool_feature_engineering_executor": "feature_engineering_executor",
+    "tool_training_approval": "training_approval",
+    "tool_training": "training",
+    "tool_generate_report": "generate_report",
+}
 
 
 def _run_training_to_completion(
@@ -114,28 +160,139 @@ def _run_training_to_completion(
     linked_datasets: Optional[list[str]],
     model_preference: Optional[str],
 ) -> dict[str, Any]:
-    """Run the simple training agent end-to-end without HITL.
+    """Run the simple training agent end-to-end.
 
-    Stores the final shared-state dict in ``_last_training_state`` so the SSE
-    chat handler can generate step-level events for the frontend.
+    Uses ``agent.stream()`` so that step events can be pushed to
+    ``_training_step_sink`` in real-time for the chat SSE generator.
+
+    When a sink is connected (chat mode), HITL is enabled and LangGraph
+    interrupts are forwarded to the frontend.  The function blocks on
+    ``_training_decision_queue`` until the user responds, then resumes
+    the agent.
     """
+    if not _training_lock.acquire(blocking=False):
+        return {
+            "success": False,
+            "error": "Another training run is already in progress. Please wait for it to finish.",
+            "model_name": "none",
+            "model_type": "none",
+        }
+
+    try:
+        return _run_training_to_completion_locked(goal, linked_datasets, model_preference)
+    finally:
+        _training_lock.release()
+
+
+def _run_training_to_completion_locked(
+    goal: str,
+    linked_datasets: Optional[list[str]],
+    model_preference: Optional[str],
+) -> dict[str, Any]:
     from agents.training.agent_simple import create_simple_training_agent
+    from agents.training.utils.streaming import (
+        build_node_update,
+        calculate_progress,
+        extract_interrupt_info,
+    )
+    from langgraph.types import Command
+
+    sink = _training_step_sink
+    decision_q = _training_decision_queue
+    use_hitl = sink is not None and decision_q is not None
 
     thread_id = f"orch-{uuid.uuid4().hex[:8]}"
     agent, shared_state = create_simple_training_agent(
         goal=goal,
         linked_datasets=linked_datasets,
         user_model_preference=model_preference,
-        hitl=False,
+        hitl=use_hitl,
     )
 
     config = {"configurable": {"thread_id": thread_id}}
-    agent.invoke({"messages": [{"role": "user", "content": goal}]}, config=config)
+    emitted_starts: set[str] = set()
+    emitted_steps: set[str] = set()
+
+    if sink is not None:
+        sink.put(("training_step", {"type": "training_started"}))
+
+    # Drain any stale decisions that might have queued up
+    if decision_q is not None:
+        while not decision_q.empty():
+            try:
+                decision_q.get_nowait()
+            except Exception:
+                break
+
+    input_data: Any = {"messages": [{"role": "user", "content": goal}]}
+
+    while True:
+        resume_with = None
+
+        for event in agent.stream(input_data, config=config, stream_mode="updates"):
+            # ── Interrupt (HITL) ──────────────────────────────────
+            if "__interrupt__" in event:
+                info = extract_interrupt_info(event["__interrupt__"])
+                if sink is not None:
+                    sink.put(("training_step", {"type": "interrupt", **info}))
+
+                if decision_q is not None:
+                    decision = decision_q.get()  # blocks until user responds
+                    resume_with = Command(resume=decision)
+                else:
+                    resume_with = Command(resume={"approved": True})
+                continue
+
+            if sink is None:
+                continue
+
+            # ── node_started from model/agent tool_calls ──────────
+            model_output = event.get("model") or event.get("agent")
+            if model_output:
+                for msg in model_output.get("messages", []):
+                    for tc in getattr(msg, "tool_calls", None) or []:
+                        tool_name = tc.get("name") if isinstance(tc, dict) else getattr(tc, "name", None)
+                        if not tool_name:
+                            continue
+                        step_name = TOOL_TO_STEP.get(tool_name)
+                        if not step_name or step_name in emitted_starts:
+                            continue
+                        emitted_starts.add(step_name)
+                        sink.put(("training_step", {
+                            "type": "node_started",
+                            "node": step_name,
+                            "progress": calculate_progress(step_name),
+                        }))
+
+            # ── node_complete from tool results ───────────────────
+            if "tools" in event:
+                tool_msgs = event["tools"].get("messages", [])
+                if tool_msgs:
+                    content = getattr(tool_msgs[0], "content", "")
+                    if isinstance(content, str) and (
+                        content.startswith("REJECTED") or content.startswith("SKIP:")
+                    ):
+                        continue
+                    tool_name = getattr(tool_msgs[0], "name", "unknown")
+                    step_name = TOOL_TO_STEP.get(tool_name)
+                    if not step_name or step_name in emitted_steps:
+                        continue
+                    emitted_steps.add(step_name)
+                    slim = {k: v for k, v in shared_state.items() if k != "split_indices"}
+                    update = build_node_update(step_name, slim)
+                    sink.put(("training_step", update))
+
+        if resume_with is not None:
+            input_data = resume_with
+        else:
+            break
 
     final_state = dict(shared_state)
-
     _last_training_state.clear()
     _last_training_state.update(final_state)
+
+    if sink is not None:
+        sink.put(("training_step", {"type": "training_completed"}))
 
     return final_state
 
@@ -151,34 +308,28 @@ def train_model(
     Runs the full pipeline: model selection → data collection → cleaning →
     feature engineering → training → evaluation → report.
 
-    This tool may take several minutes. Use it only after confirming with the
-    user that they want to proceed with training.
+    Supports ALL scikit-learn estimators (GradientBoostingClassifier,
+    RandomForestClassifier, LogisticRegression, SVC, XGBoost, etc.).
+    Include the desired model type in the goal text.
+
+    This tool may take several minutes.
     """
     try:
         result = _run_training_to_completion(goal, linked_datasets, model_preference)
 
-        model_name = result.get("selected_model", "unknown")
-        model_path = result.get("model_weights_path", "")
-        metrics = result.get("training_metrics", {})
-        report = result.get("report_path", "")
         error = result.get("error")
-
         if error:
             return f"Training encountered an error: {error}"
 
-        parts = [
-            "Training completed successfully!",
-            f"  Model type : {model_name}",
-            f"  Weights    : {model_path}" if model_path else None,
-            f"  Report     : {report}" if report else None,
-        ]
-        if metrics:
-            parts.append(f"  Metrics    : {json.dumps(metrics, indent=2)}")
-        parts.append(
-            "\nThe model is now saved in the registry. "
-            "You can make predictions with the `predict` tool."
+        metrics = result.get("training_metrics", {})
+        model_name = metrics.get("model_name") or result.get("model_weights_path", "unknown")
+        model_type = metrics.get("model_type") or result.get("estimator_hint") or result.get("selected_model", "unknown")
+
+        return (
+            f"Training completed. Model: {model_name} ({model_type}). "
+            f"The step-by-step results and report are shown above in the training panel. "
+            f"The model is saved and ready for predictions."
         )
-        return "\n".join(p for p in parts if p is not None)
 
     except Exception as exc:
         return f"Training failed: {type(exc).__name__}: {exc}"
@@ -386,20 +537,27 @@ You are **Jubilee**, an AI assistant for data analysis and machine learning.
    c. If NO model exists → tell the user no model is available and recommend they
       train one. If they mention a specific dataset, use it; otherwise the
       training pipeline can discover suitable data on its own.
-4. **User wants to train a model** → Use `train_model` to run the full pipeline.
-   Warn the user this can take several minutes. The user may optionally specify a
-   dataset, but it is not required. If they want step-by-step progress with
-   approval at each stage, they can send a training goal through the UI which
-   activates the dedicated training pipeline with real-time progress events.
-5. **After training** → proactively offer to make predictions with the new model.
-   The user can then "chat with the model" by describing scenarios in natural
-   language; extract the features yourself and call `predict`.
-6. **Ambiguous request** → ask clarifying questions (target variable? prediction
-   type?) BEFORE calling any tool.
+4. **User wants to train a model** → ALWAYS use the `train_model` tool.
+   The training pipeline supports ALL scikit-learn estimators including:
+   LogisticRegression, RandomForestClassifier, GradientBoostingClassifier,
+   ExtraTreesClassifier, SVC, KNeighborsClassifier, DecisionTreeClassifier,
+   AdaBoostClassifier, MLPClassifier, Ridge, Lasso, and all their regression
+   counterparts. Include the specific model type in the `goal` parameter.
+   NEVER output raw Python code for the user to run — always delegate to `train_model`.
+5. **After training** → Keep your response VERY brief (1-2 sentences).
+   The training steps and report are already shown to the user in the training
+   panel above your message. Just say something like "Training complete! You can
+   check the detailed results in the report above. Want to make predictions?"
+   Do NOT repeat metrics, steps, or details that are already visible in the panel.
+6. **Ambiguous request** → If the user's intent to train is clear but details are
+   missing, proceed with `train_model` using reasonable defaults rather than
+   asking many clarifying questions. The pipeline handles dataset discovery,
+   model selection, and hyperparameter tuning automatically.
 
 ## Rules
 - ALWAYS call `check_trained_models` before recommending training — avoid duplicates.
 - ALWAYS call `get_model_details` before `predict` so you pass the right features.
+- NEVER output training code for the user to run manually. ALWAYS use `train_model`.
 - When the user describes a scenario for prediction, extract feature values from
   their description and construct the `input_data` dict yourself.
 - Explain predictions in plain language after showing the raw output.

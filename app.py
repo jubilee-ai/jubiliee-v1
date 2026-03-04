@@ -30,7 +30,7 @@ from utils import get_registered_dataset, register_dataset
 
 # Import training agent utilities (simple agent only)
 from agents.training.core.state import TrainingAgentState
-from agents.training.utils.streaming import build_node_update, extract_interrupt_info
+from agents.training.utils.streaming import build_node_update, calculate_progress, extract_interrupt_info
 
 # Import the main orchestrator agent (use importlib to avoid collision with
 # agents/data-retrieval/agent.py which is also on sys.path)
@@ -343,15 +343,20 @@ async def get_datasets():
 
 @app.get("/api/models")
 async def get_models():
-    """Get available model types"""
-    return [
-        {"id": "logistic_regression", "name": "Logistic Regression", "description": "Binary/multiclass classification, interpretable"},
-        {"id": "random_forest", "name": "Random Forest", "description": "Classification/regression, feature importance"},
-        {"id": "xgboost", "name": "XGBoost", "description": "High-performance tabular data"},
-        {"id": "naive_bayes", "name": "Naive Bayes", "description": "Fast probabilistic classifier, great baseline"},
-        {"id": "glm", "name": "GLM", "description": "Poisson/Gamma/Tweedie regression"},
-        {"id": "survival_analysis", "name": "Survival Analysis", "description": "Time-to-event prediction with censoring"},
-    ]
+    """Get available model types from the skill registry."""
+    from agents.training.skill_registry import _discover_skills
+
+    skills = _discover_skills()
+    models = []
+    for name, meta in skills.items():
+        models.append({
+            "id": name,
+            "name": meta.get("label", name),
+            "description": meta.get("brief", ""),
+            "task_types": meta.get("task_types", []),
+            "aliases": meta.get("aliases", []),
+        })
+    return models
 
 
 @app.get("/api/trained-models")
@@ -530,6 +535,44 @@ def _should_skip_tool_message(content: str) -> bool:
     return content.startswith("REJECTED") or content.startswith("SKIP:")
 
 
+_STATE_KEYS_TO_STRIP = {"split_indices"}
+
+
+def _slim_state(shared_state: dict) -> dict:
+    """Return a copy of shared_state with oversized fields removed."""
+    return {k: v for k, v in shared_state.items() if k not in _STATE_KEYS_TO_STRIP}
+
+
+def _emit_node_started(event: dict, thread_id: str, emitted_starts: set):
+    """If the model event contains tool_calls, yield a node_started SSE event."""
+    model_output = event.get("model") or event.get("agent")
+    if not model_output:
+        return None
+    msgs = model_output.get("messages", [])
+    for msg in msgs:
+        tool_calls = getattr(msg, "tool_calls", None)
+        if not tool_calls:
+            continue
+        for tc in tool_calls:
+            tool_name = tc.get("name") if isinstance(tc, dict) else getattr(tc, "name", None)
+            if not tool_name:
+                continue
+            step_name = TOOL_TO_STEP.get(tool_name, tool_name)
+            if step_name in emitted_starts:
+                continue
+            emitted_starts.add(step_name)
+            progress = calculate_progress(step_name) if step_name in TOOL_TO_STEP.values() else 0
+            evt = {
+                "type": "node_started",
+                "node": step_name,
+                "progress": progress,
+                "thread_id": thread_id,
+            }
+            print(f"[SSE] → node_started: {step_name}")
+            return f"data: {json.dumps(evt)}\n\n"
+    return None
+
+
 def generate_simple_sse_events(
     goal: str,
     linked_datasets: Optional[list[str]],
@@ -543,78 +586,93 @@ def generate_simple_sse_events(
     from langgraph.types import Command
 
     thread_id = thread_id or f"simple-{uuid.uuid4().hex[:8]}"
-
-    registered_refs = []
-    if linked_datasets:
-        for dataset_path in linked_datasets:
-            ref = load_and_register_dataset(dataset_path)
-            if ref:
-                registered_refs.append(ref)
-                yield f"data: {json.dumps({'type': 'dataset_loaded', 'dataset': dataset_path, 'ref': ref, 'thread_id': thread_id})}\n\n"
-
-    final_linked = registered_refs if registered_refs else linked_datasets
-
-    checkpointer = MemorySaver()
-    agent, shared_state = create_simple_training_agent(
-        goal=goal,
-        linked_datasets=final_linked,
-        user_model_preference=model_pref,
-        hitl=hitl,
-        checkpointer=checkpointer,
-    )
-
-    simple_agent_store[thread_id] = {
-        "agent": agent,
-        "state": shared_state,
-        "checkpointer": checkpointer,
-    }
-
-    config = {"configurable": {"thread_id": thread_id}}
-    emitted_steps: set[str] = set()
-    simple_agent_store[thread_id]["emitted_steps"] = emitted_steps
-
-    yield f"data: {json.dumps({'type': 'started', 'node': 'init', 'progress': 0, 'message': 'Simple agent started', 'thread_id': thread_id})}\n\n"
+    print(f"[SSE] Starting training stream thread_id={thread_id} hitl={hitl}")
 
     try:
+        registered_refs = []
+        if linked_datasets:
+            for dataset_path in linked_datasets:
+                ref = load_and_register_dataset(dataset_path)
+                if ref:
+                    registered_refs.append(ref)
+                    yield f"data: {json.dumps({'type': 'dataset_loaded', 'dataset': dataset_path, 'ref': ref, 'thread_id': thread_id})}\n\n"
+
+        final_linked = registered_refs if registered_refs else linked_datasets
+
+        checkpointer = MemorySaver()
+        agent, shared_state = create_simple_training_agent(
+            goal=goal,
+            linked_datasets=final_linked,
+            user_model_preference=model_pref,
+            hitl=hitl,
+            checkpointer=checkpointer,
+        )
+
+        simple_agent_store[thread_id] = {
+            "agent": agent,
+            "state": shared_state,
+            "checkpointer": checkpointer,
+        }
+
+        config = {"configurable": {"thread_id": thread_id}}
+        emitted_steps: set[str] = set()
+        emitted_starts: set[str] = set()
+        simple_agent_store[thread_id]["emitted_steps"] = emitted_steps
+        simple_agent_store[thread_id]["emitted_starts"] = emitted_starts
+
+        yield f"data: {json.dumps({'type': 'started', 'node': 'init', 'progress': 0, 'message': 'Simple agent started', 'thread_id': thread_id})}\n\n"
+        print("[SSE] → started event sent")
+
         for event in agent.stream(
             {"messages": [{"role": "user", "content": goal}]},
             config=config,
             stream_mode="updates",
         ):
+            event_keys = list(event.keys())
+            print(f"[SSE] stream event keys={event_keys}")
+
             if "__interrupt__" in event:
                 info = _extract_simple_interrupt(event["__interrupt__"], thread_id)
+                print(f"[SSE] → interrupt: node={info.get('node')}")
                 interrupt_event = {
                     "type": "interrupt",
                     "thread_id": thread_id,
                     **info,
-                    "state_snapshot": serialize_state(shared_state),
+                    "state_snapshot": serialize_state(_slim_state(shared_state)),
                 }
                 yield f"data: {json.dumps(serialize_state(interrupt_event))}\n\n"
                 return
+
+            started_evt = _emit_node_started(event, thread_id, emitted_starts)
+            if started_evt:
+                yield started_evt
 
             if "tools" in event:
                 tool_msgs = event["tools"].get("messages", [])
                 if tool_msgs:
                     content = getattr(tool_msgs[0], "content", "")
                     if _should_skip_tool_message(content):
+                        print(f"[SSE] skipping tool message: {content[:80]}")
                         continue
                     tool_name = getattr(tool_msgs[0], "name", "unknown")
                     step_name = TOOL_TO_STEP.get(tool_name, tool_name)
                     if step_name in emitted_steps:
                         continue
                     emitted_steps.add(step_name)
-                    update = build_node_update(step_name, dict(shared_state))
+                    update = build_node_update(step_name, _slim_state(shared_state))
                     update["thread_id"] = thread_id
+                    print(f"[SSE] → node_complete: {step_name}")
                     yield f"data: {json.dumps(serialize_state(update))}\n\n"
 
-        # Capture training results so the chat agent can reference them
         _save_training_context(shared_state)
 
+        print("[SSE] → completed")
         yield f"data: {json.dumps({'type': 'completed', 'node': 'end', 'progress': 100, 'message': 'Training completed', 'thread_id': thread_id})}\n\n"
 
     except Exception as e:
         import traceback
         traceback.print_exc()
+        print(f"[SSE] → error: {e}")
         yield f"data: {json.dumps({'type': 'error', 'error': str(e), 'thread_id': thread_id})}\n\n"
 
 
@@ -626,8 +684,11 @@ def generate_simple_resume_sse_events(
     """SSE generator for resuming the simple agent after an interrupt."""
     from langgraph.types import Command
 
+    print(f"[SSE] Resuming thread_id={thread_id} approved={approved}")
+
     store = simple_agent_store.get(thread_id)
     if not store:
+        print(f"[SSE] ERROR: thread {thread_id} not found in store")
         yield f"data: {json.dumps({'type': 'error', 'error': 'Simple agent thread not found', 'thread_id': thread_id})}\n\n"
         return
 
@@ -635,12 +696,12 @@ def generate_simple_resume_sse_events(
     shared_state = store["state"]
     config = {"configurable": {"thread_id": thread_id}}
     emitted_steps: set[str] = store.get("emitted_steps", set())
+    emitted_starts: set[str] = store.get("emitted_starts", set())
 
     single_decision = {"approved": approved}
     if not approved:
         single_decision["feedback"] = feedback or "Please redo this step."
 
-    # Query actual pending interrupts from the checkpoint state
     try:
         state_snapshot = agent.get_state(config)
         interrupt_ids = [
@@ -662,22 +723,31 @@ def generate_simple_resume_sse_events(
             config=config,
             stream_mode="updates",
         ):
+            event_keys = list(event.keys())
+            print(f"[SSE resume] stream event keys={event_keys}")
+
             if "__interrupt__" in event:
                 info = _extract_simple_interrupt(event["__interrupt__"], thread_id)
+                print(f"[SSE resume] → interrupt: node={info.get('node')}")
                 interrupt_event = {
                     "type": "interrupt",
                     "thread_id": thread_id,
                     **info,
-                    "state_snapshot": serialize_state(shared_state),
+                    "state_snapshot": serialize_state(_slim_state(shared_state)),
                 }
                 yield f"data: {json.dumps(serialize_state(interrupt_event))}\n\n"
                 return
+
+            started_evt = _emit_node_started(event, thread_id, emitted_starts)
+            if started_evt:
+                yield started_evt
 
             if "tools" in event:
                 tool_msgs = event["tools"].get("messages", [])
                 if tool_msgs:
                     content = getattr(tool_msgs[0], "content", "")
                     if _should_skip_tool_message(content):
+                        print(f"[SSE resume] skipping tool message: {content[:80]}")
                         continue
                     tool_name = getattr(tool_msgs[0], "name", "unknown")
                     step_name = TOOL_TO_STEP.get(tool_name, tool_name)
@@ -685,17 +755,20 @@ def generate_simple_resume_sse_events(
                         continue
                     emitted_steps.add(step_name)
                     store["emitted_steps"] = emitted_steps
-                    update = build_node_update(step_name, dict(shared_state))
+                    update = build_node_update(step_name, _slim_state(shared_state))
                     update["thread_id"] = thread_id
+                    print(f"[SSE resume] → node_complete: {step_name}")
                     yield f"data: {json.dumps(serialize_state(update))}\n\n"
 
         _save_training_context(shared_state)
 
+        print("[SSE resume] → completed")
         yield f"data: {json.dumps({'type': 'completed', 'node': 'end', 'progress': 100, 'message': 'Training completed', 'thread_id': thread_id})}\n\n"
 
     except Exception as e:
         import traceback
         traceback.print_exc()
+        print(f"[SSE resume] → error: {e}")
         yield f"data: {json.dumps({'type': 'error', 'error': str(e), 'thread_id': thread_id})}\n\n"
 
 
@@ -837,9 +910,10 @@ def _emit_training_step_events(thread_id: str):
 
     yield f"data: {json.dumps({'type': 'training_started', 'thread_id': thread_id})}\n\n"
 
+    slim = _slim_state(state)
     for step_name in STEP_ORDER:
         try:
-            update = build_node_update(step_name, state)
+            update = build_node_update(step_name, slim)
             update["thread_id"] = thread_id
             serialized = serialize_state(update)
             yield f"data: {json.dumps(serialized)}\n\n"
@@ -855,13 +929,18 @@ def _generate_chat_sse(thread_id: str, message: str, training_context: Optional[
     The orchestrator's checkpointer (MemorySaver in agent.py) keeps full
     message history per thread, so we only pass the newest user message.
 
-    When the orchestrator invokes ``train_model``, we emit rich per-step
-    training events so the frontend can update its progress panel.
+    When the orchestrator invokes ``train_model``, training step events are
+    streamed in real-time through a shared queue so the frontend can update
+    the progress panel as each step completes.
+
+    Uses a background thread for the orchestrator stream so we can emit
+    SSE heartbeats and training events while long-running tools are executing.
     """
+    import queue
+    import threading
+
     config = {"configurable": {"thread_id": thread_id}}
 
-    # Inject training context so the orchestrator knows about the most
-    # recent model trained via the training pipeline.
     context_block = training_context or ""
     if not context_block and _last_training_context and thread_id not in _chat_threads_with_context:
         context_block = _build_training_context_message(_last_training_context)
@@ -876,17 +955,63 @@ def _generate_chat_sse(thread_id: str, message: str, training_context: Optional[
 
     yield f"data: {json.dumps({'type': 'start', 'thread_id': thread_id})}\n\n"
 
+    chunk_q: queue.Queue = queue.Queue()
+
+    # Connect training step events and HITL decision queue so training
+    # events stream in real-time and interrupts can block until the
+    # user responds via /api/chat/training-decision.
+    decision_q: queue.Queue = queue.Queue()
+    _mod.set_training_step_sink(chunk_q)
+    _mod.set_training_decision_queue(decision_q)
+
+    def _stream_worker():
+        try:
+            for chunk in orchestrator_agent.stream(
+                agent_input,
+                config=config,
+                stream_mode="updates",
+            ):
+                chunk_q.put(("chunk", chunk))
+            chunk_q.put(("done", None))
+        except Exception as exc:
+            chunk_q.put(("error", exc))
+
+    worker = threading.Thread(target=_stream_worker, daemon=True)
+    worker.start()
+
+    _HEARTBEAT_INTERVAL = 5  # seconds
+    training_in_progress = False
+
     try:
-        for chunk in orchestrator_agent.stream(
-            agent_input,
-            config=config,
-            stream_mode="updates",
-        ):
+        while True:
+            try:
+                msg_type, payload = chunk_q.get(timeout=_HEARTBEAT_INTERVAL)
+            except queue.Empty:
+                yield f"data: {json.dumps({'type': 'heartbeat', 'thread_id': thread_id, 'training': training_in_progress})}\n\n"
+                continue
+
+            if msg_type == "done":
+                break
+            if msg_type == "error":
+                raise payload
+
+            # Real-time training step events pushed by _run_training_to_completion
+            if msg_type == "training_step":
+                step_event = payload
+                step_event["thread_id"] = thread_id
+                print(f"[SSE chat] → training step: {step_event.get('type', '?')} / {step_event.get('node', '')}")
+                yield f"data: {json.dumps(serialize_state(step_event))}\n\n"
+                continue
+
+            chunk = payload
+
             if "model" in chunk:
                 msgs = chunk["model"].get("messages", [])
                 for msg in msgs:
                     if hasattr(msg, "tool_calls") and msg.tool_calls:
                         for tc in msg.tool_calls:
+                            if tc["name"] == "train_model":
+                                training_in_progress = True
                             yield f"data: {json.dumps({'type': 'tool_call', 'tool': tc['name'], 'args': serialize_state(tc.get('args', {})), 'thread_id': thread_id})}\n\n"
                     raw_content = getattr(msg, "content", "")
                     if isinstance(raw_content, list):
@@ -909,12 +1034,15 @@ def _generate_chat_sse(thread_id: str, message: str, training_context: Optional[
                     yield f"data: {json.dumps({'type': 'tool_result', 'tool': name, 'result': snippet, 'thread_id': thread_id})}\n\n"
 
                     if name == "train_model":
-                        yield from _emit_training_step_events(thread_id)
+                        training_in_progress = False
 
         yield f"data: {json.dumps({'type': 'end', 'thread_id': thread_id})}\n\n"
 
     except Exception as exc:
         yield f"data: {json.dumps({'type': 'error', 'error': str(exc), 'thread_id': thread_id})}\n\n"
+    finally:
+        _mod.set_training_step_sink(None)
+        _mod.set_training_decision_queue(None)
 
 
 @app.post("/api/chat")
@@ -937,6 +1065,25 @@ async def chat(request: ChatRequest):
             "X-Accel-Buffering": "no",
         },
     )
+
+
+class ChatTrainingDecision(BaseModel):
+    approved: bool
+    feedback: Optional[str] = None
+
+
+@app.post("/api/chat/training-decision")
+async def chat_training_decision(body: ChatTrainingDecision):
+    """Submit a HITL decision for training running inside the chat SSE.
+
+    The training agent blocks on a decision queue when it hits an
+    interrupt.  This endpoint unblocks it.
+    """
+    decision: dict[str, Any] = {"approved": body.approved}
+    if body.feedback:
+        decision["feedback"] = body.feedback
+    _mod.submit_training_decision(decision)
+    return {"status": "ok"}
 
 
 # ============================================================================

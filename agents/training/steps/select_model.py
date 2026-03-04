@@ -50,6 +50,89 @@ def format_training_models_for_prompt() -> str:
     return "\n".join(lines)
 
 
+_ALIAS_TO_ESTIMATOR: dict[str, str] = {
+    "logistic regression": "LogisticRegression",
+    "logistic_regression": "LogisticRegression",
+    "logreg": "LogisticRegression",
+    "random forest": "RandomForestClassifier",
+    "random_forest": "RandomForestClassifier",
+    "rf": "RandomForestClassifier",
+    "gradient boosting": "GradientBoostingClassifier",
+    "gradient_boosting": "GradientBoostingClassifier",
+    "gbm": "GradientBoostingClassifier",
+    "gradient boosted": "GradientBoostingClassifier",
+    "xgboost": "GradientBoostingClassifier",
+    "xgb": "GradientBoostingClassifier",
+    "naive bayes": "GaussianNB",
+    "naive_bayes": "GaussianNB",
+    "nb": "GaussianNB",
+    "svm": "SVC",
+    "support vector machine": "SVC",
+    "svc": "SVC",
+    "svr": "SVR",
+    "knn": "KNeighborsClassifier",
+    "k-nearest neighbors": "KNeighborsClassifier",
+    "nearest neighbors": "KNeighborsClassifier",
+    "decision tree": "DecisionTreeClassifier",
+    "dt": "DecisionTreeClassifier",
+    "adaboost": "AdaBoostClassifier",
+    "ada boost": "AdaBoostClassifier",
+    "bagging": "BaggingClassifier",
+    "extra trees": "ExtraTreesClassifier",
+    "extremely randomized trees": "ExtraTreesClassifier",
+    "mlp": "MLPClassifier",
+    "neural network": "MLPClassifier",
+    "multi-layer perceptron": "MLPClassifier",
+    "ridge": "Ridge",
+    "ridge classifier": "RidgeClassifier",
+    "lasso": "Lasso",
+    "elastic net": "ElasticNet",
+    "elasticnet": "ElasticNet",
+    "linear regression": "LinearRegression",
+    "sgd": "SGDClassifier",
+    "stochastic gradient descent": "SGDClassifier",
+    "huber": "HuberRegressor",
+    "huber regressor": "HuberRegressor",
+}
+
+
+def _resolve_alias(name: str, skills: dict) -> tuple[str, str | None]:
+    """Resolve a model name/alias to (canonical_skill_name, estimator_hint).
+
+    Handles underscores, spaces, and case variations so that
+    "gradient_boosting", "Gradient Boosting", "GradientBoostingClassifier"
+    all resolve to the correct skill (e.g. "sklearn_generic") AND return
+    the specific sklearn estimator class name as a hint.
+
+    Returns (skill_name, estimator_hint). estimator_hint is None if the
+    name already matched a skill directly.
+    """
+    if name in skills:
+        return name, None
+
+    alias_map = build_alias_map()
+    lower = name.lower()
+    spaced = lower.replace("_", " ")
+
+    def _find_estimator(key: str) -> str | None:
+        """Look up the estimator class name for an alias."""
+        return _ALIAS_TO_ESTIMATOR.get(key) or _ALIAS_TO_ESTIMATOR.get(key.replace("_", " "))
+
+    # Direct lookup
+    if lower in alias_map:
+        return alias_map[lower], _find_estimator(lower)
+
+    if spaced in alias_map:
+        return alias_map[spaced], _find_estimator(spaced)
+
+    # Substring match for compound names (e.g. "GradientBoostingClassifier")
+    for alias in sorted(alias_map, key=len, reverse=True):
+        if alias in lower or alias in spaced:
+            return alias_map[alias], _find_estimator(alias)
+
+    return name, None
+
+
 def _extract_model_from_goal(goal: str) -> str | None:
     """Detect an explicit model request in the user's goal text.
 
@@ -141,7 +224,11 @@ def select_model(state: "TrainingAgentState") -> "TrainingAgentState":
     explicit_pref = state.get("user_model_preference") or _extract_model_from_goal(state.get("goal", ""))
 
     if explicit_pref:
-        model_name = explicit_pref
+        # Resolve through alias map so that common names like
+        # "gradient_boosting", "random_forest", "xgboost" etc. map to
+        # their canonical skill (e.g. "sklearn_generic") AND get the
+        # specific estimator class name hint.
+        model_name, estimator_hint = _resolve_alias(explicit_pref, skills)
 
         if model_name not in skills:
             return {
@@ -151,21 +238,28 @@ def select_model(state: "TrainingAgentState") -> "TrainingAgentState":
             }
 
         model_info = skills[model_name]
+        display_name = estimator_hint or model_name
+        explanation = (
+            f"User specified {display_name} (skill: {model_name}): "
+            f"{model_info.get('brief', '')}"
+        )
         return {
             **state,
             "selected_model": model_name,
-            "model_explanation": f"User specified {model_name}: {model_info.get('brief', '')}",
+            "estimator_hint": estimator_hint,
+            "model_explanation": explanation,
             "audit_trace": [
                 *state.get("audit_trace", []),
                 {
                     "step": "select_model",
                     "action": "user_specified",
                     "model": model_name,
+                    "estimator_hint": estimator_hint,
                 },
             ],
             "explanations": [
                 *state.get("explanations", []),
-                f"Using user-specified model: {model_name}",
+                f"Using user-specified model: {display_name}",
             ],
             "current_step": "select_model",
         }

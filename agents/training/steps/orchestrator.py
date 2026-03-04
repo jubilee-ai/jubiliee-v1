@@ -454,7 +454,7 @@ def training_approval(state: TrainingAgentState) -> TrainingAgentState:
         train_ref, val_ref = state.get("transformed_train_ref"), state.get("transformed_val_ref")
         label_def, feature_spec = _get_label_def(state), state.get("feature_spec") or {}
         target_column = label_def.get("target_column", "")
-        selected_model = state.get("selected_model", "logistic_regression")
+        selected_model = state.get("selected_model", "sklearn_generic")
         goal = state.get("goal", "")
 
         train_df = get_registered_dataset(train_ref)
@@ -591,7 +591,7 @@ def training(state: TrainingAgentState) -> TrainingAgentState:
         train_ref, val_ref, test_ref = s.get("transformed_train_ref"), s.get("transformed_val_ref"), s.get("transformed_test_ref")
         label_def = _get_label_def(s)
         target_column = label_def.get("target_column", "")
-        selected_model = s.get("selected_model", "logistic_regression")
+        selected_model = s.get("selected_model", "sklearn_generic")
         goal = _add_feedback_to_goal(s.get("goal", ""), "training", feedback)
 
         if not train_ref:

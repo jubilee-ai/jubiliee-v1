@@ -38,6 +38,15 @@ CATALOG_PATH = DATASETS_DIR / "catalog.json"
 SQL_DIR = DATASETS_DIR / "sql"
 DERIVED_DATASETS_DIR = DATASETS_DIR / "derived"  # For newly created/joined datasets
 
+
+def _import_sql_query():
+    """Import sql_query, supporting both package and standalone (sys.path) contexts."""
+    try:
+        from . import sql_query
+    except ImportError:
+        import sql_query
+    return sql_query
+
 # Ensure derived datasets directory exists
 DERIVED_DATASETS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -459,10 +468,7 @@ def _register_in_sql_warehouse(ref: str, df) -> None:
     """Register a DataFrame as a table in the SQL warehouse."""
     from sqlalchemy import text
     
-    # Import here to avoid circular imports
-    from .sql_query import get_warehouse
-    
-    warehouse = get_warehouse()
+    warehouse = _import_sql_query().get_warehouse()
     table_name = _sanitize_ref_for_sql(ref)
     
     # Dedupe column names for SQL (SQLite is case-insensitive)
@@ -479,7 +485,7 @@ def _register_in_sql_warehouse(ref: str, df) -> None:
         for c in inspector.get_columns(table_name)
     ]
     
-    from .sql_query import TableInfo
+    TableInfo = _import_sql_query().TableInfo
     warehouse.tables[table_name] = TableInfo(
         name=table_name,
         columns=columns,
@@ -556,8 +562,7 @@ def clear_registry(clear_disk: bool = False, clear_sql: bool = True) -> None:
     if clear_sql and _derived_sql_tables:
         try:
             from sqlalchemy import text
-            from .sql_query import get_warehouse
-            warehouse = get_warehouse()
+            warehouse = _import_sql_query().get_warehouse()
             with warehouse.engine.connect() as conn:
                 for table_name in list(_derived_sql_tables):
                     try:
@@ -602,8 +607,7 @@ def clear_dataset_registry(prefix: str = None, clear_disk: bool = False, clear_s
         if clear_sql and _derived_sql_tables:
             try:
                 from sqlalchemy import text
-                from .sql_query import get_warehouse
-                warehouse = get_warehouse()
+                warehouse = _import_sql_query().get_warehouse()
                 with warehouse.engine.connect() as conn:
                     for table_name in list(_derived_sql_tables):
                         try:
@@ -637,8 +641,7 @@ def clear_dataset_registry(prefix: str = None, clear_disk: bool = False, clear_s
     if clear_sql:
         try:
             from sqlalchemy import text
-            from .sql_query import get_warehouse
-            warehouse = get_warehouse()
+            warehouse = _import_sql_query().get_warehouse()
             safe_prefix = _sanitize_ref_for_sql(prefix)
             with warehouse.engine.connect() as conn:
                 for table_name in list(_derived_sql_tables):
@@ -737,8 +740,7 @@ def get_all_available_datasets() -> dict[str, list[dict]]:
     
     # SQL warehouse tables (lazy import to avoid circular deps)
     try:
-        from .sql_query import get_warehouse
-        warehouse = get_warehouse()
+        warehouse = _import_sql_query().get_warehouse()
         for t in warehouse.get_all_tables():
             result["sql_tables"].append({
                 "ref": t.name,
@@ -774,8 +776,7 @@ def list_all_dataset_refs() -> list[str]:
     
     # SQL tables
     try:
-        from .sql_query import list_tables
-        refs.extend(list_tables())
+        refs.extend(_import_sql_query().list_tables())
     except Exception:
         pass
     
