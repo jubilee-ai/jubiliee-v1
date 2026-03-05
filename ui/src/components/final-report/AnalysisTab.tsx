@@ -27,7 +27,7 @@ export function AnalysisTab({ agentState }: AnalysisTabProps) {
   const hasNumericSummaries = keyStats?.numeric_summaries?.length > 0
   const hasCorrelations = keyStats?.feature_correlations?.length > 0
   const hasDistributionStats = keyStats?.distribution_stats?.length > 0
-  const hasGroupSummaries = keyStats?.group_summaries?.length > 0
+  const hasGroupSummaries = (keyStats?.group_summaries?.length ?? 0) > 0
   const hasConcentrationAnalysis = keyStats?.concentration_analysis?.length > 0
 
   const hasAnyData =

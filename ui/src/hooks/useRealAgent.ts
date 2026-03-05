@@ -135,6 +135,7 @@ export function useRealAgent(): UseRealAgentReturn {
   const streamControllerRef = useRef<AbortController | null>(null)
   const chatControllerRef = useRef<AbortController | null>(null)
   const emittedStepsRef = useRef<Set<string>>(new Set())
+  /** @deprecated Polling path is unused; streaming is always used. Kept for potential future toggle. */
   const useStreaming = true // Enable streaming by default
 
   // Add a message to the chat
@@ -145,7 +146,7 @@ export function useRealAgent(): UseRealAgentReturn {
     ])
   }, [])
 
-  // Update steps based on current step from backend
+  /** @deprecated Unused when streaming is enabled (default). Kept for potential polling fallback. */
   const updateStepsFromProgress = useCallback((currentStep: string | null, status: "running" | "completed") => {
     const stepOrder = STEP_DEFINITIONS.map((s) => s.id)
     const currentIndex = currentStep ? stepOrder.indexOf(currentStep) : -1
@@ -194,7 +195,7 @@ export function useRealAgent(): UseRealAgentReturn {
     checkConnection()
   }, [checkConnection])
 
-  // Poll for job status
+  /** @deprecated Unused when streaming is enabled (default). Kept for potential polling fallback. */
   const pollJob = useCallback(async (jobId: string) => {
     try {
       const status = await getTrainingStatus(jobId)
@@ -718,10 +719,10 @@ export function useRealAgent(): UseRealAgentReturn {
             streamControllerRef.current = streamResumeTraining(
               { thread_id: currentThreadId, approved: true },
               handleStreamEvent,
-              (error) => {
-                setIsRunning(false)
-                addMessage("system", `Stream error: ${error.message}`)
-              }
+(error: Error) => {
+        setIsRunning(false)
+        addMessage("system", `Stream error: ${error.message}`)
+      }
             )
           }, 100)
         }
@@ -999,7 +1000,7 @@ export function useRealAgent(): UseRealAgentReturn {
         hitl,
       },
       handleStreamEvent,
-      (error) => {
+      (error: Error) => {
         setIsRunning(false)
         addMessage("system", `Stream error: ${error.message}`)
       }
@@ -1035,10 +1036,10 @@ export function useRealAgent(): UseRealAgentReturn {
         streamControllerRef.current = streamResumeTraining(
           { thread_id: threadId, approved: true },
           handleStreamEvent,
-          (error) => {
-            setIsRunning(false)
-            addMessage("system", `Stream error: ${error.message}`)
-          }
+(error: Error) => {
+        setIsRunning(false)
+        addMessage("system", `Stream error: ${error.message}`)
+      }
         )
         break
         
@@ -1062,10 +1063,10 @@ export function useRealAgent(): UseRealAgentReturn {
         streamControllerRef.current = streamResumeTraining(
           { thread_id: threadId, approved: true },
           handleStreamEvent,
-          (error) => {
-            setIsRunning(false)
-            addMessage("system", `Stream error: ${error.message}`)
-          }
+(error: Error) => {
+        setIsRunning(false)
+        addMessage("system", `Stream error: ${error.message}`)
+      }
         )
         break
         
@@ -1088,16 +1089,16 @@ export function useRealAgent(): UseRealAgentReturn {
         streamControllerRef.current = streamResumeTraining(
           { thread_id: threadId, approved: false, feedback: comment || "Please redo this step." },
           handleStreamEvent,
-          (error) => {
-            setIsRunning(false)
-            addMessage("system", `Stream error: ${error.message}`)
-          }
+(error: Error) => {
+        setIsRunning(false)
+        addMessage("system", `Stream error: ${error.message}`)
+      }
         )
         break
     }
   }, [confirmationRequest, threadId, addMessage, handleStreamEvent])
 
-  // Start training with polling (fallback)
+  /** @deprecated Unused when streaming is enabled (default). Kept for potential polling fallback. */
   const startAgentPolling = useCallback(async (goal: string, linkedDatasets?: string[], modelPreference?: string) => {
     // Check connection first
     const connected = await checkConnection()
@@ -1290,7 +1291,7 @@ export function useRealAgent(): UseRealAgentReturn {
         training_context: buildTrainingContext(),
       },
       handleChatEvent,
-      (error) => {
+      (error: Error) => {
         setIsRunning(false)
         addMessage("system", `Chat error: ${error.message}`)
       },

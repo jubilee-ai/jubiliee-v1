@@ -1,4 +1,4 @@
-import React, { useState, forwardRef } from "react"
+import { useState, forwardRef } from "react"
 import ReactMarkdown from "react-markdown"
 import { cn } from "@/lib/utils"
 import { User, Bot, FileText, ChevronRight } from "lucide-react"
@@ -55,6 +55,7 @@ export const MessageBubble = forwardRef<HTMLDivElement, MessageBubbleProps>(
     return (
       <div 
         ref={ref}
+        data-step-id={stepId}
         className={cn(
           "flex gap-3 transition-all duration-300",
           isUser && "flex-row-reverse",
