@@ -518,20 +518,43 @@ export function useRealAgent(): UseRealAgentReturn {
         lines.push(`Validation: ${summary.validation_passed ? "✓ Passed" : "⚠ Issues found"}`)
       }
     } else if (nodeName === "training_approval" && summary) {
-      if (summary.model_type) lines.push(`Model: **${summary.model_type}**`)
-      if (summary.task_type) lines.push(`Task: ${summary.task_type}`)
-      const hp = summary.hyperparameters
-      if (hp && typeof hp === "object") {
-        const entries = Object.entries(hp as Record<string, unknown>)
-        const keyParams = entries.slice(0, 4).map(([k, v]) => `\`${k}=${v}\``).join(", ")
-        if (keyParams) {
-          lines.push(`Key params: ${keyParams}${entries.length > 4 ? ` (+${entries.length - 4} more)` : ""}`)
+      const hp = (summary.hyperparameters || {}) as Record<string, unknown>
+      const hpEntries = Object.entries(hp)
+      const modelType = String(summary.model_type || "unknown")
+      const taskType = String(summary.task_type || "unknown")
+      const modelName = hp.model_name ? String(hp.model_name) : modelType
+
+      lines.length = 0
+      lines.push(`## Training Configuration`)
+      lines.push("")
+      lines.push(`> **${modelName}** for ${taskType}`)
+      lines.push("")
+      lines.push(`**Algorithm:** ${modelName}`)
+      if (modelName !== modelType) lines.push(`**Framework:** ${modelType}`)
+      if (summary.class_weight) lines.push(`**Class Weight:** ${summary.class_weight}`)
+      lines.push("")
+
+      const displayEntries = hpEntries.filter(([k]) => k !== "model_name")
+      if (displayEntries.length > 0) {
+        lines.push(`### Hyperparameters (${displayEntries.length})`)
+        lines.push("")
+        const paramLines = displayEntries.map(([k, v]) => `\`${k}=${v}\``)
+        for (let i = 0; i < paramLines.length; i += 3) {
+          lines.push(paramLines.slice(i, i + 3).join("  ·  "))
         }
+        lines.push("")
       }
+
       const strategy = summary.strategy_notes
       if (strategy) {
-        const noteCount = Array.isArray(strategy) ? strategy.length : 1
-        lines.push(`\nStrategy: ${noteCount} section${noteCount !== 1 ? "s" : ""} — view details for full plan`)
+        lines.push(`### Strategy`)
+        lines.push("")
+        if (Array.isArray(strategy)) {
+          strategy.forEach((note: unknown) => lines.push(String(note)))
+        } else {
+          lines.push(String(strategy))
+        }
+        lines.push("")
       }
     } else if (nodeName === "training" && summary) {
       if (summary.model_name) lines.push(`Model: **${summary.model_name}**`)
@@ -838,8 +861,95 @@ export function useRealAgent(): UseRealAgentReturn {
       
       console.log("[stream] formattedDetails for", nodeName, "length:", formattedDetails?.length || 0)
       
-      // For feature_selection_specification, always create a detailed message
-      if (nodeName === "feature_selection_specification") {
+      // For training_approval, create a rich structured message
+      if (nodeName === "training_approval") {
+        const summary = event.summary as Record<string, unknown> | undefined
+        const details = event.details as Record<string, unknown> | undefined
+        const messageLines: string[] = []
+
+        const hp = (summary?.hyperparameters || {}) as Record<string, unknown>
+        const hpEntries = Object.entries(hp)
+        const modelType = String(summary?.model_type || "unknown")
+        const taskType = String(summary?.task_type || "unknown")
+        const modelName = hp.model_name ? String(hp.model_name) : modelType
+        const ds = (summary?.data_summary || details?.data_summary || {}) as Record<string, unknown>
+
+        messageLines.push(`## Training Configuration`)
+        messageLines.push("")
+        messageLines.push(`> **${modelName}** for ${taskType}`)
+        messageLines.push("")
+
+        messageLines.push(`### Model`)
+        messageLines.push("")
+        messageLines.push(`**Algorithm:** ${modelName}`)
+        if (modelName !== modelType) {
+          messageLines.push(`**Framework:** ${modelType}`)
+        }
+        if (summary?.class_weight) {
+          messageLines.push(`**Class Weight:** ${summary.class_weight}`)
+        }
+        if (summary?.max_iterations) {
+          messageLines.push(`**Max Iterations:** ${summary.max_iterations}`)
+        }
+        messageLines.push("")
+
+        if (hpEntries.length > 0) {
+          const displayEntries = hpEntries.filter(([k]) => k !== "model_name")
+          if (displayEntries.length > 0) {
+            messageLines.push(`### Hyperparameters (${displayEntries.length})`)
+            messageLines.push("")
+            const paramLines = displayEntries.map(([k, v]) => `\`${k}=${v}\``)
+            for (let i = 0; i < paramLines.length; i += 3) {
+              messageLines.push(paramLines.slice(i, i + 3).join("  ·  "))
+            }
+            messageLines.push("")
+          }
+        }
+
+        if (ds && Object.keys(ds).length > 0) {
+          messageLines.push(`### Data`)
+          messageLines.push("")
+          const trainRows = ds.train_rows
+          const valRows = ds.val_rows
+          const nFeatures = ds.n_features
+          if (trainRows != null) {
+            const trainStr = String(trainRows).replace(/\B(?=(\d{3})+(?!\d))/g, ",")
+            messageLines.push(`**Training:** ${trainStr} samples${nFeatures ? ` × ${nFeatures} features` : ""}`)
+          }
+          if (valRows != null) {
+            messageLines.push(`**Validation:** ${String(valRows).replace(/\B(?=(\d{3})+(?!\d))/g, ",")} samples`)
+          }
+          const classDist = ds.class_distribution as Record<string, number> | undefined
+          if (classDist && typeof classDist === "object") {
+            const distParts = Object.entries(classDist).map(([cls, count]) => `\`${cls}\`: ${String(count).replace(/\B(?=(\d{3})+(?!\d))/g, ",")}`)
+            messageLines.push(`**Classes:** ${distParts.join("  ·  ")}${ds.is_imbalanced ? "  *(imbalanced)*" : ""}`)
+          }
+          messageLines.push("")
+        }
+
+        const strategy = summary?.strategy_notes
+        if (strategy) {
+          messageLines.push(`### Strategy`)
+          messageLines.push("")
+          if (Array.isArray(strategy)) {
+            strategy.forEach((note: unknown) => messageLines.push(String(note)))
+          } else {
+            const strategyStr = String(strategy)
+            messageLines.push(strategyStr.length > 500 ? strategyStr.slice(0, 500) + "..." : strategyStr)
+          }
+          messageLines.push("")
+        }
+
+        const expectedMetrics = summary?.expected_metrics
+        if (expectedMetrics) {
+          messageLines.push(`### Expected Performance`)
+          messageLines.push("")
+          messageLines.push(String(expectedMetrics))
+          messageLines.push("")
+        }
+
+        addMessage("agent", messageLines.join("\n"))
+      } else if (nodeName === "feature_selection_specification") {
         const summary = event.summary as Record<string, unknown> | undefined
         const details = event.details as Record<string, unknown> | undefined
         const messageLines: string[] = []

@@ -198,9 +198,10 @@ def build_node_update(node_name: str, node_output: dict[str, Any]) -> dict[str, 
             "class_weight": tp.get("class_weight"), "max_iterations": tp.get("max_iterations"),
             "strategy_notes": tp.get("strategy_notes"), "expected_metrics": tp.get("expected_metrics"), "data_summary": ds,
         }
+        model_name = hp.get("model_name", tp.get("model_type", "unknown"))
         update["details"] = {
-            "title": "Training Configuration Approved",
-            "description": f"Training will use **{tp.get('model_type', 'unknown')}** with approved hyperparameters.",
+            "title": "Training Configuration",
+            "description": f"**{model_name}** configured for {tp.get('task_type', 'unknown')} with {len(hp)} hyperparameters.",
             "training_plan": tp, "hyperparameters": hp, "data_summary": ds,
         }
 
