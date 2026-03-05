@@ -89,7 +89,7 @@ def test_state_and_tools():
     assert state["goal"] == "Predict loan default"
     assert state["linked_datasets"] == ["dataset_abc"]
     assert state["user_model_preference"] == "sklearn_generic"
-    assert state["selected_model"] is None
+    assert state["selected_model"] == "sklearn_generic"
     assert state["training_iteration"] == 0
     print(f"  [PASS] Initial state has {len(state)} keys, all defaults correct")
 
@@ -121,6 +121,9 @@ def test_task_type_inference():
         ("sklearn_generic", "Use SVR to predict salary", "regression"),
         ("sklearn_generic", "Train a LinearRegression for cost estimation", "regression"),
         ("sklearn_generic", "Classify fraud transactions", "classification"),
+        ("sklearn_generic", "Use HistGradientBoostingRegressor for forecasting", "regression"),
+        ("sklearn_generic", "Use NuSVR for prediction", "regression"),
+        ("sklearn_generic", "PassiveAggressiveRegressor for cost", "regression"),
         ("logistic_regression", "Predict default", "classification"),
         ("random_forest", "Predict churn", "classification"),
         ("glm", "Predict revenue", "regression"),
@@ -268,6 +271,65 @@ def test_regression_through_tools():
         _cleanup(model_name)
 
     print(f"\n  Regression through tools: {len(estimators)}/{len(estimators)} passed")
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Test 4b: HistGradientBoosting through tools
+# ═══════════════════════════════════════════════════════════════════════
+
+def test_histgb_through_tools():
+    print("\n" + "=" * 70)
+    print("TEST 4b: HistGradientBoosting — through tool interface")
+    print("=" * 70)
+
+    from agents.training.skill_registry import train_with_skill_tool
+
+    train_ref, val_ref, test_ref = _register_clf_data()
+
+    print("\n  ── HistGradientBoostingClassifier via train_with_skill_tool ──")
+    result = train_with_skill_tool.invoke({
+        "skill_name": "sklearn_generic",
+        "params": {
+            "estimator": "HistGradientBoostingClassifier",
+            "model_name": "integ_hgb_clf",
+            "train_dataset_ref": train_ref,
+            "target_column": "target",
+            "auto_tune": True,
+            "n_search_iter": 5,
+            "cv_folds": 3,
+        },
+    })
+    assert "TRAINING COMPLETE" in result, f"HGB failed: {result[:300]}"
+    assert "Cross-validation" in result
+
+    model = load_model("integ_hgb_clf")
+    assert model is not None
+    test_df = get_registered_dataset(test_ref)
+    X_test = test_df.drop(columns=["target"])
+    preds = model.predict(X_test)
+    print(f"  [PASS] HistGradientBoostingClassifier: {len(preds)} predictions, classes={np.unique(preds)}")
+    _cleanup("integ_hgb_clf")
+
+    # Regression
+    reg_train, reg_val, reg_test = _register_reg_data()
+
+    print("\n  ── HistGradientBoostingRegressor via train_with_skill_tool ──")
+    result = train_with_skill_tool.invoke({
+        "skill_name": "sklearn_generic",
+        "params": {
+            "estimator": "HistGradientBoostingRegressor",
+            "model_name": "integ_hgb_reg",
+            "train_dataset_ref": reg_train,
+            "target_column": "target",
+            "auto_tune": False,
+            "hyperparameters": {"max_iter": 50, "learning_rate": 0.1},
+        },
+    })
+    assert "TRAINING COMPLETE" in result
+    r2_line = [l for l in result.split("\n") if "Train R2" in l]
+    r2 = r2_line[0].split(": ")[1] if r2_line else "N/A"
+    print(f"  [PASS] HistGradientBoostingRegressor: R²={r2}")
+    _cleanup("integ_hgb_reg")
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -524,6 +586,205 @@ def test_full_pipeline_no_llm():
 
 
 # ═══════════════════════════════════════════════════════════════════════
+# Test 9: Real data — insurance.csv multi-model comparison
+# ═══════════════════════════════════════════════════════════════════════
+
+_INSURANCE_CSV = Path(__file__).parents[3] / "datasets" / "csv" / "insurance.csv"
+
+
+def test_real_data_insurance():
+    """Train multiple models on real insurance.csv data through the tool interface."""
+    print("\n" + "=" * 70)
+    print("TEST 9: Real data — insurance.csv multi-model comparison")
+    print("=" * 70)
+
+    if not _INSURANCE_CSV.exists():
+        print("  [SKIP] insurance.csv not found")
+        return
+
+    from agents.training.skill_registry import train_with_skill_tool
+    from agents.training.steps.training import _evaluate_model_on_test, _find_best_iteration
+
+    df = pd.read_csv(_INSURANCE_CSV)
+    print(f"  Loaded insurance.csv: {df.shape}")
+    print(f"  Columns: {list(df.columns)}")
+    print(f"  Target (charges): mean=${df['charges'].mean():,.0f}, "
+          f"std=${df['charges'].std():,.0f}")
+
+    # Split into train/val/test
+    np.random.seed(42)
+    idx = np.random.permutation(len(df))
+    n_train = int(0.7 * len(df))
+    n_val = int(0.15 * len(df))
+    train_df = df.iloc[idx[:n_train]]
+    val_df = df.iloc[idx[n_train:n_train + n_val]]
+    test_df = df.iloc[idx[n_train + n_val:]]
+
+    register_dataset("ins_integ_train", train_df)
+    register_dataset("ins_integ_val", val_df)
+    register_dataset("ins_integ_test", test_df)
+    print(f"  Split: train={len(train_df)}, val={len(val_df)}, test={len(test_df)}")
+
+    # Train multiple regression models
+    models_to_try = [
+        ("Ridge", {"alpha": 1.0}, False),
+        ("RandomForestRegressor", {"n_estimators": 100}, True),
+        ("HistGradientBoostingRegressor", {}, True),
+    ]
+
+    iterations = []
+    for est_name, fixed_hp, auto_tune in models_to_try:
+        model_name = f"ins_integ_{est_name.lower()}"
+        print(f"\n  ── {est_name} on insurance.csv ──")
+        t0 = time.time()
+
+        result = train_with_skill_tool.invoke({
+            "skill_name": "sklearn_generic",
+            "params": {
+                "estimator": est_name,
+                "model_name": model_name,
+                "train_dataset_ref": "ins_integ_train",
+                "target_column": "charges",
+                "auto_tune": auto_tune,
+                "n_search_iter": 5,
+                "cv_folds": 3,
+                "hyperparameters": fixed_hp,
+            },
+        })
+
+        elapsed = time.time() - t0
+        success = "TRAINING COMPLETE" in result
+        r2_line = [l for l in result.split("\n") if "Train R2" in l]
+        train_r2 = float(r2_line[0].split(": ")[1]) if r2_line else None
+
+        # Evaluate on val
+        val_metrics = _evaluate_model_on_test(
+            model_name=model_name, test_ref="ins_integ_val",
+            target_column="charges", task_type="regression",
+        )
+
+        iteration = {
+            "model_name": model_name,
+            "estimator": est_name,
+            "success": success,
+            "train_r2": train_r2,
+            "val_r2": val_metrics.get("test_r2"),
+            "val_rmse": val_metrics.get("test_rmse"),
+            "val_mae": val_metrics.get("test_mae"),
+        }
+        iterations.append(iteration)
+
+        val_r2 = f"{val_metrics.get('test_r2', 0):.4f}" if val_metrics.get("test_r2") else "N/A"
+        val_mae = f"${val_metrics.get('test_mae', 0):,.0f}" if val_metrics.get("test_mae") else "N/A"
+        status = "PASS" if success else "FAIL"
+        print(f"  [{status}] {est_name}: train_R²={train_r2:.4f}, val_R²={val_r2}, "
+              f"val_MAE={val_mae}, time={elapsed:.1f}s")
+        assert success, f"{est_name} failed on real data"
+
+    # Find best model
+    best = _find_best_iteration(iterations, "regression")
+    print(f"\n  BEST MODEL: {best['model_name']} (val_R²={best['val_r2']:.4f})")
+
+    # Final test evaluation
+    test_metrics = _evaluate_model_on_test(
+        model_name=best["model_name"], test_ref="ins_integ_test",
+        target_column="charges", task_type="regression",
+    )
+    print(f"  FINAL TEST: R²={test_metrics.get('test_r2', 0):.4f}, "
+          f"RMSE=${test_metrics.get('test_rmse', 0):,.0f}, "
+          f"MAE=${test_metrics.get('test_mae', 0):,.0f}")
+
+    assert test_metrics.get("test_r2", 0) > 0.5, "Test R² too low on real data"
+    print(f"  [PASS] Real data pipeline: best={best['model_name']}")
+
+    for it in iterations:
+        _cleanup(it["model_name"])
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Test 10: Real data — insurance.csv classification (smoker prediction)
+# ═══════════════════════════════════════════════════════════════════════
+
+def test_real_data_insurance_classification():
+    """Train classifiers on real insurance.csv to predict smoker status."""
+    print("\n" + "=" * 70)
+    print("TEST 10: Real data — insurance.csv classification (smoker)")
+    print("=" * 70)
+
+    if not _INSURANCE_CSV.exists():
+        print("  [SKIP] insurance.csv not found")
+        return
+
+    from agents.training.skill_registry import train_with_skill_tool
+    from agents.training.steps.training import _evaluate_model_on_test
+
+    df = pd.read_csv(_INSURANCE_CSV)
+    df["smoker_binary"] = (df["smoker"] == "yes").astype(int)
+    df = df.drop(columns=["smoker"])
+    print(f"  Target distribution: {df['smoker_binary'].value_counts().to_dict()}")
+
+    np.random.seed(42)
+    idx = np.random.permutation(len(df))
+    n_train = int(0.7 * len(df))
+    n_val = int(0.15 * len(df))
+    train_df = df.iloc[idx[:n_train]]
+    val_df = df.iloc[idx[n_train:n_train + n_val]]
+    test_df = df.iloc[idx[n_train + n_val:]]
+
+    register_dataset("ins_clf_train", train_df)
+    register_dataset("ins_clf_val", val_df)
+    register_dataset("ins_clf_test", test_df)
+    print(f"  Split: train={len(train_df)}, val={len(val_df)}, test={len(test_df)}")
+
+    models_to_try = [
+        ("LogisticRegression", {"class_weight": "balanced"}),
+        ("HistGradientBoostingClassifier", {}),
+    ]
+
+    for est_name, fixed_hp in models_to_try:
+        model_name = f"ins_clf_{est_name.lower()}"
+        print(f"\n  ── {est_name} on insurance.csv (smoker) ──")
+
+        result = train_with_skill_tool.invoke({
+            "skill_name": "sklearn_generic",
+            "params": {
+                "estimator": est_name,
+                "model_name": model_name,
+                "train_dataset_ref": "ins_clf_train",
+                "target_column": "smoker_binary",
+                "auto_tune": True,
+                "n_search_iter": 5,
+                "cv_folds": 3,
+                "hyperparameters": fixed_hp,
+            },
+        })
+
+        success = "TRAINING COMPLETE" in result
+        scoring_line = [l for l in result.split("\n") if "Scoring" in l]
+        scoring = scoring_line[0].split(": ")[1] if scoring_line else "N/A"
+
+        # Evaluate on test
+        test_metrics = _evaluate_model_on_test(
+            model_name=model_name, test_ref="ins_clf_test",
+            target_column="smoker_binary", task_type="classification",
+        )
+        test_acc = test_metrics.get("test_accuracy")
+        test_auc = test_metrics.get("test_roc_auc")
+
+        acc_str = f"{test_acc:.4f}" if test_acc else "N/A"
+        auc_str = f"{test_auc:.4f}" if test_auc else "N/A"
+        status = "PASS" if success else "FAIL"
+        print(f"  [{status}] {est_name}: scoring={scoring}, test_acc={acc_str}, test_auc={auc_str}")
+        assert success, f"{est_name} failed"
+        if test_acc is not None:
+            assert test_acc > 0.7, f"Test accuracy too low: {test_acc:.4f}"
+
+        _cleanup(model_name)
+
+    print(f"\n  Real data classification: {len(models_to_try)}/{len(models_to_try)} passed")
+
+
+# ═══════════════════════════════════════════════════════════════════════
 # Run all tests
 # ═══════════════════════════════════════════════════════════════════════
 
@@ -537,10 +798,13 @@ if __name__ == "__main__":
         ("Task type inference", test_task_type_inference),
         ("Skill tools e2e", test_skill_tools_e2e),
         ("Regression through tools", test_regression_through_tools),
+        ("HistGradientBoosting through tools", test_histgb_through_tools),
         ("Auto-tune + evaluation", test_autotune_with_evaluation),
         ("Training step helpers", test_training_step_helpers),
         ("Agent tool_training (mocked)", test_agent_tool_training_mocked),
         ("Full pipeline simulation", test_full_pipeline_no_llm),
+        ("Real data insurance regression", test_real_data_insurance),
+        ("Real data insurance classification", test_real_data_insurance_classification),
     ]
 
     t0 = time.time()

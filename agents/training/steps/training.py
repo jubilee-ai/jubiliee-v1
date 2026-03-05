@@ -198,10 +198,12 @@ class TrainingResult(BaseModel):
 # =============================================================================
 
 _REGRESSION_ESTIMATORS = {
-    "svr", "linearsvr", "kneighborsregressor", "decisiontreeregressor",
-    "gradientboostingregressor", "adaboostregressor", "baggingregressor",
+    "svr", "linearsvr", "nusvr", "kneighborsregressor", "decisiontreeregressor",
+    "gradientboostingregressor", "histgradientboostingregressor",
+    "adaboostregressor", "baggingregressor",
     "extratreesregressor", "mlpregressor", "linearregression", "ridge",
     "lasso", "elasticnet", "huberregressor", "sgdregressor",
+    "passiveaggressiveregressor",
 }
 
 _REGRESSION_GOAL_KEYWORDS = (

@@ -9,6 +9,7 @@
     "knn", "k-nearest neighbors", "nearest neighbors",
     "decision tree", "dt",
     "gradient boosting", "gbm", "gradient boosted",
+    "hist gradient boosting", "histgradientboosting", "hgb",
     "adaboost", "ada boost",
     "bagging",
     "extra trees", "extremely randomized trees",
@@ -19,9 +20,11 @@
     "linear regression",
     "sgd", "stochastic gradient descent",
     "huber", "huber regressor",
+    "passive aggressive",
     "logistic regression", "logistic_regression", "logreg",
     "random forest", "random_forest", "rf",
     "naive bayes", "naive_bayes", "nb",
+    "bernoulli nb",
     "xgboost", "xgb"
   ],
   "when_to_use": [

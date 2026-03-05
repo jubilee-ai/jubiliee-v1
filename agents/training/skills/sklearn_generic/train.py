@@ -1,20 +1,28 @@
 """Generic sklearn training skill with automatic hyperparameter tuning.
 
 Trains any scikit-learn estimator via a unified interface. Builds a
-preprocessing pipeline (StandardScaler + OneHotEncoder), optionally runs
+preprocessing pipeline (impute + scale/encode), optionally runs
 RandomizedSearchCV for hyperparameter tuning, evaluates, saves, and
 registers the model — all in a single `run(params)` call.
+
+Estimators are auto-discovered via `sklearn.utils.all_estimators()`,
+so any classifier or regressor in the installed sklearn version is
+available without code changes. Hyperparameter search uses scipy.stats
+distributions for efficient continuous sampling.
 """
 
 import importlib
+import inspect
 import sys
 from pathlib import Path
 
 import joblib
 import numpy as np
 import pandas as pd
+from scipy.stats import loguniform, randint, uniform
 from sklearn.base import is_classifier
 from sklearn.compose import ColumnTransformer
+from sklearn.impute import SimpleImputer
 from sklearn.metrics import (
     accuracy_score,
     classification_report,
@@ -27,6 +35,7 @@ from sklearn.metrics import (
 from sklearn.model_selection import RandomizedSearchCV
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
+from sklearn.utils import all_estimators
 
 _ROOT = Path(__file__).parents[4]
 for _p in [
@@ -40,93 +49,142 @@ from model_storage import generate_model_path, register_model
 from utils import get_registered_dataset
 
 
-# ── Estimator catalog ────────────────────────────────────────────────────
-# Maps short name → (module_path, class_name).
+# ── Auto-discover estimators ─────────────────────────────────────────────
+# Dynamically finds every classifier and regressor in sklearn.
+# Meta-estimators (VotingClassifier, StackingClassifier, etc.) that require
+# sub-estimator arguments are filtered out automatically.
 
-ESTIMATORS: dict[str, tuple[str, str]] = {
-    # Classification
-    "LogisticRegression":         ("sklearn.linear_model", "LogisticRegression"),
-    "SVC":                        ("sklearn.svm", "SVC"),
-    "LinearSVC":                  ("sklearn.svm", "LinearSVC"),
-    "KNeighborsClassifier":       ("sklearn.neighbors", "KNeighborsClassifier"),
-    "DecisionTreeClassifier":     ("sklearn.tree", "DecisionTreeClassifier"),
-    "RandomForestClassifier":     ("sklearn.ensemble", "RandomForestClassifier"),
-    "GradientBoostingClassifier": ("sklearn.ensemble", "GradientBoostingClassifier"),
-    "AdaBoostClassifier":         ("sklearn.ensemble", "AdaBoostClassifier"),
-    "BaggingClassifier":          ("sklearn.ensemble", "BaggingClassifier"),
-    "ExtraTreesClassifier":       ("sklearn.ensemble", "ExtraTreesClassifier"),
-    "MLPClassifier":              ("sklearn.neural_network", "MLPClassifier"),
-    "RidgeClassifier":            ("sklearn.linear_model", "RidgeClassifier"),
-    "SGDClassifier":              ("sklearn.linear_model", "SGDClassifier"),
-    "GaussianNB":                 ("sklearn.naive_bayes", "GaussianNB"),
-    "MultinomialNB":              ("sklearn.naive_bayes", "MultinomialNB"),
-    "ComplementNB":               ("sklearn.naive_bayes", "ComplementNB"),
-    # Regression
-    "SVR":                        ("sklearn.svm", "SVR"),
-    "LinearSVR":                  ("sklearn.svm", "LinearSVR"),
-    "KNeighborsRegressor":        ("sklearn.neighbors", "KNeighborsRegressor"),
-    "DecisionTreeRegressor":      ("sklearn.tree", "DecisionTreeRegressor"),
-    "RandomForestRegressor":      ("sklearn.ensemble", "RandomForestRegressor"),
-    "GradientBoostingRegressor":  ("sklearn.ensemble", "GradientBoostingRegressor"),
-    "AdaBoostRegressor":          ("sklearn.ensemble", "AdaBoostRegressor"),
-    "BaggingRegressor":           ("sklearn.ensemble", "BaggingRegressor"),
-    "ExtraTreesRegressor":        ("sklearn.ensemble", "ExtraTreesRegressor"),
-    "MLPRegressor":               ("sklearn.neural_network", "MLPRegressor"),
-    "LinearRegression":           ("sklearn.linear_model", "LinearRegression"),
-    "Ridge":                      ("sklearn.linear_model", "Ridge"),
-    "Lasso":                      ("sklearn.linear_model", "Lasso"),
-    "ElasticNet":                 ("sklearn.linear_model", "ElasticNet"),
-    "HuberRegressor":             ("sklearn.linear_model", "HuberRegressor"),
-    "SGDRegressor":               ("sklearn.linear_model", "SGDRegressor"),
-}
+def _discover_estimators() -> dict[str, tuple[str, str]]:
+    """Build estimator catalog from sklearn's own registry."""
+    catalog = {}
+    for name, cls in all_estimators(type_filter=["classifier", "regressor"]):
+        try:
+            sig = inspect.signature(cls.__init__)
+            has_required = any(
+                p.default is inspect.Parameter.empty and p.name != "self"
+                for p in sig.parameters.values()
+            )
+            if has_required:
+                continue
+        except (ValueError, TypeError):
+            continue
+        catalog[name] = (cls.__module__, name)
+    return catalog
 
-# Defaults applied at construction time (e.g. SVC needs probability=True).
+
+ESTIMATORS: dict[str, tuple[str, str]] = _discover_estimators()
+
+# Defaults applied at construction time.
 _INIT_DEFAULTS: dict[str, dict] = {
     "SVC": {"probability": True},
     "SGDClassifier": {"loss": "modified_huber"},
     "LogisticRegression": {"max_iter": 1000},
-    "RandomForestClassifier": {"n_jobs": -1},
-    "RandomForestRegressor": {"n_jobs": -1},
-    "ExtraTreesClassifier": {"n_jobs": -1},
-    "ExtraTreesRegressor": {"n_jobs": -1},
+    "MLPClassifier": {"max_iter": 500},
+    "MLPRegressor": {"max_iter": 500},
 }
 
-# ── Hyperparameter search spaces ─────────────────────────────────────────
-# Each value is a dict of param_name → list_of_candidates.
-# Prefixed with the pipeline step name ("model__") at runtime.
+_PARALLELIZABLE = {
+    "RandomForestClassifier", "RandomForestRegressor",
+    "ExtraTreesClassifier", "ExtraTreesRegressor",
+    "BaggingClassifier", "BaggingRegressor",
+}
 
-_TREE = {"max_depth": [3, 5, 10, 20, 30], "min_samples_split": [2, 5, 10], "min_samples_leaf": [1, 2, 5]}
-_BOOST = {**_TREE, "n_estimators": [100, 200], "learning_rate": [0.01, 0.05, 0.1, 0.2], "subsample": [0.8, 0.9, 1.0]}
-_KNN = {"n_neighbors": [3, 5, 7, 11, 15], "weights": ["uniform", "distance"]}
-_FOREST = {"n_estimators": [100, 200], "max_depth": [5, 10, 20, 30], "min_samples_split": [2, 5, 10], "min_samples_leaf": [1, 2, 5]}
+
+# ── Hyperparameter search spaces ─────────────────────────────────────────
+# Uses scipy.stats distributions for continuous/integer parameters so
+# RandomizedSearchCV samples broadly instead of from fixed grids.
+# Estimators without a defined space still work — they just skip tuning.
+
+_TREE = {
+    "max_depth": randint(3, 30),
+    "min_samples_split": randint(2, 20),
+    "min_samples_leaf": randint(1, 10),
+}
+_FOREST = {
+    **_TREE,
+    "n_estimators": randint(50, 300),
+}
+_BOOST = {
+    **_TREE,
+    "n_estimators": randint(50, 300),
+    "learning_rate": loguniform(5e-3, 0.5),
+    "subsample": uniform(0.6, 0.4),
+}
+_KNN = {
+    "n_neighbors": randint(3, 25),
+    "weights": ["uniform", "distance"],
+    "p": [1, 2],
+}
+_MLP = {
+    "hidden_layer_sizes": [(50,), (100,), (50, 50), (100, 50), (100, 100), (200,), (100, 50, 25)],
+    "alpha": loguniform(1e-5, 1e-1),
+    "learning_rate": ["constant", "invscaling", "adaptive"],
+}
 
 SEARCH_SPACES: dict[str, dict] = {
-    "LogisticRegression":         {"C": [0.01, 0.1, 1, 10, 100]},
-    "SVC":                        {"C": [0.1, 1, 10, 100], "kernel": ["rbf", "linear", "poly"], "gamma": ["scale", "auto"]},
-    "SVR":                        {"C": [0.1, 1, 10, 100], "kernel": ["rbf", "linear", "poly"], "gamma": ["scale", "auto"], "epsilon": [0.01, 0.1, 0.2]},
-    "KNeighborsClassifier":       _KNN,
-    "KNeighborsRegressor":        _KNN,
-    "DecisionTreeClassifier":     _TREE,
-    "DecisionTreeRegressor":      _TREE,
-    "RandomForestClassifier":     _FOREST,
-    "RandomForestRegressor":      _FOREST,
-    "GradientBoostingClassifier":  _BOOST,
-    "GradientBoostingRegressor":   _BOOST,
-    "AdaBoostClassifier":         {"n_estimators": [50, 100, 200], "learning_rate": [0.01, 0.1, 0.5, 1.0]},
-    "AdaBoostRegressor":          {"n_estimators": [50, 100, 200], "learning_rate": [0.01, 0.1, 0.5, 1.0]},
-    "BaggingClassifier":          {"n_estimators": [10, 50, 100], "max_samples": [0.5, 0.7, 1.0], "max_features": [0.5, 0.7, 1.0]},
-    "BaggingRegressor":           {"n_estimators": [10, 50, 100], "max_samples": [0.5, 0.7, 1.0], "max_features": [0.5, 0.7, 1.0]},
-    "ExtraTreesClassifier":       _FOREST,
-    "ExtraTreesRegressor":        _FOREST,
-    "MLPClassifier":              {"hidden_layer_sizes": [(100,), (50, 50), (100, 50), (100, 100)], "alpha": [0.0001, 0.001, 0.01], "learning_rate": ["constant", "adaptive"]},
-    "MLPRegressor":               {"hidden_layer_sizes": [(100,), (50, 50), (100, 50), (100, 100)], "alpha": [0.0001, 0.001, 0.01], "learning_rate": ["constant", "adaptive"]},
-    "Ridge":                      {"alpha": [0.01, 0.1, 1, 10, 100]},
-    "RidgeClassifier":            {"alpha": [0.01, 0.1, 1, 10, 100]},
-    "Lasso":                      {"alpha": [0.001, 0.01, 0.1, 1, 10]},
-    "ElasticNet":                 {"alpha": [0.001, 0.01, 0.1, 1], "l1_ratio": [0.1, 0.3, 0.5, 0.7, 0.9]},
-    "SGDClassifier":              {"alpha": [0.0001, 0.001, 0.01], "penalty": ["l2", "l1", "elasticnet"]},
-    "SGDRegressor":               {"alpha": [0.0001, 0.001, 0.01], "penalty": ["l2", "l1", "elasticnet"]},
-    "HuberRegressor":             {"epsilon": [1.1, 1.35, 1.5, 2.0], "alpha": [0.0001, 0.001, 0.01]},
+    # Linear classifiers
+    "LogisticRegression":  {"C": loguniform(1e-3, 1e3), "solver": ["lbfgs", "saga"]},
+    "RidgeClassifier":     {"alpha": loguniform(1e-3, 1e3)},
+    "SGDClassifier":       {"alpha": loguniform(1e-5, 1e-1), "penalty": ["l2", "l1", "elasticnet"]},
+    "PassiveAggressiveClassifier": {"C": loguniform(1e-3, 1e2)},
+    # SVM
+    "SVC":       {"C": loguniform(1e-2, 1e3), "kernel": ["rbf", "linear", "poly"], "gamma": ["scale", "auto"]},
+    "LinearSVC": {"C": loguniform(1e-2, 1e3)},
+    "NuSVC":     {"nu": uniform(0.05, 0.9), "kernel": ["rbf", "linear", "poly"], "gamma": ["scale", "auto"]},
+    "SVR":       {"C": loguniform(1e-2, 1e3), "kernel": ["rbf", "linear", "poly"], "gamma": ["scale", "auto"], "epsilon": loguniform(0.01, 1.0)},
+    "LinearSVR": {"C": loguniform(1e-2, 1e3), "epsilon": loguniform(0.01, 1.0)},
+    "NuSVR":     {"nu": uniform(0.1, 0.8), "C": loguniform(1e-2, 1e3), "kernel": ["rbf", "linear", "poly"]},
+    # KNN
+    "KNeighborsClassifier": _KNN,
+    "KNeighborsRegressor":  _KNN,
+    # Trees
+    "DecisionTreeClassifier": _TREE,
+    "DecisionTreeRegressor":  _TREE,
+    # Forests
+    "RandomForestClassifier": _FOREST,
+    "RandomForestRegressor":  _FOREST,
+    "ExtraTreesClassifier":   _FOREST,
+    "ExtraTreesRegressor":    _FOREST,
+    # Gradient boosting
+    "GradientBoostingClassifier": _BOOST,
+    "GradientBoostingRegressor":  _BOOST,
+    # Histogram-based gradient boosting (sklearn's fastest tree model, handles NaN natively)
+    "HistGradientBoostingClassifier": {
+        "max_iter": randint(50, 500),
+        "learning_rate": loguniform(5e-3, 0.5),
+        "max_depth": randint(3, 15),
+        "min_samples_leaf": randint(5, 50),
+        "l2_regularization": loguniform(1e-6, 10),
+        "max_bins": [63, 127, 255],
+    },
+    "HistGradientBoostingRegressor": {
+        "max_iter": randint(50, 500),
+        "learning_rate": loguniform(5e-3, 0.5),
+        "max_depth": randint(3, 15),
+        "min_samples_leaf": randint(5, 50),
+        "l2_regularization": loguniform(1e-6, 10),
+        "max_bins": [63, 127, 255],
+    },
+    # Other boosting
+    "AdaBoostClassifier": {"n_estimators": randint(30, 300), "learning_rate": loguniform(5e-3, 2.0)},
+    "AdaBoostRegressor":  {"n_estimators": randint(30, 300), "learning_rate": loguniform(5e-3, 2.0)},
+    "BaggingClassifier":  {"n_estimators": randint(10, 150), "max_samples": uniform(0.5, 0.5), "max_features": uniform(0.5, 0.5)},
+    "BaggingRegressor":   {"n_estimators": randint(10, 150), "max_samples": uniform(0.5, 0.5), "max_features": uniform(0.5, 0.5)},
+    # MLP
+    "MLPClassifier": _MLP,
+    "MLPRegressor":  _MLP,
+    # Linear regressors
+    "Ridge":           {"alpha": loguniform(1e-3, 1e3)},
+    "Lasso":           {"alpha": loguniform(1e-4, 1e2)},
+    "ElasticNet":      {"alpha": loguniform(1e-4, 1e2), "l1_ratio": uniform(0.05, 0.9)},
+    "SGDRegressor":    {"alpha": loguniform(1e-5, 1e-1), "penalty": ["l2", "l1", "elasticnet"]},
+    "HuberRegressor":  {"epsilon": uniform(1.05, 1.95), "alpha": loguniform(1e-5, 1e-1)},
+    "PassiveAggressiveRegressor": {"C": loguniform(1e-3, 1e2)},
+    # Naive Bayes
+    "GaussianNB":    {"var_smoothing": loguniform(1e-12, 1e-6)},
+    "MultinomialNB": {"alpha": loguniform(1e-3, 10)},
+    "ComplementNB":  {"alpha": loguniform(1e-3, 10)},
+    "BernoulliNB":   {"alpha": loguniform(1e-3, 10)},
 }
 
 
@@ -138,25 +196,41 @@ def _resolve_estimator(name: str, overrides: dict | None = None):
         raise ValueError(f"Unknown estimator '{name}'. Available: {sorted(ESTIMATORS)}")
     module_path, class_name = ESTIMATORS[name]
     cls = getattr(importlib.import_module(module_path), class_name)
-    return cls(**{**_INIT_DEFAULTS.get(name, {}), **(overrides or {})})
+    init_kw = {**_INIT_DEFAULTS.get(name, {})}
+    if name in _PARALLELIZABLE:
+        init_kw.setdefault("n_jobs", -1)
+    init_kw.update(overrides or {})
+    return cls(**init_kw)
 
 
 def _build_preprocessor(X: pd.DataFrame, categorical_cols: list[str]) -> ColumnTransformer:
-    """ColumnTransformer: StandardScaler for numerics, OneHotEncoder for categoricals."""
+    """ColumnTransformer: impute + scale numerics, impute + encode categoricals."""
     numeric_cols = [c for c in X.columns if c not in categorical_cols]
     transformers = []
     if numeric_cols:
-        transformers.append(("num", StandardScaler(), numeric_cols))
+        transformers.append(("num", Pipeline([
+            ("impute", SimpleImputer(strategy="median")),
+            ("scale", StandardScaler()),
+        ]), numeric_cols))
     if categorical_cols:
-        transformers.append(("cat", OneHotEncoder(handle_unknown="ignore", sparse_output=False), categorical_cols))
+        transformers.append(("cat", Pipeline([
+            ("impute", SimpleImputer(strategy="most_frequent")),
+            ("encode", OneHotEncoder(handle_unknown="ignore", sparse_output=False)),
+        ]), categorical_cols))
     return ColumnTransformer(transformers=transformers, remainder="passthrough")
 
 
-def _count_combinations(space: dict) -> int:
-    result = 1
-    for v in space.values():
-        result *= len(v)
-    return result
+def _select_scoring(is_clf: bool, y: pd.Series) -> str:
+    """Pick the best CV scoring metric based on data characteristics."""
+    if not is_clf:
+        return "r2"
+    n_classes = y.nunique()
+    minority_ratio = y.value_counts().min() / len(y)
+    if n_classes == 2 and minority_ratio < 0.3:
+        return "roc_auc"
+    if n_classes > 2 and minority_ratio < 0.15:
+        return "f1_weighted"
+    return "accuracy"
 
 
 # ── Main entry point ─────────────────────────────────────────────────────
@@ -167,12 +241,8 @@ _MAX_TOTAL_FITS = 40
 _SLOW_ESTIMATORS = {
     "GradientBoostingClassifier", "GradientBoostingRegressor",
     "MLPClassifier", "MLPRegressor",
-    "SVC", "SVR",
+    "SVC", "SVR", "NuSVC", "NuSVR",
     "KNeighborsClassifier", "KNeighborsRegressor",
-    "RandomForestClassifier", "RandomForestRegressor",
-    "ExtraTreesClassifier", "ExtraTreesRegressor",
-    "BaggingClassifier", "BaggingRegressor",
-    "AdaBoostClassifier", "AdaBoostRegressor",
 }
 
 
@@ -244,6 +314,10 @@ def run(params: dict) -> str:
     base_space = SEARCH_SPACES.get(estimator_name, {}).copy()
     base_space.update(search_overrides)
 
+    # Don't search over params that were explicitly fixed by the user
+    for k in fixed_params:
+        base_space.pop(k, None)
+
     # ── Adaptive settings ────────────────────────────────────────────────
     is_slow = estimator_name in _SLOW_ESTIMATORS
     if is_slow:
@@ -252,11 +326,11 @@ def run(params: dict) -> str:
     if n_rows > _SUBSAMPLE_SEARCH:
         cv_folds = min(cv_folds, 3)
 
+    scoring = _select_scoring(is_clf, y)
+
     if auto_tune and base_space:
         space = {f"{step_name}__{k}": v for k, v in base_space.items()}
-        scoring = "accuracy" if is_clf else "r2"
-        total_combos = _count_combinations(space)
-        actual_iter = min(n_search_iter, total_combos)
+        actual_iter = n_search_iter
 
         # Hard cap on total fits to prevent runaway training
         if actual_iter * cv_folds > _MAX_TOTAL_FITS:
@@ -276,7 +350,7 @@ def run(params: dict) -> str:
             print(f"[sklearn_generic] Subsampled {n_rows} → {len(X_search)} rows for hyperparameter search")
 
         print(f"[sklearn_generic] RandomizedSearchCV: {actual_iter} iters × {cv_folds}-fold CV"
-              f" = {actual_iter * cv_folds} fits")
+              f" ({scoring}) = {actual_iter * cv_folds} fits")
 
         search = RandomizedSearchCV(
             pipeline, space,
@@ -333,6 +407,7 @@ def run(params: dict) -> str:
         f"Task type: {task_type}",
         f"Samples: {len(df)}",
         f"Features: {len(feature_names_out)}",
+        f"Scoring: {scoring}",
     ]
 
     if is_clf:
@@ -366,7 +441,7 @@ def run(params: dict) -> str:
         lines.extend([f"Train R2: {r2:.4f}", f"Train MAE: {mae:.4f}", f"Train RMSE: {rmse:.4f}"])
 
     if cv_score is not None:
-        lines.extend(["", f"Cross-validation score ({cv_folds}-fold): {cv_score:.4f}"])
+        lines.extend(["", f"Cross-validation score ({cv_folds}-fold, {scoring}): {cv_score:.4f}"])
 
     # ── Report best hyperparameters ──────────────────────────────────────
     tuned_params = {k.split("__", 1)[-1]: v for k, v in best_params.items()} if best_params else {}
