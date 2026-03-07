@@ -45,6 +45,11 @@ async def root():
     return {"status": "ok", "service": "Jubilee Training Agent API"}
 
 
+@app.get("/api/health")
+async def health():
+    return {"status": "ok", "service": "Jubilee Training Agent API"}
+
+
 app.include_router(catalog_router)
 app.include_router(training_router)
 app.include_router(chat_router)
