@@ -745,6 +745,135 @@ def test_full_pipeline_integration():
 
 
 # =============================================================================
+# TEST 8: Regression Task
+# =============================================================================
+
+def test_training_agent_regression():
+    """Test training on a regression task (continuous target)."""
+    print("\n" + "=" * 70)
+    print("TEST 8: Regression Task")
+    print("=" * 70)
+
+    clear_registry()
+
+    np.random.seed(2025)
+    n = 300
+
+    print("\n[SETUP] Creating regression data (insurance charges)...")
+
+    age = np.random.randint(18, 65, n).astype(float)
+    bmi = np.random.normal(28, 6, n).clip(15, 50)
+    smoker = np.random.choice([0, 1], n, p=[0.8, 0.2]).astype(float)
+    charges = 3000 + 250 * age + 100 * bmi + 20000 * smoker + np.random.normal(0, 2000, n)
+
+    train_df = pd.DataFrame({"age": age[:200], "bmi": bmi[:200], "smoker": smoker[:200], "charges": charges[:200]})
+    val_df = pd.DataFrame({"age": age[200:250], "bmi": bmi[200:250], "smoker": smoker[200:250], "charges": charges[200:250]})
+    test_df = pd.DataFrame({"age": age[250:], "bmi": bmi[250:], "smoker": smoker[250:], "charges": charges[250:]})
+
+    print(f"  Train: {train_df.shape}, mean charges: ${train_df['charges'].mean():,.0f}")
+    print(f"  Val: {val_df.shape}")
+    print(f"  Test: {test_df.shape}")
+
+    register_dataset("reg_train", train_df, register_sql=False)
+    register_dataset("reg_val", val_df, register_sql=False)
+    register_dataset("reg_test", test_df, register_sql=False)
+
+    print("\n[RUNNING] Training regression model...")
+
+    from agents.training.steps.training import run_training_agent
+
+    result = run_training_agent(
+        train_ref="reg_train",
+        val_ref="reg_val",
+        test_ref="reg_test",
+        target_column="charges",
+        selected_model="supervised",
+        goal="Predict insurance charges amount (regression)",
+        model_name="test_regression",
+        max_iterations=2,
+    )
+
+    print(f"\n[RESULT]")
+    print(f"  Success: {result.get('success')}")
+    print(f"  Task type: {result.get('task_type')}")
+    print(f"  Val R2: {result.get('val_r2')}")
+    print(f"  Test R2: {result.get('test_r2')}")
+
+    if result.get('summary'):
+        print(f"\n[SUMMARY]")
+        print("-" * 50)
+        print(result['summary'][:500])
+
+    assert result.get('success'), f"Training failed: {result.get('error')}"
+    assert result.get('task_type') == 'regression', f"Expected regression, got {result.get('task_type')}"
+
+    print("\n✅ TEST 8 PASSED")
+    return result
+
+
+# =============================================================================
+# TEST 9: Estimator Hint
+# =============================================================================
+
+def test_training_agent_estimator_hint():
+    """Test that estimator_hint makes the agent start with the specified estimator."""
+    print("\n" + "=" * 70)
+    print("TEST 9: Estimator Hint")
+    print("=" * 70)
+
+    clear_registry()
+
+    np.random.seed(777)
+    n = 250
+
+    print("\n[SETUP] Creating data with estimator_hint=RandomForestClassifier...")
+
+    age = np.random.randint(20, 70, n)
+    income = np.random.exponential(50000, n)
+    default = ((age < 35) & (income < 40000)).astype(int)
+    flip = np.random.choice(n, size=int(n * 0.08), replace=False)
+    default[flip] = 1 - default[flip]
+
+    train_df = pd.DataFrame({"age": age[:170], "income": income[:170], "default": default[:170]})
+    val_df = pd.DataFrame({"age": age[170:210], "income": income[170:210], "default": default[170:210]})
+    test_df = pd.DataFrame({"age": age[210:], "income": income[210:], "default": default[210:]})
+
+    register_dataset("hint_train", train_df, register_sql=False)
+    register_dataset("hint_val", val_df, register_sql=False)
+    register_dataset("hint_test", test_df, register_sql=False)
+
+    print(f"  Train: {train_df.shape}, default rate: {train_df['default'].mean():.1%}")
+
+    from agents.training.steps.training import run_training_agent
+
+    result = run_training_agent(
+        train_ref="hint_train",
+        val_ref="hint_val",
+        test_ref="hint_test",
+        target_column="default",
+        selected_model="supervised",
+        goal="Predict default risk",
+        model_name="test_hint",
+        max_iterations=2,
+        estimator_hint="RandomForestClassifier",
+    )
+
+    print(f"\n[RESULT]")
+    print(f"  Success: {result.get('success')}")
+    print(f"  Model type: {result.get('model_type')}")
+
+    if result.get('summary'):
+        print(f"\n[SUMMARY]")
+        print("-" * 50)
+        print(result['summary'][:500])
+
+    assert result.get('success'), f"Training failed: {result.get('error')}"
+
+    print("\n✅ TEST 9 PASSED")
+    return result
+
+
+# =============================================================================
 # RUN ALL TESTS
 # =============================================================================
 
@@ -765,6 +894,8 @@ def run_all_tests():
         ("Model Saved and Usable", test_model_saved_and_usable),
         ("Iteration Behavior", test_iteration_behavior),
         ("Full Pipeline Integration", test_full_pipeline_integration),
+        ("Regression Task", test_training_agent_regression),
+        ("Estimator Hint", test_training_agent_estimator_hint),
     ]
     
     results = []
@@ -826,6 +957,8 @@ if __name__ == "__main__":
             5: test_model_saved_and_usable,
             6: test_iteration_behavior,
             7: test_full_pipeline_integration,
+            8: test_training_agent_regression,
+            9: test_training_agent_estimator_hint,
         }
         if args.test in tests:
             tests[args.test]()
