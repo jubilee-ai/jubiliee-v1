@@ -161,42 +161,26 @@ Start
 
 After selecting an estimator using the guide above, follow these steps:
 
-### Step 1 — Discover parameters
-
-Call `extract_estimator_params(class_name="<EstimatorName>")` to retrieve the hyperparameters for the chosen estimator. For non-sklearn estimators, pass `module_hint` (e.g. `"xgboost"`).
-
-The tool returns JSON with every constructor parameter. Each entry includes:
-
-| Field | Meaning |
-|-------|---------|
-| `type` | `float`, `int`, `categorical`, `bool`, or `other` |
-| `default` | The library default value |
-| `tunable` | Whether this parameter is worth tuning (`true`/`false`) |
-| `choices` | Valid values (categorical params only) |
-| `scale` | `log` or `linear` (numeric params only) |
-| `description` | What the parameter controls |
-
-**How to choose parameters:**
-
-1. Look at all entries where `"tunable": true` — these are the parameters worth customizing.
-2. For parameters with `"choices"`, pick the value(s) most appropriate for the dataset and problem. Pass a **list** to let the training script search over them, or a **single value** to fix it.
-3. For numeric parameters (`float`/`int`), decide whether to set a fixed value or leave them for auto-tuning. Use the `scale` hint (`"log"` means the parameter spans orders of magnitude).
-4. Ignore parameters where `"tunable": false` — they are infrastructure knobs (random seeds, verbosity, etc.) handled automatically.
-5. Collect your chosen parameters into the `hyperparameters` dict for Step 2.
-
-### Step 2 — Train the model
+### Step 1 — Train
 
 Call `train_with_skill(skill_name="supervised", params={...})` with:
 - `"estimator"`: the sklearn class name (e.g. `"HistGradientBoostingClassifier"`)
 - `"model_name"`: a descriptive unique name (e.g. `"hgb_v1"`, `"lr_v2"`)
 - `"train_dataset_ref"`: the training dataset reference
 - `"target_column"`: the target column name
-- `"hyperparameters"`: the parameters you selected in Step 1
+- `"hyperparameters"`: (optional) override specific hyperparameters
 
-### Step 3 — Evaluate and iterate
+The training tool automatically discovers the estimator's parameters, runs
+cross-validated hyperparameter tuning, and returns results **including a list of
+all tunable parameters** (with types, defaults, choices, and scale hints).
+
+Use this parameter list to inform your next iteration — for example, fix a
+categorical parameter to a specific choice, or override a numeric range.
+
+### Step 2 — Evaluate and iterate
 
 Call `evaluate_model` on the validation set. Analyze the results, then either:
-- Tune hyperparameters on the same estimator (go back to Step 2 with adjusted params)
-- Switch to a different estimator (go back to Step 1 to discover its params)
+- Tune hyperparameters on the same estimator (go back to Step 1 with adjusted params)
+- Switch to a different estimator (go back to Step 1 with a new estimator name)
 
 When satisfied, run `evaluate_model` on the test set with your best model.

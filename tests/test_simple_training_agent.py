@@ -63,7 +63,7 @@ def test_simple_agent_end_to_end():
         goal="Predict loan default risk based on applicant financial profile",
         linked_datasets=["credit_risk_raw"],
         user_model_preference="logistic_regression",
-        model="openai:gpt-4o-mini",
+        model="openai:gpt-5.1",
         hitl=False,
     )
     print("    Agent created.")

@@ -806,7 +806,7 @@ def invoke_simple_training_agent(
     goal: str,
     linked_datasets: Optional[list[str]] = None,
     user_model_preference: Optional[str] = None,
-    model: str = "openai:gpt-4o-mini",
+    model: str = "openai:gpt-5.1",
 ):
     """Convenience function: create and invoke the simple training agent (no HITL)."""
     agent, _state = create_simple_training_agent(

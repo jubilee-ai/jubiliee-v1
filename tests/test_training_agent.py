@@ -151,7 +151,7 @@ def test_training_agent_basic():
     
     print("\n[STEP 3: Calling training agent]")
     
-    from agents.training.training import run_training_agent
+    from agents.training.steps.training import run_training_agent
     
     agent_params = {
         "train_ref": "basic_train",
@@ -251,7 +251,7 @@ def test_training_agent_imbalanced():
     
     print("\n[STEP 3: Calling training agent]")
     
-    from agents.training.training import run_training_agent
+    from agents.training.steps.training import run_training_agent
     
     agent_params = {
         "train_ref": "imbal_train",
@@ -361,7 +361,7 @@ def test_training_agent_random_forest():
     
     print("\n[RUNNING] Training random forest...")
     
-    from agents.training.training import run_training_agent
+    from agents.training.steps.training import run_training_agent
     
     result = run_training_agent(
         train_ref="rf_train",
@@ -443,7 +443,7 @@ def test_training_agent_xgboost():
     
     print("\n[RUNNING] Training XGBoost...")
     
-    from agents.training.training import run_training_agent
+    from agents.training.steps.training import run_training_agent
     
     result = run_training_agent(
         train_ref="xgb_train",
@@ -512,7 +512,7 @@ def test_model_saved_and_usable():
     
     print("\n[RUNNING] Training model...")
     
-    from agents.training.training import run_training_agent
+    from agents.training.steps.training import run_training_agent
     
     result = run_training_agent(
         train_ref="save_train",
@@ -619,7 +619,7 @@ def test_iteration_behavior():
     
     print("\n[RUNNING] Training on noisy data...")
     
-    from agents.training.training import run_training_agent
+    from agents.training.steps.training import run_training_agent
     
     result = run_training_agent(
         train_ref="iter_train",
@@ -711,7 +711,7 @@ def test_full_pipeline_integration():
     
     print("\n[RUNNING] Training agent (simulating step 7)...")
     
-    from agents.training.training import run_training_agent
+    from agents.training.steps.training import run_training_agent
     
     result = run_training_agent(
         train_ref="pipeline_train_features",

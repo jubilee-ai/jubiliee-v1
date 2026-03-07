@@ -12,6 +12,7 @@ distributions for efficient continuous sampling.
 """
 
 import importlib
+import importlib.util
 import inspect
 import sys
 from pathlib import Path
@@ -246,6 +247,39 @@ _SLOW_ESTIMATORS = {
 }
 
 
+def _get_tunable_params_summary(estimator_name: str) -> str:
+    """Call extract_estimator_params and return a short summary of tunable params."""
+    try:
+        _script = Path(__file__).parent.parent / "scripts" / "extract_params.py"
+        _spec = importlib.util.spec_from_file_location("extract_params", str(_script))
+        _mod = importlib.util.module_from_spec(_spec)
+        _spec.loader.exec_module(_mod)
+        info = _mod.extract_estimator_params(estimator_name)
+        if "_error" in info:
+            return ""
+        tunable = {
+            k: v for k, v in info.items()
+            if isinstance(v, dict) and v.get("tunable")
+        }
+        if not tunable:
+            return ""
+        lines = ["", "TUNABLE PARAMETERS (from extract_estimator_params):"]
+        for name, meta in tunable.items():
+            default = meta.get("default")
+            kind = meta.get("type", "?")
+            choices = meta.get("choices")
+            scale = meta.get("scale", "")
+            parts = [f"type={kind}", f"default={default}"]
+            if choices:
+                parts.append(f"choices={choices}")
+            if scale:
+                parts.append(f"scale={scale}")
+            lines.append(f"  {name}: {', '.join(parts)}")
+        return "\n".join(lines)
+    except Exception:
+        return ""
+
+
 def run(params: dict) -> str:
     """Train any sklearn estimator. See SKILL.md for parameters."""
     estimator_name = params.get("estimator")
@@ -468,5 +502,11 @@ def run(params: dict) -> str:
         classes=classes_list,
     )
 
-    lines.extend(["", f"MODEL REGISTERED: {model_name}", f"Path: {save_path}", "=" * 60])
+    lines.extend(["", f"MODEL REGISTERED: {model_name}", f"Path: {save_path}"])
+
+    tunable_summary = _get_tunable_params_summary(estimator_name)
+    if tunable_summary:
+        lines.append(tunable_summary)
+
+    lines.append("=" * 60)
     return "\n".join(lines)
