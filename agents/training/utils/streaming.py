@@ -91,8 +91,8 @@ def build_node_update(node_name: str, node_output: dict[str, Any]) -> dict[str, 
     if node_name == "select_model":
         update["summary"] = {"selected_model": node_output.get("selected_model"), "explanation": node_output.get("model_explanation")}
         update["details"] = {
-            "title": "Model Selection Complete",
-            "description": f"Selected **{node_output.get('selected_model', 'unknown')}** as the optimal model for this task.",
+            "title": "Model Family Selection Complete",
+            "description": f"Selected **{node_output.get('selected_model', 'unknown')}** as the model family for this task.",
             "reasoning": node_output.get("model_explanation", "No explanation provided."),
         }
 
