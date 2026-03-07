@@ -33,6 +33,7 @@ from .steps.feature_engineering_simple import run_feature_engineering_simple
 from .steps.label_and_split import (apply_split, compute_split_indices,
                                     run_label_split_definition)
 from .steps.orchestrator import _infer_target_column
+from .steps.select_model import MODEL_FAMILIES
 from .steps.select_model import select_model as _select_model_impl
 from .steps.training import run_training_agent as _run_training
 
@@ -47,7 +48,7 @@ You are an ML pipeline agent. Execute the pipeline steps to train the best model
 
 ## First Pass — Execute in THIS EXACT ORDER
 1. data_collection — Retrieve the dataset(s) and load it
-2. select_model — Choose the model type based on the goal (you can execute this at any step if it makes sense)
+2. select_model — Choose the model family (supervised, unsupervised, or neural_networks) based on the goal
 3. cleaning — Clean and standardize the data
 4. label_split_definition — Define target column and train/val/test splits
 5. feature_selection_specification — Analyze data and specify features
@@ -59,7 +60,7 @@ You are an ML pipeline agent. Execute the pipeline steps to train the best model
 ## After Training — Optimization (Optional)
 After training completes, evaluate the metrics. If they are unsatisfactory:
 - Weak features → go back to feature_selection_specification
-- Wrong model → go back to select_model
+- Wrong model family → go back to select_model
 - Poor hyperparameters → go back to training_approval
 After changing any step, re-run all downstream steps in order.
 Do not loop more than 4 total training iterations.
@@ -118,7 +119,7 @@ def create_simple_training_agent(
             return decision
         return {"approved": True}
 
-    KNOWN_MODELS = {"supervised", "unsupervised"}
+    KNOWN_FAMILIES = set(MODEL_FAMILIES.keys())
 
     # -- tool wrappers (each closes over `state`) ---------------------------
 
@@ -167,17 +168,17 @@ def create_simple_training_agent(
             _completed_steps.discard(later_step)
 
     def tool_select_model() -> str:
-        """Select the best ML model type for the training goal. Can be re-called to switch models."""
+        """Select the best ML model family for the training goal. Can be re-called to switch families."""
         nonlocal state
         if "select_model" in _completed_steps and not state.get("_redo_feedback_select_model"):
-            return f"SKIP: Model already selected: {state.get('selected_model')}. Proceed to the next step."
+            return f"SKIP: Model family already selected: {state.get('selected_model')}. Proceed to the next step."
         if state.get("selected_model") is not None:
             _invalidate_downstream("select_model")
 
         redo_fb = state.pop("_redo_feedback_select_model", None)
         if redo_fb:
             fb_lower = redo_fb.lower()
-            for m in KNOWN_MODELS:
+            for m in KNOWN_FAMILIES:
                 if m in fb_lower or m.replace("_", " ") in fb_lower:
                     state["user_model_preference"] = m
                     break
@@ -189,19 +190,19 @@ def create_simple_training_agent(
         state.pop("_select_model_redo_hint", None)
 
         summary = (
-            f"Selected **{state.get('selected_model', 'unknown')}** for this task.\n"
+            f"Selected model family **{state.get('selected_model', 'unknown')}** for this task.\n"
             f"Reason: {state.get('model_explanation', 'N/A')}"
         )
         decision = _hitl_gate("select_model", summary)
         if not decision.get("approved", True):
-            fb = decision.get("feedback", "Please reconsider the model choice.")
+            fb = decision.get("feedback", "Please reconsider the model family choice.")
             state["_redo_feedback_select_model"] = fb
             state.pop("user_model_preference", None)
-            return f"REJECTED by user: {fb}. Please redo model selection."
+            return f"REJECTED by user: {fb}. Please redo model family selection."
 
         _completed_steps.add("select_model")
         return (
-            f"Selected model: {state.get('selected_model', 'unknown')}\n"
+            f"Selected model family: {state.get('selected_model', 'unknown')}\n"
             f"Reason: {state.get('model_explanation', 'N/A')}"
         )
 
@@ -749,7 +750,7 @@ Respond with JSON:
             fb = decision.get("feedback", "Please adjust training approach.")
             fb_lower = fb.lower()
             routed = False
-            for m in KNOWN_MODELS:
+            for m in KNOWN_FAMILIES:
                 if m in fb_lower or m.replace("_", " ") in fb_lower:
                     state["_redo_feedback_select_model"] = fb
                     routed = True

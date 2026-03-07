@@ -3,7 +3,7 @@ Pipeline step implementations for the ML Training Agent.
 
 This module contains:
 - orchestrator.py: Node wrappers with HITL support
-- select_model.py: Step 1 - Model selection
+- select_model.py: Step 1 - Model family selection (supervised/unsupervised/neural_networks)
 - data_collection.py: Step 2 - Data retrieval
 - cleaning_simple.py: Step 3a - Simple cleaning agent
 - cleaning_standardization.py: Step 3b - Standardization cleaning

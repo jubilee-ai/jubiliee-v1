@@ -76,7 +76,7 @@ class TrainingAgentState(TypedDict):
     linked_datasets: Optional[list[str]]
     user_model_preference: Optional[str]
 
-    # Step 1: Model Selection
+    # Step 1: Model Family Selection (supervised / unsupervised / neural_networks)
     selected_model: Optional[str]
     model_explanation: Optional[str]
     model_regen_count: int

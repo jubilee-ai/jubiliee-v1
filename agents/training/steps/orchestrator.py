@@ -128,15 +128,15 @@ def _infer_target_column(goal: str, dataset_ref: str) -> Optional[str]:
 
 
 def select_model(state: TrainingAgentState) -> TrainingAgentState:
-    """Step 1: Select Model with HITL approval."""
+    """Step 1: Select Model Family with HITL approval."""
 
     def do_work(s: TrainingAgentState, feedback: Optional[str]) -> TrainingAgentState:
         if feedback:
-            return _select_model_impl({**s, "goal": _add_feedback_to_goal(s.get("goal", ""), "model selection", feedback)})
+            return _select_model_impl({**s, "goal": _add_feedback_to_goal(s.get("goal", ""), "model family selection", feedback)})
         return _select_model_impl(s)
 
     def get_summary(r: TrainingAgentState) -> str:
-        return f"Selected model: {r.get('selected_model', 'unknown')}\n\nReason: {r.get('model_explanation', 'No explanation provided')}"
+        return f"Selected model family: {r.get('selected_model', 'unknown')}\n\nReason: {r.get('model_explanation', 'No explanation provided')}"
 
     return run_with_hitl("select_model", state, do_work, get_summary)
 
