@@ -86,7 +86,7 @@ def create_simple_training_agent(
     goal: str,
     linked_datasets: Optional[list[str]] = None,
     user_model_preference: Optional[str] = None,
-    model: str = "openai:gpt-4o-mini",
+    model: str = "openai:gpt-5.1",
     hitl: bool = True,
     checkpointer=None,
 ):
@@ -118,7 +118,7 @@ def create_simple_training_agent(
             return decision
         return {"approved": True}
 
-    KNOWN_MODELS = {"glm", "logistic_regression", "naive_bayes", "random_forest", "survival_analysis", "xgboost"}
+    KNOWN_MODELS = {"supervised"}
 
     # -- tool wrappers (each closes over `state`) ---------------------------
 
@@ -517,7 +517,7 @@ def create_simple_training_agent(
         val_ref = state.get("transformed_val_ref")
         label_def = state.get("label_definition") or {}
         target_column = label_def.get("target_column", "")
-        selected_model = state.get("selected_model", "logistic_regression")
+        selected_model = state.get("selected_model", "supervised")
         task_type = _infer_task_type(state.get("goal", ""), selected_model)
 
         train_df = get_registered_dataset(train_ref)
@@ -619,7 +619,7 @@ Respond with JSON:
         _invalidate_downstream("training")
         label_def = state.get("label_definition") or {}
         target_column = label_def.get("target_column", "")
-        selected_model = state.get("selected_model", "logistic_regression")
+        selected_model = state.get("selected_model", "supervised")
         train_ref = state.get("transformed_train_ref")
         if not train_ref or not target_column:
             return "SKIP: Cannot run — feature_engineering_executor and label_split_definition must complete first."

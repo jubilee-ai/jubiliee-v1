@@ -1,15 +1,15 @@
 """
 Training Agent - Step 7 of the ML Training Pipeline.
 
-Uses LangChain's create_agent to orchestrate model training with:
-- Train on training set
-- Evaluate on validation set
-- LLM decides to iterate or proceed to testing
-- Final evaluation on test set
-
-Tools: logistic_regression, random_forest, xgboost, glm, survival_analysis, model_storage
+Uses a skill-based architecture (progressive disclosure) instead of hardcoded
+model tools. The agent:
+  1. Reads the skill's SKILL.md to choose the right estimator
+  2. Calls get_model_params to discover hyperparameters (TODO)
+  3. Calls train_with_skill to train via the skill's train.py
+  4. Evaluates and iterates
 """
 
+import importlib.util
 import json
 import re
 import sys
@@ -28,24 +28,107 @@ from ..utils.prompts import TRAINING_SYSTEM_PROMPT
 
 load_dotenv(Path(__file__).parent.parent.parent.parent / ".env")
 
-_TOOLS_DIR = Path(__file__).parent.parent.parent.parent / "tools" / "models-tools" / "training"
-if str(_TOOLS_DIR) not in sys.path:
-    sys.path.insert(0, str(_TOOLS_DIR))
-
 _DATA_TOOLS_DIR = Path(__file__).parent.parent.parent.parent / "tools" / "data-tools"
 if str(_DATA_TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(_DATA_TOOLS_DIR))
 
-from glm import sklearn_glm_tool
-from logistic_regression import sklearn_logistic_regression_tool
+_MODEL_TOOLS_DIR = Path(__file__).parent.parent.parent.parent / "tools" / "models-tools" / "training"
+if str(_MODEL_TOOLS_DIR) not in sys.path:
+    sys.path.insert(0, str(_MODEL_TOOLS_DIR))
+
 from model_storage import (delete_model, evaluate_model_tool,
                            get_model_info_tool, list_models, load_model,
                            list_trained_models_tool, predict_with_model_tool)
-from naive_bayes import sklearn_naive_bayes_tool
-from random_forest import sklearn_random_forest_tool
-from survival_analysis import survival_analysis_tool
 from utils import get_registered_dataset
-from xgboost_model import xgboost_train_tool
+
+from ..skills.scripts.extract_params import extract_estimator_params_tool
+
+SKILLS_DIR = Path(__file__).parent.parent / "skills"
+
+
+# =============================================================================
+# SKILL LOADING
+# =============================================================================
+
+
+def _load_skill_prompt(skill_name: str) -> str:
+    """Load a skill's SKILL.md content."""
+    skill_md = SKILLS_DIR / skill_name / "SKILL.md"
+    if not skill_md.exists():
+        raise ValueError(f"SKILL.md not found for skill '{skill_name}'")
+    return skill_md.read_text()
+
+
+def _run_skill(skill_name: str, params: dict) -> str:
+    """Dynamically import a skill's train.py and call its run(params) function."""
+    train_py = SKILLS_DIR / skill_name / "train.py"
+    if not train_py.exists():
+        raise ValueError(f"train.py not found for skill '{skill_name}'")
+
+    spec = importlib.util.spec_from_file_location(
+        f"skill_{skill_name}_train", str(train_py)
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    if not hasattr(module, "run"):
+        raise ValueError(f"Skill '{skill_name}' train.py must define a run(params) function")
+
+    return module.run(params)
+
+
+# =============================================================================
+# SKILL TOOLS (LangChain)
+# =============================================================================
+
+
+class GetSkillPromptInput(BaseModel):
+    skill_name: str = Field(
+        description="Name of the skill to load (e.g. 'supervised')"
+    )
+
+
+@tool("get_skill_prompt", args_schema=GetSkillPromptInput)
+def get_skill_prompt_tool(skill_name: str) -> str:
+    """Load the full documentation for a training skill.
+
+    Returns the skill's model selection guide, workflow instructions,
+    and available estimators. Read this to choose the right model.
+    """
+    try:
+        return _load_skill_prompt(skill_name)
+    except ValueError as e:
+        return f"Error: {e}"
+
+
+class TrainWithSkillInput(BaseModel):
+    model_config = {"extra": "allow"}
+
+    skill_name: str = Field(
+        description="Name of the skill to use (e.g. 'supervised')"
+    )
+    params: Optional[dict] = Field(
+        default=None,
+        description="Training parameters as a JSON object. Must include "
+        "'estimator', 'model_name', 'train_dataset_ref', and 'target_column'.",
+    )
+
+
+@tool("train_with_skill", args_schema=TrainWithSkillInput)
+def train_with_skill_tool(skill_name: str, params: Optional[dict] = None, **kwargs) -> str:
+    """Train a model using a skill.
+
+    Pass skill_name and a params dict with estimator, model_name,
+    train_dataset_ref, target_column, and any optional hyperparameters.
+    """
+    if params is None:
+        params = {}
+    if kwargs:
+        params = {**kwargs, **params}
+    try:
+        return _run_skill(skill_name, params)
+    except Exception as e:
+        return f"Training failed: {e}"
 
 
 # =============================================================================
@@ -90,35 +173,34 @@ def request_feature_engineering_redo_tool(
 ) -> dict[str, Any]:
     """
     Request to redo feature engineering with specific recommendations.
-    
+
     IMPORTANT: Only call this tool when you have strong evidence that the current features
     are the bottleneck limiting model performance. You must have tried multiple models
     and hyperparameter configurations first.
-    
+
     Valid reasons to call this tool:
     - All model types show similar poor performance despite tuning
     - Feature diagnostics show high correlation or potential leakage
     - Performance is far below expected baseline for the task
     - You've exhausted reasonable hyperparameter tuning
-    
+
     Args:
         recommendation: Specific recommendation for what to change in feature engineering.
         reason: Why you believe features are limiting performance.
-        suspected_issues: List of suspected issues like 'missing_interactions', 
+        suspected_issues: List of suspected issues like 'missing_interactions',
                          'high_cardinality', 'irrelevant_features', etc.
-    
+
     Returns:
         Confirmation that the request was registered.
     """
-
     global _feature_redo_request
-    
+
     _feature_redo_request = FeatureRedoRequest(
         recommendation=recommendation,
         reason=reason,
         suspected_issues=suspected_issues or [],
     )
-    
+
     return {
         "status": "registered",
         "message": "Feature engineering redo requested. Training will stop after this call.",
@@ -129,36 +211,19 @@ def request_feature_engineering_redo_tool(
 
 
 # =============================================================================
-# TRAINING TOOLS & CONSTANTS
+# TRAINING TOOLS
 # =============================================================================
 
 TRAINING_TOOLS = [
-    sklearn_logistic_regression_tool,
-    sklearn_random_forest_tool,
-    xgboost_train_tool,
-    sklearn_glm_tool,
-    sklearn_naive_bayes_tool,
-    survival_analysis_tool,
+    extract_estimator_params_tool,
+    train_with_skill_tool,
+    get_skill_prompt_tool,
     list_trained_models_tool,
     predict_with_model_tool,
     get_model_info_tool,
     evaluate_model_tool,
     request_feature_engineering_redo_tool,
 ]
-
-_AVAILABLE_MODELS: dict[str, list[dict[str, str]]] = {
-    "classification": [
-        {"tool": "sklearn_logistic_regression", "label": "Logistic Regression"},
-        {"tool": "sklearn_random_forest", "label": "Random Forest"},
-        {"tool": "xgboost_train", "label": "XGBoost"},
-        {"tool": "sklearn_naive_bayes", "label": "Naive Bayes"},
-    ],
-    "regression": [
-        {"tool": "sklearn_random_forest", "label": "Random Forest"},
-        {"tool": "xgboost_train", "label": "XGBoost"},
-        {"tool": "sklearn_glm", "label": "GLM"},
-    ],
-}
 
 
 # =============================================================================
@@ -168,13 +233,11 @@ _AVAILABLE_MODELS: dict[str, list[dict[str, str]]] = {
 class TrainingIteration(BaseModel):
     """A single training iteration attempt."""
     model_name: str = Field(description="Name of the model for this iteration")
-    tool_used: str = Field(description="Training tool used (e.g., sklearn_logistic_regression)")
+    tool_used: str = Field(description="Skill and estimator used (e.g., supervised/HistGradientBoostingClassifier)")
     hyperparams: dict = Field(default_factory=dict, description="Hyperparameters used")
-    # Classification metrics
     train_accuracy: Optional[float] = Field(default=None, description="Training accuracy")
     val_accuracy: Optional[float] = Field(default=None, description="Validation accuracy")
     val_roc_auc: Optional[float] = Field(default=None, description="Validation ROC-AUC")
-    # Regression metrics
     train_r2: Optional[float] = Field(default=None, description="Training R²")
     val_r2: Optional[float] = Field(default=None, description="Validation R²")
     val_rmse: Optional[float] = Field(default=None, description="Validation RMSE")
@@ -190,13 +253,11 @@ class TrainingResult(BaseModel):
     """Structured output for training completion."""
     success: bool = Field(description="Whether training completed successfully")
     best_model_name: str = Field(description="Name of the best trained model")
-    model_type: str = Field(description="Type of model trained (e.g., logistic_regression, random_forest)")
-    # Classification metrics
+    model_type: str = Field(description="Estimator used (e.g., HistGradientBoostingClassifier)")
     val_accuracy: Optional[float] = Field(default=None, description="Best model validation accuracy")
     val_roc_auc: Optional[float] = Field(default=None, description="Best model validation ROC-AUC")
     test_accuracy: Optional[float] = Field(default=None, description="Best model test accuracy")
     test_roc_auc: Optional[float] = Field(default=None, description="Best model test ROC-AUC")
-    # Regression metrics
     train_r2: Optional[float] = Field(default=None, description="Training R²")
     val_r2: Optional[float] = Field(default=None, description="Validation R²")
     val_rmse: Optional[float] = Field(default=None, description="Validation RMSE")
@@ -204,14 +265,12 @@ class TrainingResult(BaseModel):
     test_r2: Optional[float] = Field(default=None, description="Test R²")
     test_rmse: Optional[float] = Field(default=None, description="Test RMSE")
     test_mae: Optional[float] = Field(default=None, description="Test MAE")
-    # Iteration tracking
     iterations: list[TrainingIteration] = Field(default_factory=list, description="All training iterations")
     num_iterations: int = Field(description="Total number of training iterations attempted")
-    # Summary
     summary: str = Field(description="Summary of training process and results")
     recommendations: Optional[str] = Field(default=None, description="Recommendations for improvement")
     feature_redo_requested: bool = Field(
-        default=False, 
+        default=False,
         description="Whether a feature engineering redo was requested via request_feature_engineering_redo tool"
     )
 
@@ -220,13 +279,28 @@ class TrainingResult(BaseModel):
 # HELPER FUNCTIONS
 # =============================================================================
 
-def _get_task_type(selected_model: str, goal: str) -> Literal["classification", "regression"]:
-    """Infer task type from model selection and goal."""
+_REGRESSION_KEYWORDS = (
+    "regress", "predict value", "forecast", "amount", "price", "cost",
+    "revenue", "salary", "estimate number", "continuous",
+)
+
+_REGRESSION_ESTIMATORS = {
+    "svr", "linearsvr", "nusvr", "kneighborsregressor", "decisiontreeregressor",
+    "gradientboostingregressor", "histgradientboostingregressor",
+    "adaboostregressor", "baggingregressor", "extratreesregressor",
+    "mlpregressor", "linearregression", "ridge", "lasso", "elasticnet",
+    "huberregressor", "sgdregressor", "passiveaggressiveregressor",
+    "randomforestregressor", "gaussianprocessregressor",
+    "isotonicregression", "quantileregressor",
+}
+
+
+def _get_task_type(goal: str, estimator_hint: Optional[str] = None) -> Literal["classification", "regression"]:
+    """Infer task type from goal text and optional estimator hint."""
     goal_lower = goal.lower()
-    model_lower = selected_model.lower()
-    if any(w in goal_lower for w in ("regress", "predict value", "forecast", "amount", "price", "cost")):
+    if any(kw in goal_lower for kw in _REGRESSION_KEYWORDS):
         return "regression"
-    if any(w in model_lower for w in ("glm", "regression")) and "logistic" not in model_lower:
+    if estimator_hint and estimator_hint.lower() in _REGRESSION_ESTIMATORS:
         return "regression"
     return "classification"
 
@@ -318,11 +392,7 @@ def _iteration_to_dict(it: TrainingIteration) -> dict:
 
 
 def _maybe_discretize_target(y_true, model_name: str):
-    """Apply target discretization if the model was trained with an auto-discretized target.
-
-    Checks the model registry for a stored discretization threshold and
-    binarizes y_true using that threshold so evaluation metrics are meaningful.
-    """
+    """Apply target discretization if the model was trained with an auto-discretized target."""
     import numpy as np
     from model_storage import get_model_info
 
@@ -343,12 +413,7 @@ def _evaluate_model_on_test(
     target_column: str,
     task_type: str,
 ) -> dict[str, float | None]:
-    """Programmatically evaluate a model on the test set.
-
-    Returns a dict with test_accuracy, test_roc_auc (classification)
-    or test_r2, test_rmse, test_mae (regression). All values are None
-    on failure so callers can safely fall through.
-    """
+    """Programmatically evaluate a model on the test set."""
     import numpy as np
     from sklearn.metrics import accuracy_score, roc_auc_score
 
@@ -400,7 +465,7 @@ def _log_training_results(training_result: TrainingResult, task_type: str):
         status = "OK" if it.success else "FAIL"
         hp_str = ", ".join(f"{k}={v}" for k, v in it.hyperparams.items() if v is not None)
         print(f"  [{status}] Iter {i}: {it.model_name}")
-        print(f"     Tool: {it.tool_used}")
+        print(f"     Estimator: {it.tool_used}")
         print(f"     Hyperparams: {hp_str[:60]}...")
         if task_type == "regression":
             if it.val_r2 is not None:
@@ -429,6 +494,9 @@ def _log_training_results(training_result: TrainingResult, task_type: str):
 # MAIN TRAINING FUNCTION
 # =============================================================================
 
+SUPERVISED_SKILL = "supervised"
+
+
 def run_training_agent(
     train_ref: str,
     val_ref: str,
@@ -439,23 +507,25 @@ def run_training_agent(
     model_name: Optional[str] = None,
     max_iterations: int = 6,
     llm_model: str = "openai:gpt-5.1",
+    estimator_hint: Optional[str] = None,
 ) -> dict[str, Any]:
-    """
-    Run the training agent to train and evaluate a model.
-    
+    """Run the training agent using the skill-based architecture.
+
+    The agent reads the supervised skill's SKILL.md to select the right
+    estimator, then trains via train_with_skill. No hardcoded model list —
+    the skill documentation drives model selection.
+
     Args:
         train_ref: Reference to training dataset
         val_ref: Reference to validation dataset
         test_ref: Reference to test dataset
         target_column: Column to predict
-        selected_model: Model type to use (logistic_regression, random_forest, xgboost, glm)
+        selected_model: Skill name (default: "supervised")
         goal: The ML goal/objective
         model_name: Optional name for the model (auto-generated if not provided)
         max_iterations: Maximum training iterations
         llm_model: LLM to use for the agent
-    
-    Returns:
-        Dict with training results
+        estimator_hint: Specific sklearn estimator class name to start with
     """
     train_df = get_registered_dataset(train_ref)
     val_df = get_registered_dataset(val_ref)
@@ -468,16 +538,18 @@ def run_training_agent(
     if test_df is None:
         raise ValueError(f"Test dataset not found: {test_ref}")
 
-    task_type = _get_task_type(selected_model, goal)
-    available_models = _AVAILABLE_MODELS[task_type]
+    task_type = _get_task_type(goal, estimator_hint)
+    skill_name = SUPERVISED_SKILL
 
     if not model_name:
-        model_name = f"{selected_model}_{int(time.time())}"
+        model_name = f"{estimator_hint or skill_name}_{int(time.time())}"
 
     feature_columns = [c for c in train_df.columns if c != target_column]
 
     print(f"[training_agent] Starting training...")
-    print(f"  Model: {selected_model}")
+    print(f"  Skill: {skill_name}")
+    if estimator_hint:
+        print(f"  Estimator hint: {estimator_hint}")
     print(f"  Target: {target_column}")
     print(f"  Task type: {task_type}")
     print(f"  Train size: {len(train_df)}")
@@ -490,12 +562,9 @@ def run_training_agent(
     minority_ratio = min(class_counts.values()) / total if total > 0 else 0
     is_imbalanced = minority_ratio < 0.3
 
-    models_str = "\n".join(
-        f"- **{m['label']}** \u2192 tool: `{m['tool']}`" for m in available_models
-    )
     imbalance_note = (
         f"\u26a0\ufe0f IMBALANCED DATA \u2014 minority class is {minority_ratio:.1%}. "
-        "Use class_weight='balanced' (LR/RF) or scale_pos_weight (XGB)."
+        "Consider estimators that support class_weight='balanced' or oversample."
         if is_imbalanced else "\u2713 Balanced classes"
     )
 
@@ -503,14 +572,32 @@ def run_training_agent(
     features_preview = feature_columns[:10]
     ellipsis = "..." if len(feature_columns) > 10 else ""
 
+    try:
+        skill_docs = _load_skill_prompt(skill_name)
+    except ValueError:
+        skill_docs = f"(No SKILL.md found for '{skill_name}')"
+
+    estimator_section = ""
+    if estimator_hint:
+        estimator_section = (
+            f"\n## Preferred Estimator\n"
+            f"The user specifically requested **{estimator_hint}**. "
+            f"Start with this estimator. Focus on tuning it first. "
+            f"Only try alternatives if it clearly under-performs.\n"
+        )
+
     context = f"""## Goal
 {goal}
 
-## Available Models (use any, switch freely)
-{models_str}
+## Skill: `{skill_name}`
 
-Start with **{selected_model}**, but switch to other models whenever you think it could improve performance. Try at least 2 different model types.
+Follow the skill documentation below. It covers model selection, parameter
+discovery, and training. Use the Workflow section as your step-by-step guide.
 
+<skill_documentation>
+{skill_docs}
+</skill_documentation>
+{estimator_section}
 ## Data
 - Task type: {task_type}
 - Target column: `{target_column}`
@@ -522,12 +609,9 @@ Start with **{selected_model}**, but switch to other models whenever you think i
 **Class distribution:** {class_counts}
 {imbalance_note}
 
-## Instructions
+## Constraints
 - Max iterations: {max_iterations}
-- Name models descriptively: `lr_v1`, `rf_v1`, `xgb_v1`, `rf_v2`, etc.
-- For training tools: `train_dataset_ref="{train_ref}"`, `target_column="{target_column}"`
-- For evaluate_model: `dataset_ref="{val_ref}"` (validation) or `dataset_ref="{test_ref}"` (final test)
-- **Optimize aggressively** \u2014 try different models and hyperparameters to get the best validation metrics before running the final test evaluation.
+- **AVOID slow estimators on large datasets** (>{len(train_df)} rows): GradientBoosting, SVC, KNeighbors, and MLP are very slow at scale. Prefer HistGradientBoosting, RandomForest, LinearSVC, Ridge, or SGD.
 
 ## Sample Data (first 3 rows)
 {sample_rows}
@@ -545,7 +629,7 @@ Start with **{selected_model}**, but switch to other models whenever you think i
         {"role": "user", "content": context},
         {"role": "user", "content": (
             "Begin training now. Maximize validation performance by exploring "
-            "different models and hyperparameters. Use the dataset refs above. "
+            "different estimators and hyperparameters. Use the dataset refs above. "
             "Run final test evaluation on your best model before finishing."
         )},
     ]
@@ -576,8 +660,6 @@ Start with **{selected_model}**, but switch to other models whenever you think i
 
         output = training_result.model_dump(exclude={"best_model_name", "feature_redo_requested", "iterations"})
 
-        # Override top-level val metrics with best iteration's values so
-        # the report always reflects the actual best model.
         if best_iteration:
             if task_type == "regression":
                 for key in ("val_r2", "val_rmse", "val_mae", "train_r2"):
@@ -588,8 +670,6 @@ Start with **{selected_model}**, but switch to other models whenever you think i
                     if best_iteration.get(key) is not None:
                         output[key] = best_iteration[key]
 
-        # Programmatic test evaluation — always evaluate the best model
-        # on the test set ourselves instead of trusting the LLM's output.
         if training_result.success and actual_best_name:
             test_metrics = _evaluate_model_on_test(
                 model_name=actual_best_name,
