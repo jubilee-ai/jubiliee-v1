@@ -62,7 +62,7 @@ def test_simple_agent_end_to_end():
     agent, state = create_simple_training_agent(
         goal="Predict loan default risk based on applicant financial profile",
         linked_datasets=["credit_risk_raw"],
-        user_model_preference="logistic_regression",
+        user_model_preference="supervised",
         model="openai:gpt-5.1",
         hitl=False,
     )
@@ -70,7 +70,7 @@ def test_simple_agent_end_to_end():
 
     print("\n[3] Invoking agent (this calls all 9 steps via LLM)...")
     result = agent.invoke(
-        {"messages": [{"role": "user", "content": "Train a logistic regression model to predict loan default risk. The dataset 'credit_risk_raw' is already loaded."}]}
+        {"messages": [{"role": "user", "content": "Train a model to predict loan default risk. The dataset 'credit_risk_raw' is already loaded."}]}
     )
 
     print("\n[4] Agent finished.")

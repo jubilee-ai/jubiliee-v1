@@ -1,6 +1,6 @@
 """
-Step 1: Model Selection Node
-Selects the appropriate ML model based on the user's goal.
+Step 1: Model Family Selection Node
+Narrows the approach to a family of ML models based on the user's goal.
 """
 
 from pathlib import Path
@@ -10,8 +10,6 @@ from dotenv import load_dotenv
 from langchain.chat_models import init_chat_model
 from pydantic import BaseModel, Field
 
-# Load environment variables
-# Path: steps -> training -> agents -> root
 load_dotenv(Path(__file__).parent.parent.parent.parent / ".env")
 
 if TYPE_CHECKING:
@@ -19,146 +17,111 @@ if TYPE_CHECKING:
 
 
 # =============================================================================
-# AVAILABLE TRAINING MODELS
+# MODEL FAMILIES
 # =============================================================================
 
-TRAINING_MODELS = {
-    "glm": {
-        "name": "glm",
-        "description": "Generalized Linear Model - flexible regression for various response distributions",
+MODEL_FAMILIES = {
+    "supervised": {
+        "name": "supervised",
+        "description": "Supervised learning — models that learn from labeled data to predict outcomes",
         "when_to_use": [
-            "Modeling non-normal response variables (counts, binary, proportions)",
-            "When interpretability is important",
-            "Poisson regression for count data",
-            "Gamma regression for positive continuous data",
+            "Classification tasks (binary or multiclass)",
+            "Regression tasks with a clear target variable",
+            "When labeled training data is available",
+            "Predicting a known outcome (churn, default, price, etc.)",
+            "When interpretability or feature importance matters",
         ],
         "when_not_to_use": [
-            "Complex non-linear relationships",
-            "High-dimensional feature spaces",
+            "No labeled target variable exists",
+            "The goal is to discover hidden structure or groupings",
+            "Primarily dimensionality reduction or anomaly detection without labels",
         ],
     },
-    "naive_bayes": {
-        "name": "naive_bayes",
-        "description": "Naive Bayes - fast probabilistic classifier based on Bayes' theorem with feature independence assumption",
+    "unsupervised": {
+        "name": "unsupervised",
+        "description": "Unsupervised learning — models that find hidden patterns and structure in unlabeled data",
         "when_to_use": [
-            "Fast baseline classifier before trying complex models",
-            "Small datasets where other models may overfit",
-            "Text or document classification tasks",
-            "High-dimensional feature spaces",
-            "When training speed is critical (extremely fast to train)",
-            "Imbalanced datasets (complement variant)",
+            "Clustering or segmentation (customer segments, groupings)",
+            "Anomaly / outlier detection without labeled fraud/anomaly data",
+            "Dimensionality reduction or feature extraction",
+            "Exploratory data analysis to discover structure",
+            "When no labeled target variable is available",
         ],
         "when_not_to_use": [
-            "Regression tasks with continuous targets",
-            "When features have strong correlations or dependencies",
-            "Complex non-linear decision boundaries",
-            "When well-calibrated probability estimates are required",
+            "A clear labeled target variable exists and you want to predict it",
+            "The task is straightforward classification or regression",
+            "When you need well-calibrated probability estimates for a known outcome",
         ],
     },
-    "logistic_regression": {
-        "name": "logistic_regression",
-        "description": "Logistic Regression - binary/multiclass classification with interpretable coefficients",
+    "neural_networks": {
+        "name": "neural_networks",
+        "description": "Neural networks — deep learning models for complex, high-dimensional, or unstructured data",
         "when_to_use": [
-            "Binary classification (yes/no, default/no-default)",
-            "When you need interpretable feature weights",
-            "Baseline model for classification",
-            "Regulatory environments requiring explainability",
+            "Image, text, audio, or other unstructured data",
+            "Very large datasets (hundreds of thousands+ rows)",
+            "Complex non-linear relationships that simpler models can't capture",
+            "Sequence or time-series modeling with long-range dependencies",
+            "Multi-modal inputs or representation learning",
         ],
         "when_not_to_use": [
-            "Non-linear decision boundaries",
-            "Regression tasks with continuous targets",
-        ],
-    },
-    "random_forest": {
-        "name": "random_forest",
-        "description": "Random Forest - ensemble of decision trees for robust predictions",
-        "when_to_use": [
-            "Both classification and regression tasks",
-            "Handling missing values and outliers",
-            "Feature importance ranking",
-            "When accuracy matters more than interpretability",
-        ],
-        "when_not_to_use": [
-            "Very high-dimensional sparse data",
-            "Real-time inference with strict latency requirements",
-        ],
-    },
-    "survival_analysis": {
-        "name": "survival_analysis",
-        "description": "Survival Analysis - time-to-event modeling with censoring support",
-        "when_to_use": [
-            "Time-to-event prediction (churn, default, failure)",
-            "When data has censoring (incomplete observations)",
-            "Customer lifetime value modeling",
-            "Policy lapse prediction",
-        ],
-        "when_not_to_use": [
-            "Standard classification without time component",
-            "When there's no natural event/censoring structure",
-        ],
-    },
-    "xgboost": {
-        "name": "xgboost",
-        "description": "XGBoost - gradient boosted trees for high-performance predictions",
-        "when_to_use": [
-            "Structured/tabular data with complex patterns",
-            "When maximum predictive accuracy is needed",
-            "Competitions and benchmarking",
-            "Large datasets with many features",
-        ],
-        "when_not_to_use": [
-            "Small datasets (may overfit)",
-            "When full interpretability is required",
+            "Small to medium tabular datasets (supervised or unsupervised methods usually perform better)",
+            "When interpretability is a hard requirement",
+            "Limited compute resources or strict latency constraints",
+            "When a simpler model can achieve comparable performance",
         ],
     },
 }
 
 
-def format_training_models_for_prompt() -> str:
-    """Format training models for LLM selection prompt."""
+def format_model_families_for_prompt() -> str:
+    """Format model families for LLM selection prompt."""
     lines = []
-    for model in TRAINING_MODELS.values():
-        lines.append(f"**{model['name']}**")
-        lines.append(f"Description: {model['description']}")
-        lines.append(f"When to use: {', '.join(model['when_to_use'])}")
-        lines.append(f"When NOT to use: {', '.join(model['when_not_to_use'])}")
+    for family in MODEL_FAMILIES.values():
+        lines.append(f"**{family['name']}**")
+        lines.append(f"Description: {family['description']}")
+        lines.append(f"When to use: {', '.join(family['when_to_use'])}")
+        lines.append(f"When NOT to use: {', '.join(family['when_not_to_use'])}")
         lines.append("")
     return "\n".join(lines)
 
 
-# Maps user-friendly aliases to canonical model keys in TRAINING_MODELS.
-_MODEL_ALIASES: dict[str, str] = {
-    "naive bayes": "naive_bayes",
-    "naivebayes": "naive_bayes",
-    "nb": "naive_bayes",
-    "naive_bayes": "naive_bayes",
-    "logistic regression": "logistic_regression",
-    "logistic_regression": "logistic_regression",
-    "logreg": "logistic_regression",
-    "random forest": "random_forest",
-    "random_forest": "random_forest",
-    "rf": "random_forest",
-    "xgboost": "xgboost",
-    "xgb": "xgboost",
-    "glm": "glm",
-    "generalized linear model": "glm",
-    "survival analysis": "survival_analysis",
-    "survival_analysis": "survival_analysis",
-    "cox": "survival_analysis",
+_FAMILY_ALIASES: dict[str, str] = {
+    "supervised": "supervised",
+    "supervised learning": "supervised",
+    "classification": "supervised",
+    "regression": "supervised",
+    "unsupervised": "unsupervised",
+    "unsupervised learning": "unsupervised",
+    "clustering": "unsupervised",
+    "cluster": "unsupervised",
+    "segmentation": "unsupervised",
+    "segment": "unsupervised",
+    "anomaly detection": "unsupervised",
+    "dimensionality reduction": "unsupervised",
+    "neural network": "neural_networks",
+    "neural networks": "neural_networks",
+    "neural net": "neural_networks",
+    "deep learning": "neural_networks",
+    "deep neural": "neural_networks",
+    "nn": "neural_networks",
+    "dnn": "neural_networks",
+    "cnn": "neural_networks",
+    "rnn": "neural_networks",
+    "transformer": "neural_networks",
+    "lstm": "neural_networks",
 }
 
 
-def _extract_model_from_goal(goal: str) -> str | None:
-    """Detect an explicit model request in the user's goal text.
+def _extract_family_from_goal(goal: str) -> str | None:
+    """Detect an explicit model-family request in the user's goal text.
 
-    Returns the canonical model key if found, otherwise None.
-    Longer alias strings are checked first to avoid partial matches
-    (e.g. "naive bayes" before "nb").
+    Returns the canonical family key if found, otherwise None.
+    Longer alias strings are checked first to avoid partial matches.
     """
     goal_lower = goal.lower()
-    for alias in sorted(_MODEL_ALIASES, key=len, reverse=True):
+    for alias in sorted(_FAMILY_ALIASES, key=len, reverse=True):
         if alias in goal_lower:
-            return _MODEL_ALIASES[alias]
+            return _FAMILY_ALIASES[alias]
     return None
 
 
@@ -167,22 +130,21 @@ def _extract_model_from_goal(goal: str) -> str | None:
 # =============================================================================
 
 
-class ModelSelectionOutput(BaseModel):
-    """Structured output for model selection."""
-    # TODO: Add more models
-    # TODO: Add clarification
-    selected_model: Literal["glm", "logistic_regression", "naive_bayes", "random_forest", "survival_analysis", "xgboost"] = Field(
-        description="The selected model type for training"
+class ModelFamilySelectionOutput(BaseModel):
+    """Structured output for model family selection."""
+
+    selected_family: Literal["supervised", "unsupervised", "neural_networks"] = Field(
+        description="The selected model family for training"
     )
     explanation: str = Field(
-        description="Explanation of why this model was selected based on the goal"
+        description="Explanation of why this model family was selected based on the goal"
     )
     confidence: Literal["high", "medium", "low"] = Field(
-        description="Confidence level in the model selection"
+        description="Confidence level in the model family selection"
     )
-    alternative_models: list[str] = Field(
+    alternative_families: list[str] = Field(
         default_factory=list,
-        description="Alternative models that could also work for this goal"
+        description="Alternative model families that could also work for this goal"
     )
 
 
@@ -190,11 +152,13 @@ class ModelSelectionOutput(BaseModel):
 # PROMPT
 # =============================================================================
 
-MODEL_SELECTION_PROMPT = """You are an ML model selection expert. Based on the user's goal, select the most appropriate model for training.
+MODEL_FAMILY_SELECTION_PROMPT = """You are an ML model selection expert. Based on the user's goal, select the most appropriate family of models for training.
 
-## Available Training Models
+Your job is NOT to pick a specific algorithm — only to narrow the approach down to the right family so the training step can explore concrete models within that family.
 
-{models}
+## Available Model Families
+
+{families}
 
 ## User's Goal
 
@@ -202,10 +166,10 @@ MODEL_SELECTION_PROMPT = """You are an ML model selection expert. Based on the u
 {redo_section}
 ## Instructions
 
-1. **If the user explicitly names a model** (e.g. "train a naive bayes", "use xgboost", "logistic regression"), you MUST select that model. The user's explicit request overrides your own preference.
-2. Otherwise, analyze the goal to understand what kind of prediction/modeling is needed and select the most appropriate model.
+1. **If the user explicitly names a model family** (e.g. "use supervised learning", "cluster my customers", "deep learning"), you MUST select that family. The user's explicit request overrides your own preference.
+2. Otherwise, analyze the goal to understand what kind of problem this is and select the most appropriate family.
 3. Explain your reasoning.
-4. List any alternative models that could also work.
+4. List any alternative families that could also work.
 """
 
 
@@ -216,71 +180,70 @@ MODEL_SELECTION_PROMPT = """You are an ML model selection expert. Based on the u
 
 def select_model(state: "TrainingAgentState") -> "TrainingAgentState":
     """
-    Step 1: Select Model
-    - Based on the goal
-    - If user specifies a model, use that
-    - Return an explanation if not given
+    Step 1: Select Model Family
+    - Based on the goal, choose supervised / unsupervised / neural_networks
+    - If user specifies a family, use that
+    - Return an explanation
     - User can comment and regenerate (3 total regens)
     """
-    # Resolve explicit preference: state field first, then parse goal text.
-    explicit_pref = state.get("user_model_preference") or _extract_model_from_goal(state.get("goal", ""))
+    explicit_pref = state.get("user_model_preference") or _extract_family_from_goal(
+        state.get("goal", "")
+    )
 
     if explicit_pref:
-        model_name = explicit_pref
+        family_key = explicit_pref
 
-        # Validate the model exists
-        if model_name not in TRAINING_MODELS:
+        if family_key not in MODEL_FAMILIES:
             return {
                 **state,
-                "error": f"Unknown model: {model_name}. Available: {list(TRAINING_MODELS.keys())}",
+                "error": f"Unknown model family: {family_key}. Available: {list(MODEL_FAMILIES.keys())}",
                 "current_step": "select_model",
             }
-        
-        model_info = TRAINING_MODELS[model_name]
+
+        family_info = MODEL_FAMILIES[family_key]
         return {
             **state,
-            "selected_model": model_name,
-            "model_explanation": f"User specified {model_name}: {model_info['description']}",
+            "selected_model": family_key,
+            "model_explanation": f"User specified {family_key}: {family_info['description']}",
             "audit_trace": [
                 *state.get("audit_trace", []),
                 {
                     "step": "select_model",
                     "action": "user_specified",
-                    "model": model_name,
+                    "family": family_key,
                 },
             ],
             "explanations": [
                 *state.get("explanations", []),
-                f"Using user-specified model: {model_name}",
+                f"Using user-specified model family: {family_key}",
             ],
             "current_step": "select_model",
         }
-    
-    # Use LLM to select model based on goal
+
     llm = init_chat_model(model="gpt-5.1", temperature=0)
-    structured_llm = llm.with_structured_output(ModelSelectionOutput)
-    
+    structured_llm = llm.with_structured_output(ModelFamilySelectionOutput)
+
     redo_hint = state.get("_select_model_redo_hint", "")
     redo_section = ""
     if redo_hint:
         redo_section = (
             f"\n## User Feedback (IMPORTANT — override your default choice)\n\n"
-            f"The user rejected the previous model selection and said:\n"
+            f"The user rejected the previous model family selection and said:\n"
             f'"{redo_hint}"\n\n'
-            f"You MUST follow this feedback when choosing the model.\n"
+            f"You MUST follow this feedback when choosing the model family.\n"
         )
 
-    prompt = MODEL_SELECTION_PROMPT.format(
-        models=format_training_models_for_prompt(),
+    prompt = MODEL_FAMILY_SELECTION_PROMPT.format(
+        families=format_model_families_for_prompt(),
         goal=state.get("goal", ""),
         redo_section=redo_section,
     )
-    
-    result: ModelSelectionOutput = structured_llm.invoke(prompt)
-    
+
+    result: ModelFamilySelectionOutput = structured_llm.invoke(prompt)
+
     return {
         **state,
-        "selected_model": result.selected_model,
+        "selected_model": result.selected_family,
         "model_explanation": result.explanation,
         "model_regen_count": state.get("model_regen_count", 0),
         "audit_trace": [
@@ -288,14 +251,14 @@ def select_model(state: "TrainingAgentState") -> "TrainingAgentState":
             {
                 "step": "select_model",
                 "action": "llm_selected",
-                "model": result.selected_model,
+                "family": result.selected_family,
                 "confidence": result.confidence,
-                "alternatives": result.alternative_models,
+                "alternatives": result.alternative_families,
             },
         ],
         "explanations": [
             *state.get("explanations", []),
-            f"Selected model: {result.selected_model}. Reason: {result.explanation}",
+            f"Selected model family: {result.selected_family}. Reason: {result.explanation}",
         ],
         "current_step": "select_model",
     }
