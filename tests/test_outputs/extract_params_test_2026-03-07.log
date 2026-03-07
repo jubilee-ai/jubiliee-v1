@@ -1,0 +1,63 @@
+Started: 2026-03-07T13:54:24
+
+========================================================================
+TEST 1: LogisticRegression
+========================================================================
+source=docstring class=sklearn.linear_model._logistic.LogisticRegression
+tunable_count=7
+  - penalty: type=categorical default=deprecated choices=['l1', 'l2', 'elasticnet']
+  - C: type=float default=1.0 scale=log
+  - l1_ratio: type=float default=0.0
+  - tol: type=float default=0.0001 scale=linear
+  - intercept_scaling: type=float default=1 scale=linear
+  - solver: type=categorical default=lbfgs choices=['lbfgs', 'liblinear', 'newton-cg', 'newton-cholesky', 'sag', 'saga']
+  - max_iter: type=int default=100
+non_tunable=['dual', 'fit_intercept', 'class_weight', 'random_state', 'verbose', 'warm_start', 'n_jobs']
+
+========================================================================
+TEST 2: RandomForestClassifier
+========================================================================
+source=docstring class=sklearn.ensemble._forest.RandomForestClassifier
+tunable_count=11
+  - n_estimators: type=int default=100
+  - criterion: type=categorical default=gini choices=['gini', 'entropy', 'log_loss']
+  - max_depth: type=int default=None
+  - min_samples_split: type=int default=2
+  - min_samples_leaf: type=int default=1
+  - min_weight_fraction_leaf: type=float default=0.0
+  - max_features: type=categorical default=sqrt choices=['sqrt', 'log2']
+  - max_leaf_nodes: type=int default=None
+  - min_impurity_decrease: type=float default=0.0
+  - class_weight: type=categorical default=None choices=['balanced', 'balanced_subsample']
+  - max_samples: type=int default=None
+non_tunable=['bootstrap', 'oob_score', 'n_jobs', 'random_state', 'verbose', 'warm_start', 'ccp_alpha', 'monotonic_cst']
+
+========================================================================
+TEST 3: sklearn.svm.SVC
+========================================================================
+source=docstring class=sklearn.svm._classes.SVC
+tunable_count=9
+  - C: type=float default=1.0 scale=log
+  - kernel: type=categorical default=rbf choices=['linear', 'poly', 'rbf', 'sigmoid', 'precomputed']
+  - degree: type=int default=3
+  - gamma: type=categorical default=scale choices=['scale', 'auto']
+  - coef0: type=float default=0.0
+  - tol: type=float default=0.001 scale=linear
+  - cache_size: type=float default=200 scale=linear
+  - max_iter: type=int default=-1
+  - decision_function_shape: type=categorical default=ovr choices=['ovo', 'ovr']
+non_tunable=['shrinking', 'probability', 'class_weight', 'verbose', 'break_ties', 'random_state']
+
+========================================================================
+TEST 4: Cache check
+========================================================================
+cache_elapsed_ms=17.06
+cache_same_result=True
+
+========================================================================
+TEST 5: Unknown class
+========================================================================
+source=None class=None
+error=Could not resolve class 'NonExistentModel'
+
+Ended: 2026-03-07T13:54:26

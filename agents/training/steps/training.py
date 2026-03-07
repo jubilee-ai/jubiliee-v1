@@ -34,6 +34,7 @@ _DATA_TOOLS_DIR = Path(__file__).parent.parent.parent.parent / "tools" / "data-t
 if str(_DATA_TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(_DATA_TOOLS_DIR))
 
+from extract_params import extract_estimator_params_tool
 from model_storage import (delete_model, evaluate_model_tool,
                            get_model_info_tool, list_models,
                            list_trained_models_tool, load_model,
@@ -128,6 +129,7 @@ def request_feature_engineering_redo_tool(
 # =============================================================================
 
 TRAINING_TOOLS = [
+    extract_estimator_params_tool,
     train_with_skill_tool,
     get_skill_prompt_tool,
     list_trained_models_tool,
@@ -538,7 +540,7 @@ The full documentation for this skill is below. Use it to set hyperparameters.
 ## Alternative Skills (use `get_skill_prompt` to load docs before trying)
 {other_skills_str}
 
-Start with **{selected_model}**{f' using `{estimator_hint}`' if estimator_hint else ''}. If you want to try a different model, call `get_skill_prompt(skill_name)` first to get its parameters, then `train_with_skill`.
+Start with **{selected_model}**{f' using `{estimator_hint}`' if estimator_hint else ''}. Call `extract_estimator_params` first to discover its hyperparameters. If you switch models, call `extract_estimator_params` for the new estimator and `get_skill_prompt` if using a different skill.
 
 ## Data
 - Task type: {task_type}
