@@ -19,7 +19,7 @@ import pandas as pd
 import numpy as np
 from utils import register_dataset, get_registered_dataset
 
-from agents.training.agent import invoke_training_agent
+from agents.training.core.graph import invoke_training_agent
 
 
 def print_header(test_num: int, title: str):
@@ -251,7 +251,7 @@ def test_3_insurance_regression():
     
     # Load and register dataset
     print_step("SETUP", "Loading insurance.csv")
-    df = pd.read_csv(Path(__file__).parent.parent.parent / "datasets" / "csv" / "insurance.csv")
+    df = pd.read_csv(Path(__file__).parent.parent / "datasets" / "csv" / "insurance.csv")
     
     print_step("INPUT DATASET", "")
     print_dataset_preview(df, "insurance_full")
@@ -563,6 +563,39 @@ def test_11_no_dataset_corporate_bankruptcy():
         return True  # Soft pass
 
 
+def test_12_unsupervised_customer_segmentation():
+    """Test 12: Unsupervised customer segmentation."""
+    from agents.training.agent_simple import invoke_simple_training_agent
+
+    print_header(12, "Unsupervised - Customer Segmentation")
+
+    print_step("SETUP", "Loading insurance.csv for clustering")
+    df = pd.read_csv(Path(__file__).parent.parent / "datasets" / "csv" / "insurance.csv")
+    df_sample = df.sample(n=min(400, len(df)), random_state=42).copy()
+
+    # Keep this as a pure unsupervised use case.
+    if "charges" in df_sample.columns:
+        df_sample = df_sample.drop(columns=["charges"])
+
+    print_step("INPUT DATASET", "")
+    print_dataset_preview(df_sample, "insurance_unsupervised")
+    print("\n  Target: None (unsupervised clustering)")
+    print("  Goal: segment customers into similar groups")
+
+    register_dataset("insurance_unsupervised", df_sample)
+    print(f"\n  ✅ Registered as: insurance_unsupervised")
+
+    print_step("INVOKE", "Calling invoke_training_agent with unsupervised...")
+    result = invoke_simple_training_agent(
+        goal="Cluster insurance customers into meaningful segments based on demographics and health attributes for exploratory analysis",
+        linked_datasets=["insurance_unsupervised"],
+        user_model_preference="unsupervised"
+    )
+
+    print_result(result)
+    return check_success(result, "Test 12: Unsupervised - Customer Segmentation")
+
+
 # =============================================================================
 # MAIN
 # =============================================================================
@@ -577,6 +610,7 @@ def main():
     print("Tests 6-8: No linked datasets (agent discovers data)")
     print("Tests 9-10: Multiple linked datasets")
     print("Test 11: No dataset - corporate bankruptcy goal")
+    print("Test 12: Unsupervised customer segmentation")
     print("=" * 80)
     
     results = {}
@@ -599,6 +633,9 @@ def main():
     
     # Additional discovery test
     results["Test 11"] = test_11_no_dataset_corporate_bankruptcy()
+
+    # Unsupervised coverage
+    results["Test 12"] = test_12_unsupervised_customer_segmentation()
     
     # Summary
     print("\n" + "=" * 80)
@@ -626,7 +663,7 @@ def main():
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument("--test", type=int, help="Run specific test (1-11)")
+    parser.add_argument("--test", type=int, help="Run specific test (1-12)")
     args = parser.parse_args()
     
     if args.test:
@@ -642,10 +679,11 @@ if __name__ == "__main__":
             9: test_9_multi_dataset_loan_and_insurance,
             10: test_10_multi_dataset_financial_and_loan,
             11: test_11_no_dataset_corporate_bankruptcy,
+            12: test_12_unsupervised_customer_segmentation,
         }
         if args.test in test_funcs:
             test_funcs[args.test]()
         else:
-            print(f"Unknown test: {args.test}. Available: 1-11")
+            print(f"Unknown test: {args.test}. Available: 1-12")
     else:
         main()

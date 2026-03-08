@@ -28,7 +28,9 @@ def data_collection_result(state: TrainingAgentState) -> Literal["success", "ret
 
 def should_skip_label_definition(state: TrainingAgentState) -> Literal["skip", "define"]:
     """Check if label/split definition is relevant or should be skipped"""
-    # Always define labels for supervised learning
+    # Unsupervised flows do not require target/label definition.
+    if state.get("selected_model") == "unsupervised":
+        return "skip"
     return "define"
 
 

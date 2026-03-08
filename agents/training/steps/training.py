@@ -84,7 +84,8 @@ class TrainWithSkillInput(BaseModel):
     params: Optional[dict] = Field(
         default=None,
         description="Training parameters as a JSON object. Must include "
-        "'estimator', 'model_name', 'train_dataset_ref', and 'target_column'.",
+        "'estimator', 'model_name', and 'train_dataset_ref'. "
+        "'target_column' is required for supervised skills only.",
     )
 
 
@@ -212,8 +213,22 @@ class TrainingResult(BaseModel):
 
 
 def _infer_task_type(goal: str, estimator_hint: Optional[str] = None) -> str:
-    """Infer 'classification' or 'regression' from the goal text and estimator name."""
+    """Infer 'classification', 'regression', or 'unsupervised' from context."""
     text = (goal + " " + (estimator_hint or "")).lower()
+    if any(
+        kw in text
+        for kw in (
+            "unsupervised",
+            "cluster",
+            "clustering",
+            "segmentation",
+            "anomaly",
+            "outlier",
+            "dimensionality reduction",
+            "pca",
+        )
+    ):
+        return "unsupervised"
     if "regress" in text or any(
         kw in text for kw in ("forecast", "predict value", "continuous", "amount", "price", "cost")
     ):
@@ -311,6 +326,8 @@ def _evaluate_model_on_test(
     from sklearn.metrics import accuracy_score, roc_auc_score
 
     result: dict[str, float | None] = {}
+    if task_type == "unsupervised":
+        return result
     try:
         model = load_model(model_name)
         test_df = get_registered_dataset(test_ref)
@@ -386,8 +403,8 @@ def _log_training_results(training_result: TrainingResult, task_type: str):
 
 def run_training_agent(
     train_ref: str,
-    val_ref: str,
-    test_ref: str,
+    val_ref: Optional[str],
+    test_ref: Optional[str],
     target_column: str,
     selected_model: str,
     goal: str,
@@ -402,18 +419,20 @@ def run_training_agent(
     right estimator, trains via train_with_skill, evaluates, and iterates.
     """
     train_df = get_registered_dataset(train_ref)
-    val_df = get_registered_dataset(val_ref)
-    test_df = get_registered_dataset(test_ref)
+    val_df = get_registered_dataset(val_ref) if val_ref else None
+    test_df = get_registered_dataset(test_ref) if test_ref else None
 
-    for ref, df, label in [
-        (train_ref, train_df, "Training"),
-        (val_ref, val_df, "Validation"),
-        (test_ref, test_df, "Test"),
-    ]:
+    required_sets = [(train_ref, train_df, "Training")]
+    if val_ref:
+        required_sets.append((val_ref, val_df, "Validation"))
+    if test_ref:
+        required_sets.append((test_ref, test_df, "Test"))
+
+    for ref, df, label in required_sets:
         if df is None:
             raise ValueError(f"{label} dataset not found: {ref}")
 
-    task_type = _infer_task_type(goal, estimator_hint)
+    task_type = "unsupervised" if selected_model == "unsupervised" else _infer_task_type(goal, estimator_hint)
 
     available_skills = [d.name for d in SKILLS_DIR.iterdir() if (d / "train.py").exists()]
     skill_name = selected_model if selected_model in available_skills else "supervised"
@@ -421,23 +440,30 @@ def run_training_agent(
     if not model_name:
         model_name = f"{estimator_hint or skill_name}_{int(time.time())}"
 
-    feature_columns = [c for c in train_df.columns if c != target_column]
+    feature_columns = [c for c in train_df.columns if c != target_column] if target_column else list(train_df.columns)
 
     print(f"[training_agent] Starting training...")
     print(f"  Skill: {skill_name} | Target: {target_column} | Task: {task_type}")
-    print(f"  Train: {len(train_df)} | Val: {len(val_df)} | Test: {len(test_df)} | Features: {len(feature_columns)}")
+    print(
+        f"  Train: {len(train_df)} | "
+        f"Val: {len(val_df) if val_df is not None else 'N/A'} | "
+        f"Test: {len(test_df) if test_df is not None else 'N/A'} | "
+        f"Features: {len(feature_columns)}"
+    )
     if estimator_hint:
         print(f"  Estimator hint: {estimator_hint}")
 
-    class_counts = train_df[target_column].value_counts().to_dict()
-    total = sum(class_counts.values())
-    minority_ratio = min(class_counts.values()) / total if total > 0 else 0
-
-    imbalance_note = (
-        f"IMBALANCED — minority class is {minority_ratio:.1%}. "
-        "Consider class_weight='balanced'."
-        if minority_ratio < 0.3 else "Balanced classes"
-    )
+    class_counts: dict[str, int] = {}
+    imbalance_note = "N/A for unsupervised training"
+    if task_type != "unsupervised":
+        class_counts = train_df[target_column].value_counts().to_dict()
+        total = sum(class_counts.values())
+        minority_ratio = min(class_counts.values()) / total if total > 0 else 0
+        imbalance_note = (
+            f"IMBALANCED — minority class is {minority_ratio:.1%}. "
+            "Consider class_weight='balanced'."
+            if minority_ratio < 0.3 else "Balanced classes"
+        )
 
     try:
         skill_docs = _load_skill_prompt(skill_name)
@@ -468,13 +494,13 @@ Follow the skill documentation below — it covers model selection and training.
 {estimator_section}
 ## Data
 - Task type: {task_type}
-- Target column: `{target_column}`
+- Target column: `{target_column if target_column else 'N/A (unsupervised)'}`
 - Training: {len(train_df)} rows (ref: `{train_ref}`)
-- Validation: {len(val_df)} rows (ref: `{val_ref}`)
-- Test: {len(test_df)} rows (ref: `{test_ref}`)
+- Validation: {len(val_df) if val_df is not None else 'N/A'} rows (ref: `{val_ref or 'N/A'}`)
+- Test: {len(test_df) if test_df is not None else 'N/A'} rows (ref: `{test_ref or 'N/A'}`)
 - Features ({len(feature_columns)}): {features_preview}{ellipsis}
 
-**Class distribution:** {class_counts}
+**Class distribution:** {class_counts if class_counts else 'N/A (unsupervised)'}
 {imbalance_note}
 
 ## Constraints
@@ -492,13 +518,20 @@ Follow the skill documentation below — it covers model selection and training.
         response_format=ToolStrategy(schema=TrainingResult),
     )
 
+    next_step_instruction = (
+        "Begin training now. Maximize unsupervised objective quality by exploring "
+        "estimators and hyperparameters. Use the dataset refs above. "
+        "Do not call evaluate_model because no target labels are required."
+        if task_type == "unsupervised"
+        else
+        "Begin training now. Maximize validation performance by exploring "
+        "different estimators and hyperparameters. Use the dataset refs above. "
+        "Run final test evaluation on your best model before finishing."
+    )
+
     messages = [
         {"role": "user", "content": context},
-        {"role": "user", "content": (
-            "Begin training now. Maximize validation performance by exploring "
-            "different estimators and hyperparameters. Use the dataset refs above. "
-            "Run final test evaluation on your best model before finishing."
-        )},
+        {"role": "user", "content": next_step_instruction},
     ]
 
     try:
@@ -553,8 +586,8 @@ Follow the skill documentation below — it covers model selection and training.
             "task_type": task_type,
             "target_column": target_column,
             "train_size": len(train_df),
-            "val_size": len(val_df),
-            "test_size": len(test_df),
+            "val_size": len(val_df) if val_df is not None else None,
+            "test_size": len(test_df) if test_df is not None else None,
             "iterations": iterations_dict,
             "best_iteration": best_iteration,
             "messages": final_messages,

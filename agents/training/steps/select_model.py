@@ -23,6 +23,20 @@ if TYPE_CHECKING:
 # =============================================================================
 
 TRAINING_MODELS = {
+    "unsupervised": {
+        "name": "unsupervised",
+        "description": "Unsupervised learning - clustering, anomaly detection, and dimensionality reduction without labels",
+        "when_to_use": [
+            "No target column is available",
+            "Customer/document/entity segmentation",
+            "Anomaly or outlier detection",
+            "Dimensionality reduction for exploratory analysis",
+        ],
+        "when_not_to_use": [
+            "You have a known target label and need classification/regression metrics",
+            "Tasks requiring direct supervised prediction",
+        ],
+    },
     "glm": {
         "name": "glm",
         "description": "Generalized Linear Model - flexible regression for various response distributions",
@@ -128,6 +142,16 @@ def format_training_models_for_prompt() -> str:
 
 # Maps user-friendly aliases to canonical model keys in TRAINING_MODELS.
 _MODEL_ALIASES: dict[str, str] = {
+    "unsupervised": "unsupervised",
+    "clustering": "unsupervised",
+    "cluster": "unsupervised",
+    "kmeans": "unsupervised",
+    "k-means": "unsupervised",
+    "dbscan": "unsupervised",
+    "agglomerative": "unsupervised",
+    "pca": "unsupervised",
+    "anomaly detection": "unsupervised",
+    "outlier detection": "unsupervised",
     "naive bayes": "naive_bayes",
     "naivebayes": "naive_bayes",
     "nb": "naive_bayes",
@@ -171,7 +195,7 @@ class ModelSelectionOutput(BaseModel):
     """Structured output for model selection."""
     # TODO: Add more models
     # TODO: Add clarification
-    selected_model: Literal["glm", "logistic_regression", "naive_bayes", "random_forest", "survival_analysis", "xgboost"] = Field(
+    selected_model: Literal["glm", "logistic_regression", "naive_bayes", "random_forest", "survival_analysis", "unsupervised", "xgboost"] = Field(
         description="The selected model type for training"
     )
     explanation: str = Field(
