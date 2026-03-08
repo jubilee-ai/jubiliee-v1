@@ -70,7 +70,8 @@ Stop iterating and run the final test evaluation when:
 - Further iterations show diminishing returns (< 1% improvement)
 - You're confident you've found a strong configuration
 
-Always run `evaluate_model` on the **test set** with your best model before finishing.
+Always run `evaluate_model` on the **test set** with your best model before finishing for supervised tasks.
+For unsupervised tasks, do not call `evaluate_model` (it requires target labels).
 
 ## Request Feature Engineering Redo
 Use `request_feature_engineering_redo` ONLY when:
