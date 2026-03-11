@@ -83,6 +83,8 @@ class TrainingAgentState(TypedDict):
 
     # Step 2: Data Collection
     collected_dataset_ref: Optional[str]
+    data_source: Optional[str]  # "local", "kaggle", "huggingface", "pre-registered"
+    use_external_sources: bool
 
     # Step 3: Cleaning & Standardization
     cleaned_dataset_ref: Optional[str]
@@ -147,6 +149,7 @@ def create_initial_state(
     goal: str,
     linked_datasets: Optional[list[str]] = None,
     user_model_preference: Optional[str] = None,
+    use_external_sources: bool = False,
 ) -> TrainingAgentState:
     """Create the initial state for the training agent."""
     return {
@@ -154,11 +157,13 @@ def create_initial_state(
         "goal": goal,
         "linked_datasets": linked_datasets,
         "user_model_preference": user_model_preference,
+        "use_external_sources": use_external_sources,
         # Initialize all other fields
         "selected_model": None,
         "model_explanation": None,
         "model_regen_count": 0,
         "collected_dataset_ref": None,
+        "data_source": None,
         "cleaned_dataset_ref": None,
         "cleaning_transformations": [],
         "cleaning_summary": None,
