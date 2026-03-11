@@ -13,6 +13,10 @@ __pycache__/
 *report.json
 */trained_models/*
 
+*parquet*
+
+*datasets/kaggle/*
+
 agents/training/skills/scripts/.param_cache/*
 
 *node_module*
