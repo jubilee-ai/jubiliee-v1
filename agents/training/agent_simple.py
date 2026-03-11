@@ -90,6 +90,7 @@ def create_simple_training_agent(
     model: str = "openai:gpt-5.1",
     hitl: bool = True,
     checkpointer=None,
+    use_external_sources: bool = False,
 ):
     """Create a simple deep-agent-based training pipeline.
 
@@ -100,11 +101,14 @@ def create_simple_training_agent(
         checkpointer: LangGraph checkpointer for state persistence (required for
                       HITL). A MemorySaver is created automatically if hitl=True
                       and no checkpointer is provided.
+        use_external_sources: If True, data collection will fall back to the
+                              Dataset Curator (Kaggle + HuggingFace) when local
+                              retrieval fails.
 
     Returns a compiled deep agent that can be invoked with:
         agent.invoke({"messages": [{"role": "user", "content": goal}]}, config=...)
     """
-    state: dict = create_initial_state(goal, linked_datasets, user_model_preference)
+    state: dict = create_initial_state(goal, linked_datasets, user_model_preference, use_external_sources)
 
     def _hitl_gate(node_name: str, summary: str) -> dict:
         """Interrupt for human review after a step completes. Returns the decision."""
@@ -129,7 +133,7 @@ def create_simple_training_agent(
     # Keys produced by each step, used to invalidate downstream state on re-runs
     _STEP_OUTPUTS = {
         "select_model": ["selected_model", "model_explanation"],
-        "data_collection": ["collected_dataset_ref"],
+        "data_collection": ["collected_dataset_ref", "data_source"],
         "cleaning": ["cleaned_dataset_ref", "cleaning_summary", "cleaning_transformations"],
         "label_split_definition": [
             "label_definition", "split_indices",
@@ -808,10 +812,12 @@ def invoke_simple_training_agent(
     linked_datasets: Optional[list[str]] = None,
     user_model_preference: Optional[str] = None,
     model: str = "openai:gpt-5.1",
+    use_external_sources: bool = False,
 ):
     """Convenience function: create and invoke the simple training agent (no HITL)."""
     agent, _state = create_simple_training_agent(
         goal, linked_datasets, user_model_preference, model, hitl=False,
+        use_external_sources=use_external_sources,
     )
     result = agent.invoke({"messages": [{"role": "user", "content": goal}]})
     return result
