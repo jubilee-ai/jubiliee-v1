@@ -19,7 +19,7 @@ based on the defined strategy.
 import json
 import sys
 from pathlib import Path
-from typing import Literal, Optional, Tuple
+from typing import Literal, Optional, Tuple, Union
 
 import numpy as np
 import pandas as pd
@@ -208,8 +208,51 @@ def _call_llm(
 
 
 # =============================================================================
+# TARGET TRANSFORM
+# =============================================================================
+
+
+def _detect_target_transform(
+    df: pd.DataFrame,
+    target_column: str,
+    goal: str,
+) -> Optional[str]:
+    """Recommend a target transform for skewed regression targets.
+
+    Returns ``"log1p"`` when the target is continuous, positive, and highly
+    skewed — which is common for price/cost/amount variables.  Returns
+    ``None`` otherwise.
+    """
+    goal_lower = goal.lower()
+    classification_hints = [
+        "classif", "churn", "fraud", "default", "spam", "diagnos",
+        "detect", "binary", "multi-class", "category", "sentiment",
+    ]
+    if any(h in goal_lower for h in classification_hints):
+        return None
+
+    if target_column not in df.columns:
+        return None
+
+    target = df[target_column]
+    if not np.issubdtype(target.dtype, np.number):
+        return None
+
+    target = target.dropna()
+    if len(target) < 30:
+        return None
+
+    skew = float(target.skew())
+    if target.min() >= 0 and abs(skew) > 1.0:
+        return "log1p"
+
+    return None
+
+
+# =============================================================================
 # MAIN FUNCTION
 # =============================================================================
+
 
 # TODO: Don't call LLM if all values are provided
 # Right now it validates, but we should have code that validates it without calling the LLM
@@ -286,7 +329,17 @@ def run_label_split_definition(
         result["split_strategy"] = "random"  # Default fallback
     if result.get("forbidden_columns") is None:
         result["forbidden_columns"] = []
-    
+
+    # Detect target transform for skewed regression targets
+    df = get_registered_dataset(dataset_ref)
+    if df is not None:
+        transform = _detect_target_transform(df, result["target_column"], goal)
+        if transform:
+            print(f"[label_split] Detected skewed target — will apply '{transform}' transform")
+        result["target_transform"] = transform
+    else:
+        result["target_transform"] = None
+
     return result
 
 
@@ -448,22 +501,23 @@ def _find_entity_column(df: pd.DataFrame, grain: str) -> Optional[str]:
 def apply_split(
     df: pd.DataFrame,
     split_indices: dict,
+    target_column: Optional[str] = None,
+    target_transform: Optional[str] = None,
 ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """
-    Apply precomputed split indices to get train/val/test DataFrames.
-    
-    Args:
-        df: The DataFrame to split
-        split_indices: Output from compute_split_indices containing
-            train_idx, val_idx, test_idx
-    
-    Returns:
-        Tuple of (train_df, val_df, test_df)
+    """Apply precomputed split indices to get train/val/test DataFrames.
+
+    If *target_transform* is ``"log1p"``, the target column is transformed
+    in-place on all three splits (fitting nothing — log1p is stateless).
     """
     train_df = df.iloc[split_indices["train_idx"]].copy()
     val_df = df.iloc[split_indices["val_idx"]].copy()
     test_df = df.iloc[split_indices["test_idx"]].copy()
-    
+
+    if target_transform == "log1p" and target_column and target_column in df.columns:
+        for split_df in [train_df, val_df, test_df]:
+            split_df[target_column] = np.log1p(split_df[target_column])
+        print(f"[label_split] Applied log1p transform to '{target_column}'")
+
     return train_df, val_df, test_df
 
 

@@ -6,10 +6,12 @@ Curator to find the best training dataset for the goal.
 """
 
 import asyncio
+import re
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import numpy as np
 import pandas as pd
 
 _DATA_TOOLS_DIR = Path(__file__).parent.parent.parent.parent / "tools" / "data-tools"
@@ -53,15 +55,77 @@ def _validate(ref: str) -> list[str]:
     return issues
 
 
-def _score_dataset(ref: str) -> float:
-    """Simple quality score for comparing datasets. Higher = better."""
+def _infer_target_column(df: pd.DataFrame, goal: str) -> str | None:
+    """Best-effort guess at which column is the prediction target."""
+    goal_lower = goal.lower()
+    cols = list(df.columns)
+    for col in cols:
+        if col.lower() in goal_lower:
+            return col
+    target_keywords = [
+        "target", "label", "class", "churn", "price", "status",
+        "outcome", "approved", "default", "fraud", "condition",
+        "survived", "diagnosis", "y",
+    ]
+    for kw in target_keywords:
+        for col in cols:
+            if kw in col.lower():
+                return col
+    return None
+
+
+def _signal_strength(df: pd.DataFrame, target_col: str) -> float:
+    """Return average |correlation| between numeric features and the target.
+
+    Falls back to 0.0 if the target is non-numeric or there are no features.
+    """
+    if target_col not in df.columns:
+        return 0.0
+    target = df[target_col]
+    if not np.issubdtype(target.dtype, np.number):
+        try:
+            target = target.astype(float)
+        except (ValueError, TypeError):
+            return 0.0
+
+    numeric = df.select_dtypes(include="number").drop(columns=[target_col], errors="ignore")
+    if numeric.empty:
+        return 0.0
+    corrs = numeric.corrwith(target).abs().dropna()
+    return float(corrs.mean()) if len(corrs) > 0 else 0.0
+
+
+def _score_dataset(ref: str, goal: str = "") -> float:
+    """Quality score for comparing datasets. Higher = better.
+
+    Factors in size, completeness, feature diversity, and feature–target signal.
+    """
     df = get_registered_dataset(ref)
     if df is None:
         return -1.0
+
     n_rows = len(df)
     n_cols = len(df.columns)
     null_frac = df.isnull().sum().sum() / max(df.size, 1)
-    return n_rows * n_cols * (1 - null_frac)
+
+    # Penalise constant and string-ID columns (not numeric high-cardinality)
+    useful_cols = 0
+    for c in df.columns:
+        nuniq = df[c].nunique()
+        if nuniq <= 1:
+            continue
+        is_id_like = (nuniq >= n_rows * 0.95) and not np.issubdtype(df[c].dtype, np.number)
+        if not is_id_like:
+            useful_cols += 1
+
+    base = n_rows * useful_cols * (1 - null_frac)
+
+    # Bonus for feature–target signal
+    target_col = _infer_target_column(df, goal) if goal else None
+    signal = _signal_strength(df, target_col) if target_col else 0.0
+    signal_bonus = 1 + signal * 2  # range [1, ~3]
+
+    return base * signal_bonus
 
 
 def _try_local(goal: str, selected_model: str | None,
@@ -204,12 +268,14 @@ def data_collection(state: "TrainingAgentState") -> "TrainingAgentState":
     # Pick the best available dataset
     best_ref, best_source = None, None
     if local_ref and ext_ref:
-        if _score_dataset(ext_ref) > _score_dataset(local_ref):
+        local_score = _score_dataset(local_ref, goal)
+        ext_score = _score_dataset(ext_ref, goal)
+        if ext_score > local_score:
             best_ref, best_source = ext_ref, ext_source
-            print(f"[data_collection] External dataset scored higher — using '{ext_ref}'")
+            print(f"[data_collection] External dataset scored higher ({ext_score:.0f} vs {local_score:.0f}) — using '{ext_ref}'")
         else:
             best_ref, best_source = local_ref, "local"
-            print(f"[data_collection] Local dataset scored higher — using '{local_ref}'")
+            print(f"[data_collection] Local dataset scored higher ({local_score:.0f} vs {ext_score:.0f}) — using '{local_ref}'")
     elif local_ref:
         best_ref, best_source = local_ref, "local"
     elif ext_ref:

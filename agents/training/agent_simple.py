@@ -62,6 +62,7 @@ After training completes, evaluate the metrics. If they are unsatisfactory:
 - Weak features → go back to feature_selection_specification
 - Wrong model family → go back to select_model
 - Poor hyperparameters → go back to training_approval
+- Unsuitable dataset (near-zero R² or accuracy near random) → go back to data_collection
 After changing any step, re-run all downstream steps in order.
 Do not loop more than 4 total training iterations.
 
@@ -76,7 +77,7 @@ def _infer_task_type(goal: str, selected_model: str) -> str:
     if "logistic" not in model_lower:
         if any(w in model_lower for w in ["regress", "continuous", "numeric"]):
             return "regression"
-    if any(w in goal_lower for w in ["regress", "predict value", "forecast", "amount", "price", "cost"]):
+    if any(w in goal_lower for w in ["regress", "predict value", "forecast", "amount", "price", "cost", "salary", "revenue", "income"]):
         return "regression"
     if any(w in model_lower for w in ["glm", "regression"]) and "logistic" not in model_lower:
         return "regression"
@@ -342,7 +343,12 @@ def create_simple_training_agent(
             df=df, label_definition=label_def,
             train_ratio=0.7, val_ratio=0.15, test_ratio=0.15,
         )
-        train_df, val_df, test_df = apply_split(df, split_indices)
+        target_transform = label_def.get("target_transform")
+        train_df, val_df, test_df = apply_split(
+            df, split_indices,
+            target_column=label_def.get("target_column"),
+            target_transform=target_transform,
+        )
 
         base_ref = dataset_ref
         train_ref = f"{base_ref}_train"
@@ -361,8 +367,9 @@ def create_simple_training_agent(
             "current_step": "feature_selection_specification",
         })
 
+        transform_note = f" (target transformed: {target_transform})" if target_transform else ""
         summary = (
-            f"Target: **{label_def.get('target_column', '?')}**, "
+            f"Target: **{label_def.get('target_column', '?')}**{transform_note}, "
             f"{label_def.get('split_strategy', '?')} split — "
             f"Train: {len(train_df)} / Val: {len(val_df)} / Test: {len(test_df)}"
         )
@@ -643,6 +650,40 @@ Respond with JSON:
 
         feature_redo_requested = result.get("feature_redo_requested", False)
         best_model_type = result.get("model_type", selected_model)
+        task_type = _infer_task_type(state.get("goal", ""), selected_model)
+
+        # --- Programmatic quality gates ---
+        iteration_num = state.get("training_iteration", 0) + 1
+        if result.get("success") and not feature_redo_requested:
+            if task_type == "regression":
+                val_r2 = result.get("val_r2")
+                if val_r2 is not None and val_r2 < 0.05 and iteration_num <= 2:
+                    feature_redo_requested = True
+                    extra = result.get("feature_redo_recommendation") or ""
+                    result["feature_redo_recommendation"] = (
+                        extra + "\n[AUTO] Val R² < 0.05 — features may lack predictive signal. "
+                        "Try adding interactions, polynomial terms, or different encodings."
+                    )
+                    result["feature_redo_reason"] = f"Auto-triggered: val_r2={val_r2:.4f}"
+            else:
+                val_roc = result.get("val_roc_auc")
+                val_acc = result.get("val_accuracy")
+                if val_roc is not None and val_roc < 0.55 and iteration_num <= 2:
+                    feature_redo_requested = True
+                    extra = result.get("feature_redo_recommendation") or ""
+                    result["feature_redo_recommendation"] = (
+                        extra + "\n[AUTO] Val ROC-AUC < 0.55 — near-random performance. "
+                        "Features may be uninformative or target is noisy."
+                    )
+                    result["feature_redo_reason"] = f"Auto-triggered: val_roc_auc={val_roc:.4f}"
+                elif val_acc is not None and val_acc < 0.55 and val_roc is None and iteration_num <= 2:
+                    feature_redo_requested = True
+                    extra = result.get("feature_redo_recommendation") or ""
+                    result["feature_redo_recommendation"] = (
+                        extra + "\n[AUTO] Val Accuracy < 0.55 — near-random."
+                    )
+                    result["feature_redo_reason"] = f"Auto-triggered: val_accuracy={val_acc:.4f}"
+
         state.update({
             "model_weights_path": result.get("model_name"),
             "selected_model": best_model_type,
@@ -667,8 +708,9 @@ Respond with JSON:
                 "summary": result.get("summary"),
                 "recommendations": result.get("recommendations"),
                 "feature_redo_requested": feature_redo_requested,
+                "feature_importances": result.get("feature_importances", {}),
             },
-            "training_iteration": state.get("training_iteration", 0) + 1,
+            "training_iteration": iteration_num,
             "feature_redo_requested": feature_redo_requested,
             "feature_redo_recommendation": result.get("feature_redo_recommendation"),
             "feature_redo_reason": result.get("feature_redo_reason"),
