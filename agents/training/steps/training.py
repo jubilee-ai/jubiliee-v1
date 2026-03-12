@@ -14,6 +14,8 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
+import numpy as np
+
 from dotenv import load_dotenv
 from langchain.agents import create_agent
 from langchain.agents.structured_output import ToolStrategy
@@ -360,6 +362,39 @@ def _evaluate_model_on_test(
     return result
 
 
+def _extract_feature_importances(model_name: str, feature_columns: list[str]) -> dict[str, float]:
+    """Extract feature importances from a trained sklearn model.
+
+    Works for tree-based (`.feature_importances_`) and linear (`.coef_`) models.
+    Returns a dict mapping feature name to importance, sorted descending.
+    """
+    try:
+        model = load_model(model_name)
+        if model is None:
+            return {}
+        estimator = model
+        if hasattr(model, "best_estimator_"):
+            estimator = model.best_estimator_
+
+        importances = None
+        if hasattr(estimator, "feature_importances_"):
+            importances = estimator.feature_importances_
+        elif hasattr(estimator, "coef_"):
+            coef = estimator.coef_
+            if coef.ndim > 1:
+                importances = np.mean(np.abs(coef), axis=0)
+            else:
+                importances = np.abs(coef)
+
+        if importances is None or len(importances) != len(feature_columns):
+            return {}
+
+        result = {col: round(float(v), 4) for col, v in zip(feature_columns, importances)}
+        return dict(sorted(result.items(), key=lambda x: x[1], reverse=True))
+    except Exception:
+        return {}
+
+
 def _log_training_results(training_result: TrainingResult, task_type: str):
     print(f"\n[training_agent] Training complete!")
     print(f"  Success: {training_result.success}")
@@ -581,6 +616,23 @@ Follow the skill documentation below — it covers model selection and training.
                 if val is not None:
                     output[key] = val
 
+        # Extract feature importances from the best model
+        feat_imp = {}
+        if training_result.success and actual_best_name:
+            feat_imp = _extract_feature_importances(actual_best_name, feature_columns)
+
+        redo_rec = feature_redo_request.recommendation if feature_redo_request else None
+        if feat_imp and redo_rec:
+            top_5 = list(feat_imp.items())[:5]
+            bottom_5 = [kv for kv in list(feat_imp.items())[-5:] if kv[1] < 0.01]
+            imp_summary = (
+                f"\n\nFeature importances from best model ({actual_best_name}):\n"
+                f"  Top features: {dict(top_5)}\n"
+            )
+            if bottom_5:
+                imp_summary += f"  Near-zero features (consider dropping): {dict(bottom_5)}\n"
+            redo_rec += imp_summary
+
         output.update({
             "model_name": actual_best_name,
             "task_type": task_type,
@@ -592,9 +644,10 @@ Follow the skill documentation below — it covers model selection and training.
             "best_iteration": best_iteration,
             "messages": final_messages,
             "feature_redo_requested": feature_redo_requested,
-            "feature_redo_recommendation": feature_redo_request.recommendation if feature_redo_request else None,
+            "feature_redo_recommendation": redo_rec,
             "feature_redo_reason": feature_redo_request.reason if feature_redo_request else None,
             "feature_redo_suspected_issues": feature_redo_request.suspected_issues if feature_redo_request else None,
+            "feature_importances": feat_imp,
         })
         return output
 
