@@ -5,11 +5,13 @@ Custom tools for the dataset curator agent.
 - export_csv: Export a registered dataset to CSV
 """
 
+import json
 import os
 import re
 import subprocess
 import sys
 import uuid
+from difflib import get_close_matches
 from pathlib import Path
 from typing import Optional
 
@@ -32,6 +34,47 @@ KAGGLE_DIR = DATASETS_DIR / "kaggle"
 CURATED_DIR = DATASETS_DIR / "curated"
 KAGGLE_DIR.mkdir(parents=True, exist_ok=True)
 CURATED_DIR.mkdir(parents=True, exist_ok=True)
+
+
+# ---------------------------------------------------------------------------
+# Shared helpers
+# ---------------------------------------------------------------------------
+
+
+def _safe_ref(name: str) -> str:
+    """Sanitize a string into a lowercase identifier safe for registry keys."""
+    return re.sub(r"[^\w]", "_", name).lower()
+
+
+def _classify_dtype(dtype_str: str) -> str:
+    """Map a pandas dtype string to a human-readable category."""
+    d = str(dtype_str)
+    if "int" in d:
+        return "integer"
+    if "float" in d:
+        return "float"
+    if "bool" in d:
+        return "boolean"
+    if "datetime" in d:
+        return "datetime"
+    return "string"
+
+
+def _get_or_error(ref: str) -> tuple[pd.DataFrame | None, str | None]:
+    """Look up a registered dataset, returning (df, None) or (None, error_msg)."""
+    df = get_registered_dataset(ref)
+    if df is None:
+        return None, f"**Error:** Dataset '{ref}' not found in registry."
+    return df, None
+
+
+def _load_tabular_file(path: Path) -> pd.DataFrame:
+    """Read a CSV, TSV, or Parquet file into a DataFrame."""
+    if path.suffix == ".parquet":
+        return pd.read_parquet(path)
+    if path.suffix == ".tsv":
+        return pd.read_csv(path, sep="\t")
+    return pd.read_csv(path)
 
 
 # =============================================================================
@@ -116,17 +159,10 @@ def download_kaggle_dataset(owner_slug: str, dataset_slug: str) -> str:
     registered_refs = []
 
     for fp in sorted(data_files):
-        ref = f"kaggle_{owner_slug}_{dataset_slug}_{fp.stem}"
-        ref = re.sub(r"[^\w]", "_", ref).lower()
+        ref = _safe_ref(f"kaggle_{owner_slug}_{dataset_slug}_{fp.stem}")
 
         try:
-            if fp.suffix == ".parquet":
-                df = pd.read_parquet(fp)
-            elif fp.suffix == ".tsv":
-                df = pd.read_csv(fp, sep="\t")
-            else:
-                df = pd.read_csv(fp)
-
+            df = _load_tabular_file(fp)
             register_dataset(ref, df, persist=True, register_sql=True)
             registered_refs.append(ref)
 
@@ -172,13 +208,12 @@ def export_csv(dataset_ref: str, file_name: Optional[str] = None) -> str:
 
     Returns the file path and summary statistics.
     """
-    df = get_registered_dataset(dataset_ref)
-    if df is None:
-        return f"**Error:** Dataset '{dataset_ref}' not found in registry."
+    df, err = _get_or_error(dataset_ref)
+    if err:
+        return err
 
     if file_name is None:
-        safe = re.sub(r"[^\w]", "_", dataset_ref)
-        file_name = f"{safe}.csv"
+        file_name = f"{_safe_ref(dataset_ref)}.csv"
 
     if not file_name.endswith(".csv"):
         file_name += ".csv"
@@ -220,68 +255,6 @@ class NormalizeColumnsInput(BaseModel):
     dataset_ref: str = Field(
         description="Reference ID of the dataset whose columns to normalize."
     )
-    expand_abbreviations: bool = Field(
-        default=True,
-        description="If True, expand common abbreviations (e.g. 'amt' → 'amount').",
-    )
-
-
-ABBREVIATION_MAP = {
-    "amt": "amount",
-    "qty": "quantity",
-    "num": "number",
-    "cnt": "count",
-    "avg": "average",
-    "std": "standard_deviation",
-    "desc": "description",
-    "addr": "address",
-    "dept": "department",
-    "emp": "employee",
-    "mgr": "manager",
-    "yr": "year",
-    "yrs": "years",
-    "mo": "month",
-    "dt": "date",
-    "dob": "date_of_birth",
-    "tx": "transaction",
-    "txn": "transaction",
-    "cat": "category",
-    "loc": "location",
-    "lat": "latitude",
-    "lng": "longitude",
-    "lon": "longitude",
-    "hgt": "height",
-    "wgt": "weight",
-    "pct": "percent",
-    "lvl": "level",
-    "idx": "index",
-    "freq": "frequency",
-    "val": "value",
-    "msg": "message",
-    "src": "source",
-    "dst": "destination",
-    "prev": "previous",
-    "cur": "current",
-    "max": "maximum",
-    "min": "minimum",
-    "tmp": "temporary",
-    "temp": "temperature",
-    "info": "information",
-    "stat": "status",
-    "eval": "evaluation",
-    "pos": "position",
-    "neg": "negative",
-    "sat": "satisfaction",
-    "perf": "performance",
-    "bal": "balance",
-    "acct": "account",
-    "cust": "customer",
-    "prod": "product",
-    "rev": "revenue",
-    "chg": "charge",
-    "pmt": "payment",
-    "cc": "credit_card",
-}
 
 
 def _to_snake_case(name: str) -> str:
@@ -294,33 +267,24 @@ def _to_snake_case(name: str) -> str:
     return s.lower()
 
 
-def _expand_abbreviations(token: str) -> str:
-    """Expand a single snake_case token using the abbreviation map."""
-    parts = token.split("_")
-    expanded = [ABBREVIATION_MAP.get(p, p) for p in parts]
-    return "_".join(expanded)
-
-
 @tool(args_schema=NormalizeColumnsInput)
-def normalize_columns(dataset_ref: str, expand_abbreviations: bool = True) -> str:
+def normalize_columns(dataset_ref: str) -> str:
     """
-    Normalize all column names to clean snake_case and optionally expand
-    common abbreviations (e.g. 'TransAmt' → 'transaction_amount').
+    Normalize all column names to clean snake_case
+    (e.g. 'TransAmt' → 'trans_amt', 'First Name' → 'first_name').
 
     Call this after downloading a dataset and before export to ensure
     consistent, readable column names for downstream model training.
     """
-    df = get_registered_dataset(dataset_ref)
-    if df is None:
-        return f"**Error:** Dataset '{dataset_ref}' not found in registry."
+    df, err = _get_or_error(dataset_ref)
+    if err:
+        return err
 
     old_names = list(df.columns)
     rename_map = {}
 
     for col in old_names:
         new_name = _to_snake_case(col)
-        if expand_abbreviations:
-            new_name = _expand_abbreviations(new_name)
         if new_name != col:
             rename_map[col] = new_name
 
@@ -339,7 +303,7 @@ def normalize_columns(dataset_ref: str, expand_abbreviations: bool = True) -> st
             final_map[old] = new
 
     result = df.rename(columns=final_map)
-    ref = f"norm_{re.sub(r'[^\\w]', '_', dataset_ref)[:20]}_{uuid.uuid4().hex[:6]}"
+    ref = f"norm_{_safe_ref(dataset_ref)[:20]}_{uuid.uuid4().hex[:6]}"
     register_dataset(ref, result, persist=True, register_sql=True)
 
     lines = [
@@ -376,9 +340,9 @@ def profile_dataset(dataset_ref: str) -> str:
     Call this after downloading/loading a dataset to understand its shape
     and quality before transforming and exporting.
     """
-    df = get_registered_dataset(dataset_ref)
-    if df is None:
-        return f"**Error:** Dataset '{dataset_ref}' not found in registry."
+    df, err = _get_or_error(dataset_ref)
+    if err:
+        return err
 
     n_rows, n_cols = df.shape
     lines = [
@@ -387,45 +351,22 @@ def profile_dataset(dataset_ref: str) -> str:
         "",
     ]
 
-    # Dtype distribution
     dtype_counts: dict[str, int] = {}
     for dt in df.dtypes:
-        key = str(dt)
-        if "int" in key:
-            key = "integer"
-        elif "float" in key:
-            key = "float"
-        elif "bool" in key:
-            key = "boolean"
-        elif "datetime" in key:
-            key = "datetime"
-        else:
-            key = "string/object"
+        key = _classify_dtype(dt)
         dtype_counts[key] = dtype_counts.get(key, 0) + 1
     lines.append("### Dtype distribution")
     for dt, cnt in sorted(dtype_counts.items()):
         lines.append(f"  {dt}: {cnt}")
     lines.append("")
 
-    # Per-column stats
     lines.append("### Column details")
     lines.append(f"{'Column':<30} {'Type':<12} {'Nulls':>8} {'Unique':>8} {'Notes'}")
     lines.append(f"{'─' * 30} {'─' * 12} {'─' * 8} {'─' * 8} {'─' * 30}")
 
     issues = []
     for col in df.columns:
-        dtype = str(df[col].dtype)
-        if "int" in dtype:
-            dtype_label = "integer"
-        elif "float" in dtype:
-            dtype_label = "float"
-        elif "bool" in dtype:
-            dtype_label = "boolean"
-        elif "datetime" in dtype:
-            dtype_label = "datetime"
-        else:
-            dtype_label = "string"
-
+        dtype_label = _classify_dtype(df[col].dtype)
         nulls = int(df[col].isnull().sum())
         null_pct = nulls / n_rows * 100 if n_rows > 0 else 0
         nunique = df[col].nunique()
@@ -509,9 +450,9 @@ def validate_target(
 
     Call this before export to confirm the target variable is training-ready.
     """
-    df = get_registered_dataset(dataset_ref)
-    if df is None:
-        return f"**Error:** Dataset '{dataset_ref}' not found in registry."
+    df, err = _get_or_error(dataset_ref)
+    if err:
+        return err
 
     if target_column not in df.columns:
         available = ", ".join(f"`{c}`" for c in df.columns[:15])
@@ -640,12 +581,12 @@ def suggest_join_keys(left_ref: str, right_ref: str) -> str:
     compatible dtypes/value overlap between candidate key pairs.
     Use this before join_merge_tool to pick the right key columns.
     """
-    left = get_registered_dataset(left_ref)
-    if left is None:
-        return f"**Error:** Dataset '{left_ref}' not found."
-    right = get_registered_dataset(right_ref)
-    if right is None:
-        return f"**Error:** Dataset '{right_ref}' not found."
+    left, err = _get_or_error(left_ref)
+    if err:
+        return err
+    right, err = _get_or_error(right_ref)
+    if err:
+        return err
 
     lines = [
         f"## Join key suggestions: `{left_ref}` ↔ `{right_ref}`",
@@ -668,7 +609,8 @@ def suggest_join_keys(left_ref: str, right_ref: str) -> str:
             l_set = set(left[col].dropna().unique())
             r_set = set(right[col].dropna().unique())
             overlap = len(l_set & r_set)
-            overlap_pct = overlap / min(len(l_set), len(r_set)) * 100 if min(len(l_set), len(r_set)) > 0 else 0
+            smaller = min(len(l_set), len(r_set))
+            overlap_pct = overlap / smaller * 100 if smaller > 0 else 0
 
             quality = "strong" if overlap_pct > 50 else ("weak" if overlap_pct > 10 else "poor")
             candidates.append((col, col, overlap_pct, quality))
@@ -680,8 +622,6 @@ def suggest_join_keys(left_ref: str, right_ref: str) -> str:
             )
         lines.append("")
 
-    # Fuzzy name matches (different names, similar meaning)
-    from difflib import get_close_matches
     left_only = set(left.columns) - set(exact)
     right_only = set(right.columns) - set(exact)
     fuzzy_pairs = []
@@ -780,16 +720,13 @@ def download_hf_dataset(
     except Exception as e:
         return f"**Error downloading** `{dataset_id}`: {e}"
 
-    import json as _json
-
     for col in df.columns:
-        if df[col].apply(type).eq(dict).any() or df[col].apply(type).eq(list).any():
+        if df[col].apply(type).isin({dict, list}).any():
             df[col] = df[col].apply(
-                lambda v: _json.dumps(v, default=str) if isinstance(v, (dict, list)) else v
+                lambda v: json.dumps(v, default=str) if isinstance(v, (dict, list)) else v
             )
 
-    safe_id = re.sub(r"[^\w]", "_", dataset_id).lower()
-    ref = f"hf_{safe_id}_{split or 'all'}"
+    ref = f"hf_{_safe_ref(dataset_id)}_{split or 'all'}"
 
     register_dataset(ref, df, persist=True, register_sql=True)
 
