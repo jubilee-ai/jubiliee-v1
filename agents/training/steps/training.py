@@ -238,6 +238,72 @@ def _infer_task_type(goal: str, estimator_hint: Optional[str] = None) -> str:
     return "classification"
 
 
+def _run_quick_baseline(
+    train_df,
+    val_df,
+    target_column: str,
+    task_type: str,
+) -> dict[str, float | None]:
+    """Run a quick tree-based baseline to establish a performance floor.
+
+    Returns dict with baseline metrics (accuracy, roc_auc or r2, rmse).
+    This runs in <10s even on large datasets and gives the NN agent a
+    concrete target to beat.
+    """
+    from sklearn.ensemble import HistGradientBoostingClassifier, HistGradientBoostingRegressor
+    from sklearn.metrics import accuracy_score, r2_score, roc_auc_score
+    from sklearn.preprocessing import LabelEncoder
+
+    result: dict[str, float | None] = {"model": "HistGradientBoosting"}
+    try:
+        feature_cols = [c for c in train_df.columns if c != target_column]
+        X_train = train_df[feature_cols]
+        y_train = train_df[target_column]
+        X_val = val_df[feature_cols]
+        y_val = val_df[target_column]
+
+        cat_cols = X_train.select_dtypes(include=["object", "category"]).columns.tolist()
+        if cat_cols:
+            from sklearn.preprocessing import OrdinalEncoder
+            oe = OrdinalEncoder(handle_unknown="use_encoded_value", unknown_value=-1)
+            X_train = X_train.copy()
+            X_val = X_val.copy()
+            X_train[cat_cols] = oe.fit_transform(X_train[cat_cols])
+            X_val[cat_cols] = oe.transform(X_val[cat_cols])
+
+        le = None
+        if y_train.dtype == object or y_train.dtype.name == "category":
+            le = LabelEncoder()
+            y_train = le.fit_transform(y_train)
+            y_val = le.transform(y_val)
+
+        if task_type == "regression":
+            model = HistGradientBoostingRegressor(max_iter=200, max_depth=6, random_state=42)
+            model.fit(X_train, y_train)
+            y_pred = model.predict(X_val)
+            result["r2"] = round(float(r2_score(y_val, y_pred)), 4)
+        else:
+            model = HistGradientBoostingClassifier(max_iter=200, max_depth=6, random_state=42)
+            model.fit(X_train, y_train)
+            y_pred = model.predict(X_val)
+            y_proba = model.predict_proba(X_val)
+            result["accuracy"] = round(float(accuracy_score(y_val, y_pred)), 4)
+            try:
+                if y_proba.shape[1] == 2:
+                    result["roc_auc"] = round(float(roc_auc_score(y_val, y_proba[:, 1])), 4)
+                else:
+                    result["roc_auc"] = round(float(
+                        roc_auc_score(y_val, y_proba, multi_class="ovr", average="weighted")
+                    ), 4)
+            except (ValueError, TypeError):
+                pass
+
+        print(f"[training_agent] Quick baseline ({result['model']}): {result}")
+    except Exception as e:
+        print(f"[training_agent] Quick baseline failed (non-fatal): {e}")
+    return result
+
+
 def _cleanup_intermediate_models(
     best_model_name: str,
     base_model_name: str,
@@ -283,8 +349,182 @@ def _extract_training_result(result: dict) -> TrainingResult:
     raise ValueError("Failed to extract TrainingResult from agent response")
 
 
+def _should_continue_iterating(
+    iterations: list[TrainingIteration],
+    max_iterations: int,
+    task_type: str,
+) -> bool:
+    """Decide whether the agent should be re-invoked for more experiments.
+
+    Returns True when there are iterations remaining AND at least one of:
+    - Fewer than 3 successful experiments have been run
+    - The most recent iteration improved the best metric
+    """
+    n_used = len(iterations)
+    if n_used >= max_iterations:
+        return False
+
+    successful = [it for it in iterations if it.success]
+    if len(successful) < 3:
+        return True
+
+    if len(successful) < 2:
+        return True
+
+    def _metric(it: TrainingIteration) -> float:
+        if task_type == "regression":
+            return it.val_r2 or it.train_r2 or -float("inf")
+        return it.val_roc_auc or it.val_accuracy or -float("inf")
+
+    best_before_last = max(_metric(it) for it in successful[:-1])
+    last_metric = _metric(successful[-1])
+    if last_metric > best_before_last:
+        return True
+
+    return False
+
+
+def _format_best_metric(best_iteration: dict, task_type: str) -> str:
+    if task_type == "regression":
+        r2 = best_iteration.get("val_r2")
+        return f"R²={r2:.4f}" if r2 is not None else "N/A"
+    roc = best_iteration.get("val_roc_auc")
+    acc = best_iteration.get("val_accuracy")
+    parts = []
+    if roc is not None:
+        parts.append(f"ROC-AUC={roc:.4f}")
+    if acc is not None:
+        parts.append(f"Accuracy={acc:.4f}")
+    return ", ".join(parts) if parts else "N/A"
+
+
+def _primary_metric(it: TrainingIteration, task_type: str) -> float:
+    if task_type == "regression":
+        return it.val_r2 or it.train_r2 or -float("inf")
+    return it.val_roc_auc or it.val_accuracy or -float("inf")
+
+
+def _diagnose_trend(
+    iterations: list[TrainingIteration],
+    task_type: str,
+) -> dict[str, Any]:
+    """Analyze the experiment history and diagnose the current situation."""
+    successful = [it for it in iterations if it.success]
+    if not successful:
+        return {"trend": "no_data", "diagnosis": "No successful experiments yet."}
+
+    metrics = [_primary_metric(it, task_type) for it in successful]
+    best_metric = max(metrics)
+    best_idx = metrics.index(best_metric)
+    last_metric = metrics[-1]
+
+    if len(metrics) >= 2:
+        recent_deltas = [metrics[i] - metrics[i - 1] for i in range(1, len(metrics))]
+        improving = recent_deltas[-1] > 0.001
+        plateauing = all(abs(d) < 0.005 for d in recent_deltas[-2:]) if len(recent_deltas) >= 2 else False
+    else:
+        improving = False
+        plateauing = False
+
+    last_was_best = (best_idx == len(metrics) - 1)
+    gap_to_best = best_metric - last_metric if not last_was_best else 0.0
+
+    if plateauing:
+        trend = "plateau"
+        diagnosis = (
+            f"Metrics have plateaued — last {min(3, len(recent_deltas))} changes "
+            f"moved the metric by < 0.5%. Consider a more radical change: "
+            f"different architecture family, different optimizer, or different LR schedule."
+        )
+    elif improving:
+        trend = "improving"
+        diagnosis = (
+            f"Last change improved the metric. Continue in this direction — "
+            f"make a similar-magnitude change to the same aspect, or try refining "
+            f"the improvement further."
+        )
+    elif last_was_best:
+        trend = "at_best"
+        diagnosis = "Current config is the best so far. Try a single targeted change."
+    else:
+        trend = "regressed"
+        diagnosis = (
+            f"Last experiment regressed ({last_metric:.4f} vs best {best_metric:.4f}). "
+            f"Revert to the best config and try a different change."
+        )
+
+    return {
+        "trend": trend,
+        "diagnosis": diagnosis,
+        "best_metric": best_metric,
+        "last_metric": last_metric,
+        "best_model": successful[best_idx].model_name,
+        "n_successful": len(successful),
+        "improving": improving,
+        "plateauing": plateauing,
+        "gap_to_best": gap_to_best,
+    }
+
+
+def _build_continuation_message(
+    iterations: list[TrainingIteration],
+    max_iterations: int,
+    task_type: str,
+    baseline_metrics: dict | None = None,
+) -> str:
+    """Build a dynamic continuation prompt based on experiment history."""
+    remaining = max_iterations - len(iterations)
+    diag = _diagnose_trend(iterations, task_type)
+
+    lines = [
+        f"You have **{remaining} iterations** remaining.",
+        f"",
+        f"## Experiment History",
+    ]
+    for it in iterations:
+        m = _primary_metric(it, task_type)
+        status = "OK" if it.success else "FAIL"
+        lines.append(f"- [{status}] `{it.model_name}`: {m:.4f}")
+    lines.append("")
+
+    if baseline_metrics:
+        baseline_val = baseline_metrics.get("roc_auc") or baseline_metrics.get("r2")
+        if baseline_val is not None and diag.get("best_metric") is not None:
+            gap = baseline_val - diag["best_metric"]
+            if gap > 0:
+                lines.append(
+                    f"## Baseline Gap\n"
+                    f"Tree-based baseline: {baseline_val:.4f}. "
+                    f"Your best: {diag['best_metric']:.4f}. "
+                    f"**Gap: {gap:.4f}** — focus on closing this.\n"
+                )
+            else:
+                lines.append(
+                    f"## Baseline Beaten\n"
+                    f"Your best ({diag['best_metric']:.4f}) exceeds the tree baseline "
+                    f"({baseline_val:.4f}). Keep pushing for further gains.\n"
+                )
+
+    lines.append(f"## Diagnosis\n{diag['diagnosis']}\n")
+
+    lines.append(
+        "## Next Steps\n"
+        "Consult the **Hyperparameter Strategy Matrix** and **Architecture Decision Guide** "
+        "in the SKILL.md to choose your next experiment based on the diagnosis above. "
+        "Change exactly ONE thing. Run the experiment, evaluate, and report results.\n"
+        "Only include NEW iterations from this round in your output — "
+        "prior iterations are already recorded."
+    )
+
+    return "\n".join(lines)
+
+
 def _find_best_iteration(iterations: list[dict], task_type: str) -> Optional[dict]:
-    """Pick the best successful iteration by validation metrics."""
+    """Pick the best successful iteration by validation metrics.
+
+    For classification, ROC-AUC is the primary metric (more reliable than
+    accuracy, especially on imbalanced data). Accuracy is the tiebreaker.
+    """
     best, best_score = None, (-float("inf"), -float("inf"))
     for it in iterations:
         if not it.get("success"):
@@ -294,8 +534,8 @@ def _find_best_iteration(iterations: list[dict], task_type: str) -> Optional[dic
             score = (primary, 0.0)
         else:
             score = (
-                it.get("val_accuracy") or -float("inf"),
                 it.get("val_roc_auc") or -float("inf"),
+                it.get("val_accuracy") or -float("inf"),
             )
         if score > best_score:
             best_score = score
@@ -347,14 +587,18 @@ def _evaluate_model_on_test(
             result["test_mae"] = float(mean_absolute_error(y_true, y_pred))
         else:
             y_pred = model.predict(X)
-            result["test_accuracy"] = float(accuracy_score(y_true, y_pred))
+            y_true_arr = np.asarray(y_true)
+            y_pred_arr = np.asarray(y_pred)
+            if y_true_arr.dtype != y_pred_arr.dtype:
+                y_pred_arr = y_pred_arr.astype(y_true_arr.dtype)
+            result["test_accuracy"] = float(accuracy_score(y_true_arr, y_pred_arr))
             if hasattr(model, "predict_proba"):
                 y_proba = model.predict_proba(X)
                 if y_proba.shape[1] == 2:
-                    result["test_roc_auc"] = float(roc_auc_score(y_true, y_proba[:, 1]))
+                    result["test_roc_auc"] = float(roc_auc_score(y_true_arr, y_proba[:, 1]))
                 else:
                     result["test_roc_auc"] = float(
-                        roc_auc_score(y_true, y_proba, multi_class="ovr", average="weighted")
+                        roc_auc_score(y_true_arr, y_proba, multi_class="ovr", average="weighted")
                     )
         print(f"[training_agent] Programmatic test evaluation: {result}")
     except Exception as exc:
@@ -516,6 +760,24 @@ def run_training_agent(
     features_preview = feature_columns[:10]
     ellipsis = "..." if len(feature_columns) > 10 else ""
 
+    baseline_section = ""
+    baseline_metrics = None
+    if skill_name == "neural_networks":
+        baseline_metrics = _run_quick_baseline(train_df, val_df, target_column, task_type)
+        if baseline_metrics.get("roc_auc") or baseline_metrics.get("r2"):
+            baseline_section = (
+                f"\n## Performance Baseline (HistGradientBoosting — auto-computed)\n"
+                f"A quick tree-based model achieved these metrics on the same data:\n"
+            )
+            for k, v in baseline_metrics.items():
+                if k != "model" and v is not None:
+                    baseline_section += f"- {k}: {v}\n"
+            baseline_section += (
+                "\n**Your neural network must beat these numbers.** "
+                "If it can't match the baseline after several iterations, "
+                "focus on matching it first before trying to exceed it.\n"
+            )
+
     context = f"""## Goal
 {goal}
 
@@ -526,7 +788,7 @@ Follow the skill documentation below — it covers model selection and training.
 <skill_documentation>
 {skill_docs}
 </skill_documentation>
-{estimator_section}
+{estimator_section}{baseline_section}
 ## Data
 - Task type: {task_type}
 - Target column: `{target_column if target_column else 'N/A (unsupervised)'}`
@@ -553,26 +815,84 @@ Follow the skill documentation below — it covers model selection and training.
         response_format=ToolStrategy(schema=TrainingResult),
     )
 
-    next_step_instruction = (
-        "Begin training now. Maximize unsupervised objective quality by exploring "
-        "estimators and hyperparameters. Use the dataset refs above. "
-        "Do not call evaluate_model because no target labels are required."
-        if task_type == "unsupervised"
-        else
-        "Begin training now. Maximize validation performance by exploring "
-        "different estimators and hyperparameters. Use the dataset refs above. "
-        "Run final test evaluation on your best model before finishing."
-    )
+    if task_type == "unsupervised":
+        start_instruction = (
+            "Begin training now. Maximize unsupervised objective quality by exploring "
+            "estimators and hyperparameters. Use the dataset refs above. "
+            "Do not call evaluate_model because no target labels are required."
+        )
+    elif skill_name == "neural_networks":
+        start_instruction = (
+            "Begin training now. You are using the neural_networks skill — "
+            "write PyTorch training code following the SKILL.md templates and data pipeline exactly. "
+            "Pass your code via train_with_skill(skill_name='neural_networks', params={...}). "
+            "The params dict MUST include 'code', 'train_dataset_ref', 'target_column', and 'model_name'. "
+            "If a run fails with an EXECUTION ERROR, read the traceback, fix the code, and try again. "
+            "Do NOT give up after one failure — you have multiple iterations. "
+            "You MUST use at least 3 iterations: baseline, then at least 2 experiments "
+            "(architecture, hyperparameter, or regularization changes). "
+            "Maximize validation performance. Run final test evaluation on your best model before finishing."
+        )
+    else:
+        start_instruction = (
+            "Begin training now. Maximize validation performance by exploring "
+            "different estimators and hyperparameters. Use the dataset refs above. "
+            "Run final test evaluation on your best model before finishing."
+        )
 
     messages = [
         {"role": "user", "content": context},
-        {"role": "user", "content": next_step_instruction},
+        {"role": "user", "content": start_instruction},
     ]
+
+    all_iterations: list[TrainingIteration] = []
+    continuation_round = 0
+    max_continuation_rounds = 2
+    _baseline = baseline_metrics
 
     try:
         result = agent.invoke({"messages": messages})
         final_messages = result.get("messages", [])
         training_result = _extract_training_result(result)
+        all_iterations.extend(training_result.iterations)
+
+        while (
+            continuation_round < max_continuation_rounds
+            and training_result.success
+            and not training_result.feature_redo_requested
+            and _should_continue_iterating(all_iterations, max_iterations, task_type)
+        ):
+            continuation_round += 1
+            continuation_msg = _build_continuation_message(
+                all_iterations, max_iterations, task_type, _baseline,
+            )
+
+            diag = _diagnose_trend(all_iterations, task_type)
+            best_str = _format_best_metric(
+                _find_best_iteration(
+                    [_iteration_to_dict(it) for it in all_iterations], task_type
+                ) or {},
+                task_type,
+            )
+            print(f"\n[training_agent] Continuing training (round {continuation_round}, "
+                  f"{max_iterations - len(all_iterations)} remaining, "
+                  f"best: {best_str}, trend: {diag['trend']})")
+
+            cont_messages = final_messages + [
+                {"role": "user", "content": continuation_msg},
+            ]
+
+            result = agent.invoke({"messages": cont_messages})
+            final_messages = result.get("messages", [])
+            training_result = _extract_training_result(result)
+            existing_names = {it.model_name for it in all_iterations}
+            for it in training_result.iterations:
+                if it.model_name not in existing_names:
+                    all_iterations.append(it)
+                    existing_names.add(it.model_name)
+
+        training_result.iterations = all_iterations
+        training_result.num_iterations = len(all_iterations)
 
         feature_redo_request = _get_and_clear_feature_redo_request()
         feature_redo_requested = feature_redo_request is not None or training_result.feature_redo_requested
