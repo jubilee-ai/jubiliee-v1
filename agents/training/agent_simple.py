@@ -243,7 +243,9 @@ def create_simple_training_agent(
         """Collect or load the dataset. Can be re-called to reload or change data sources."""
         nonlocal state
         if "data_collection" in _completed_steps and not state.get("_redo_feedback_data_collection"):
-            return f"SKIP: Dataset already loaded: {state.get('collected_dataset_ref')}. Proceed to the next step."
+            ref = state.get("collected_dataset_ref")
+            if ref:
+                return f"SKIP: Dataset already loaded: {ref}. Proceed to the next step."
         _invalidate_downstream("data_collection")
 
         redo_fb = state.pop("_redo_feedback_data_collection", None)
@@ -253,6 +255,14 @@ def create_simple_training_agent(
         result = _data_collection_impl(state)
         state.update(result)
         state.pop("_data_collection_redo_hint", None)
+
+        if not state.get("collected_dataset_ref"):
+            error = state.get("error", "Unknown error")
+            return (
+                f"FAILED: Could not find a suitable dataset. Error: {error}\n"
+                "Please try calling data_collection again or adjust the goal."
+            )
+
         audit = next(
             (t for t in state.get("audit_trace", []) if t.get("step") == "data_collection"),
             {},

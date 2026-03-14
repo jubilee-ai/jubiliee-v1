@@ -145,7 +145,7 @@ def _make_extract_params():
 def _make_encode_labels(label_encoder_ref: list):
     """Create encode_labels helper that stores the fitted LabelEncoder for save_model."""
     def encode_labels(y):
-        """Encode string/object labels to integer codes.
+        """Encode labels to 0-based contiguous integer codes.
 
         Returns (encoded_y, n_classes). The label mapping is automatically
         stored and attached to the saved model so predictions are decoded
@@ -156,9 +156,16 @@ def _make_encode_labels(label_encoder_ref: list):
             y_tensor = torch.tensor(y_encoded, dtype=torch.long)
         """
         y_arr = np.asarray(y)
-        if np.issubdtype(y_arr.dtype, np.integer) or np.issubdtype(y_arr.dtype, np.floating):
-            n_classes = len(np.unique(y_arr[~pd.isna(y_arr)]))
-            return y_arr.astype(int), n_classes
+        unique_vals = np.unique(y_arr[~pd.isna(y_arr)])
+        n_classes = len(unique_vals)
+
+        # Check if labels are already 0-based contiguous ints (0,1,...,n-1)
+        if np.issubdtype(y_arr.dtype, np.integer):
+            int_vals = sorted(unique_vals.astype(int))
+            if int_vals == list(range(n_classes)):
+                return y_arr.astype(int), n_classes
+
+        # Otherwise always use LabelEncoder to remap to 0..n-1
         le = LabelEncoder()
         encoded = le.fit_transform(y_arr)
         label_encoder_ref.clear()
