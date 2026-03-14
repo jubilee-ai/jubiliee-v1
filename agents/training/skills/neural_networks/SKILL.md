@@ -30,7 +30,7 @@ The sandbox executes your code and returns everything you `print()`.
 | `load_dataset` | `(ref) → DataFrame` | Load dataset by reference |
 | `encode_labels` | `(y) → (encoded_y, n_classes)` | Encode string labels to ints (classification) or pass-through (regression). Mapping auto-saved with model. |
 | `preprocess` | `(X_df, categorical_cols=None, preprocessor=None) → (np.ndarray, preprocessor)` | Fit/transform with ColumnTransformer. Pass fitted preprocessor for val/test. |
-| `save_model` | `(model, name, metrics, preprocessor=..., feature_names=None, target_column=None, task_type=..., n_classes=None)` | Save and register model. **Always pass `preprocessor`**. Custom `nn.Module` subclasses supported. |
+| `save_model` | `(model, name=..., metrics=..., preprocessor=..., feature_names=None, target_column=None, task_type=..., n_classes=None) → name` | Save and register model. Returns the model name. **Always pass `preprocessor`**. Custom `nn.Module` subclasses supported. |
 | `compute_metrics` | `(y_true, y_pred, y_proba=None, task_type=...) → dict` | Accuracy/ROC-AUC (classification) or R²/RMSE/MAE (regression) |
 | `to_tensor` | `(array) → FloatTensor` | Numpy to tensor |
 | `extract_params` | `(class_name, module_hint=None) → dict` | Discover constructor params for any class |
