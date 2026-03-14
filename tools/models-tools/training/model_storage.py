@@ -114,11 +114,16 @@ def load_model(model_name: str) -> Any:
     info = get_model_info(model_name)
     if info is None:
         raise ValueError(f"Model '{model_name}' not found in registry")
-    
+
     model_path = info["model_path"]
     if not os.path.exists(model_path):
         raise FileNotFoundError(f"Model file not found: {model_path}")
-    
+
+    if info.get("model_type") == "pytorch_nn":
+        import pickle
+        with open(model_path, "rb") as f:
+            return pickle.load(f)
+
     return joblib.load(model_path)
 
 
