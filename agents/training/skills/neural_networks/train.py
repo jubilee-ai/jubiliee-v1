@@ -6,6 +6,7 @@ The sandbox provides only infrastructure helpers and the params dict.
 
 import importlib.util
 import io
+import re
 import sys
 import traceback
 from pathlib import Path
@@ -53,8 +54,8 @@ def _make_save_model(label_encoder_ref: list):
     """Create save_model helper. label_encoder_ref is a mutable list holding the label encoder."""
     def save_model(
         model,
-        model_name: str,
-        metrics: dict,
+        name: str = None,
+        metrics: dict = None,
         preprocessor=None,
         feature_names=None,
         target_column=None,
@@ -63,11 +64,17 @@ def _make_save_model(label_encoder_ref: list):
         description=None,
         hyperparameters=None,
         training_samples=None,
+        *,
+        model_name: str = None,
     ):
+        # Accept both `name` and `model_name` for robustness
+        resolved_name = name or model_name or "nn_model"
+        if metrics is None:
+            metrics = {}
+
         if preprocessor is None:
             print(
                 "[save_model] WARNING: preprocessor is None. "
-                "The model will not be able to preprocess raw data at inference. "
                 "Pass the fitted preprocessor from preprocess() to save_model()."
             )
         le = label_encoder_ref[0] if label_encoder_ref else None
@@ -79,7 +86,7 @@ def _make_save_model(label_encoder_ref: list):
             label_encoder=le,
         )
 
-        save_path = generate_model_path(model_name)
+        save_path = generate_model_path(resolved_name)
         with open(save_path, "wb") as f:
             cloudpickle.dump(wrapper, f)
 
@@ -91,10 +98,10 @@ def _make_save_model(label_encoder_ref: list):
                 classes = [str(i) for i in range(n_classes)]
 
         register_model(
-            model_name=model_name,
+            model_name=resolved_name,
             model_path=save_path,
             model_type="pytorch_nn",
-            description=description or f"PyTorch neural network: {model_name}",
+            description=description or f"PyTorch neural network: {resolved_name}",
             metrics=metrics,
             feature_names=feature_names or [],
             target_column=target_column or "",
@@ -102,6 +109,8 @@ def _make_save_model(label_encoder_ref: list):
             training_samples=training_samples or 0,
             classes=classes,
         )
+        print(f"MODEL REGISTERED: {resolved_name}")
+        return resolved_name
     return save_model
 
 
@@ -151,6 +160,8 @@ def _make_encode_labels(label_encoder_ref: list):
         stored and attached to the saved model so predictions are decoded
         back to original labels at inference time.
 
+        For continuous float targets (regression), passes through unchanged.
+
         Usage:
             y_encoded, n_classes = encode_labels(y)
             y_tensor = torch.tensor(y_encoded, dtype=torch.long)
@@ -159,19 +170,28 @@ def _make_encode_labels(label_encoder_ref: list):
         unique_vals = np.unique(y_arr[~pd.isna(y_arr)])
         n_classes = len(unique_vals)
 
-        # Check if labels are already 0-based contiguous ints (0,1,...,n-1)
+        # Continuous float targets with many unique values → regression, pass through
+        if np.issubdtype(y_arr.dtype, np.floating) and n_classes > 20:
+            print(f"[encode_labels] Regression target ({n_classes} unique values) — passing through")
+            return y_arr, n_classes
+
+        # Already 0-based contiguous ints (0,1,...,n-1)
         if np.issubdtype(y_arr.dtype, np.integer):
             int_vals = sorted(unique_vals.astype(int))
             if int_vals == list(range(n_classes)):
                 return y_arr.astype(int), n_classes
 
-        # Otherwise always use LabelEncoder to remap to 0..n-1
+        # Otherwise use LabelEncoder to remap to 0..n-1
         le = LabelEncoder()
         encoded = le.fit_transform(y_arr)
         label_encoder_ref.clear()
         label_encoder_ref.append(le)
         n_classes = len(le.classes_)
-        print(f"[encode_labels] Encoded {n_classes} classes: {dict(zip(le.classes_, range(n_classes)))}")
+        if n_classes <= 20:
+            print(f"[encode_labels] Encoded {n_classes} classes: {dict(zip(le.classes_, range(n_classes)))}")
+        else:
+            preview = list(le.classes_[:5])
+            print(f"[encode_labels] Encoded {n_classes} classes (first 5: {preview})")
         return encoded, n_classes
     return encode_labels
 
@@ -313,12 +333,67 @@ with torch.no_grad():
 
 task_type = "regression" if is_regression else "classification"
 print(f"Validation metrics: {metrics}")
-save_model(model, model_name, metrics, preprocessor=preprocessor,
+save_model(model, name=model_name, metrics=metrics, preprocessor=preprocessor,
            feature_names=X_df.columns.tolist(), target_column=target_col,
            task_type=task_type, n_classes=n_classes if not is_regression else None,
            training_samples=len(X_tr))
-print(f"MODEL REGISTERED: {model_name}")
 '''
+
+
+# ── Output filtering ─────────────────────────────────────────────────────
+
+_METRIC_KEYWORDS = {
+    "metric", "r2", "rmse", "mae", "accuracy", "roc_auc", "f1",
+    "auc", "precision", "recall", "loss",
+}
+_KEEP_KEYWORDS = {
+    "error", "traceback", "exception", "warning",
+    "model registered", "model saved", "save_model",
+    "early stopping", "encode_labels",
+    "experiment", "keep", "discard", "baseline",
+}
+
+
+_EPOCH_RE = re.compile(r"epoch\s+(\d+)", re.IGNORECASE)
+
+
+def _filter_sandbox_output(raw: str) -> str:
+    """Return only metrics, errors, and key training events from sandbox output."""
+    lines = raw.split("\n")
+    kept: list[str] = []
+    in_error_block = False
+
+    for line in lines:
+        lower = line.lower().strip()
+        if not lower:
+            if in_error_block:
+                kept.append(line)
+            continue
+
+        if "execution error" in lower or "traceback" in lower:
+            in_error_block = True
+            kept.append(line)
+            continue
+        if in_error_block:
+            kept.append(line)
+            continue
+
+        if any(kw in lower for kw in _METRIC_KEYWORDS | _KEEP_KEYWORDS):
+            kept.append(line)
+            continue
+
+        if lower.startswith("epoch "):
+            m = _EPOCH_RE.match(lower)
+            if m:
+                epoch_num = int(m.group(1))
+                if epoch_num <= 1 or epoch_num % 50 == 0:
+                    kept.append(line)
+            continue
+
+    result = "\n".join(kept).strip()
+    if not result:
+        result = "(Training code ran but produced no metric output.)"
+    return result
 
 
 # ── Main entry point ─────────────────────────────────────────────────────
@@ -358,8 +433,8 @@ def run(params: dict) -> str:
     finally:
         sys.stdout = old_stdout
 
-    output = captured.getvalue()
-    if not output.strip():
-        output = "(Code executed successfully but produced no output.)"
+    raw_output = captured.getvalue()
+    if not raw_output.strip():
+        return "(Code executed successfully but produced no output.)"
 
-    return output
+    return _filter_sandbox_output(raw_output)
