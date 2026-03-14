@@ -72,6 +72,18 @@ Stop iterating and run the final test evaluation when:
 
 Always run `evaluate_model` on the **test set** with your best model before finishing.
 
+## Neural Networks (skill: neural_networks)
+
+When using the `neural_networks` skill, you write **PyTorch training code** that runs in a sandbox.
+Everything you need — the experiment protocol, data pipeline, helpers, templates, error handling —
+is in the SKILL.md injected below. **Follow it exactly.**
+
+Key points to remember:
+- Pass your code via `train_with_skill(skill_name='neural_networks', params={...})` with `code`, `train_dataset_ref`, `target_column`, and `model_name`.
+- **ALWAYS** use `encode_labels(y)` for classification targets — it may be strings. For regression, use raw float values directly.
+- **ALWAYS** pass `preprocessor=preprocessor` to `save_model()` — without it, the model CANNOT process data at inference.
+- If a run fails with EXECUTION ERROR, **read the traceback, fix, and retry**. Do not give up.
+
 ## Request Feature Engineering Redo
 Use `request_feature_engineering_redo` ONLY when:
 - Multiple estimators all perform poorly despite tuning
@@ -79,7 +91,7 @@ Use `request_feature_engineering_redo` ONLY when:
 - You've exhausted model-level optimizations
 
 ## Model Naming
-Use descriptive unique names: `hgb_v1`, `lr_v1`, `rf_v1`, `ridge_v2`, etc.
+Use descriptive unique names: `hgb_v1`, `lr_v1`, `rf_v1`, `ridge_v2`, `nn_baseline_v1`, `nn_dropout_v2`, etc.
 
 ## Output
 Report all iterations, final metrics, and your chosen best model. Include:
@@ -450,6 +462,50 @@ counts may differ from features predicting claim amounts.
 - DO NOT ignore the distributional assumption: Poisson for counts, Gamma for
   amounts, Tweedie for zero-inflated amounts. Wrong distribution → wrong
   variance structure → inefficient estimates.
+""",
+
+    "neural_networks": """
+## Model-Specific Guidance: Neural Networks (PyTorch)
+
+Neural networks learn non-linear relationships and feature interactions through hidden
+layers. Feature engineering should focus on CLEAN DATA and PROPER ENCODING rather than
+manually creating interactions or non-linear transforms — the network learns those.
+
+### Encoding Strategy
+- ONE-HOT encode nominal categoricals. Neural networks need numeric inputs and
+  cannot split on ordinal values like trees. One-hot is the standard approach.
+- ORDINAL encode only when a clear natural order exists AND the distance between
+  levels is roughly uniform (e.g., rating 1-5). Otherwise prefer one-hot.
+- For high-cardinality categoricals (>50 values), use GROUP_AGG to create
+  mean-target encodings. Embedding layers are another option but the preprocessor
+  handles this via one-hot or target encoding.
+
+### Scaling & Transformations
+- SCALE all numeric features. Neural networks are sensitive to feature magnitude.
+  The preprocessor includes StandardScaler by default. This is CRITICAL — unscaled
+  features cause slow convergence, gradient issues, and poor performance.
+- LOG-TRANSFORM heavily skewed features (|skew| > 2) BEFORE scaling. This helps
+  the network converge faster and learn more robust representations.
+- No need to create interaction features (x₁ × x₂) or polynomial terms — the
+  hidden layers learn these automatically. Adding them manually wastes capacity.
+
+### Feature Selection
+- Include MORE features rather than fewer. Neural networks handle high-dimensional
+  spaces well and can learn to ignore irrelevant features through dropout and
+  weight decay (L2 regularization).
+- Keep mildly correlated features — the network adapts through training.
+- Only drop features with near-zero variance, data leakage, or > 50% missing values.
+- 15-50+ features is typical. More features are OK with larger datasets and
+  proper regularization (dropout, weight decay).
+
+### What to Avoid
+- DO NOT skip scaling — this is the #1 mistake with neural networks.
+- DO NOT create many polynomial/interaction features manually — the network learns
+  these. Manual features just add noise and slow preprocessing.
+- DO NOT bin continuous features — neural networks handle continuous inputs natively
+  and binning loses information.
+- DO NOT remove correlated features aggressively — the network handles redundancy
+  through learned representations.
 """,
 
     "survival_analysis": """

@@ -12,12 +12,13 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 
 from langchain.agents import create_agent
 from langchain.chat_models import init_chat_model
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import interrupt
+from pydantic import BaseModel, Field
 
 from .core.state import TrainingAgentState, create_initial_state
 
@@ -36,6 +37,33 @@ from .steps.orchestrator import _infer_target_column
 from .steps.select_model import MODEL_FAMILIES
 from .steps.select_model import select_model as _select_model_impl
 from .steps.training import run_training_agent as _run_training
+
+
+# =============================================================================
+# STRUCTURED OUTPUT SCHEMAS
+# =============================================================================
+
+
+class TrainingPlan(BaseModel):
+    """Training plan proposed by the LLM before model training begins."""
+
+    model_type: str = Field(description="Model family: 'supervised', 'unsupervised', or 'neural_networks'")
+    task_type: Literal["classification", "regression"] = Field(description="Whether this is classification or regression")
+    hyperparameters: dict = Field(
+        default_factory=dict,
+        description="Starting hyperparameters. For neural_networks: architecture, optimizer, lr, weight_decay, epochs, patience. For supervised: estimator-specific params.",
+    )
+    class_weight: Optional[str] = Field(
+        default=None,
+        description="Class weighting strategy for imbalanced data. E.g. 'balanced', 'use CrossEntropyLoss weight param', or null.",
+    )
+    max_iterations: int = Field(
+        default=5,
+        description="Number of experiment iterations the training agent should run",
+    )
+    strategy_notes: str = Field(description="High-level training strategy and experiment plan")
+    expected_metrics: str = Field(description="Expected range of validation metrics for this task")
+
 
 SYSTEM_PROMPT = """\
 You are an ML pipeline agent. Execute the pipeline steps to train the best model.
@@ -551,46 +579,51 @@ def create_simple_training_agent(
         if redo_fb:
             redo_section = f"\n\nIMPORTANT - The user rejected the previous training plan with this feedback:\n\"{redo_fb}\"\nPlease adjust accordingly.\n"
 
-        prompt = f"""You are an ML expert. Propose a training configuration.
+        size_bucket = "small" if n_rows < 1000 else ("medium" if n_rows < 10000 else ("large" if n_rows < 100000 else "very large"))
 
-Goal: {state.get('goal', '')}
-Task Type: {task_type}
-Model: {selected_model}
-Target: {target_column}
-Training rows: {n_rows}, Features: {n_features}
-Feature names (first 20): {feature_names}
-Val rows: {len(val_df) if val_df is not None else 'N/A'}
-Class distribution: {json.dumps(class_counts)}
-{"Imbalanced data - minority class is " + f"{minority_ratio:.1%}" if is_imbalanced else "Balanced classes"}
-{redo_section}
-Respond with JSON:
-{{
-    "model_type": "{selected_model}",
-    "task_type": "{task_type}",
-    "hyperparameters": {{}},
-    "class_weight": "balanced" or null,
-    "max_iterations": 3,
-    "strategy_notes": "...",
-    "expected_metrics": "..."
-}}"""
+        if selected_model == "neural_networks":
+            arch_rec = {
+                "small": "1-2 layers, 32-64 units, dropout 0.3-0.5",
+                "medium": "2-3 layers, 64-128 units, dropout 0.2-0.3",
+                "large": "2-4 layers, 128-256 units, BatchNorm + dropout 0.1-0.3",
+                "very large": "3-5 layers, 256-512 units, BatchNorm, lower dropout",
+            }[size_bucket]
+            model_section = (
+                f"Model: neural_networks (PyTorch code execution)\n"
+                f"Architecture recommendation for {size_bucket} dataset: {arch_rec}\n\n"
+                f"This uses the code-execution workflow — the training agent writes PyTorch code.\n"
+                f"Propose a plan following the autoresearch experiment protocol:\n"
+                f"1. Baseline: default 2-layer network with AdamW, early stopping\n"
+                f"2. Architecture search: try different depths/widths (short runs, 30 epochs each)\n"
+                f"3. Refinement: tune the winning architecture (dropout, BatchNorm, LR schedule)\n"
+                f"4. Final training: full run with best config, early stopping"
+            )
+        else:
+            model_section = f"Model: {selected_model}"
 
-        response = init_chat_model("openai:gpt-5.1").invoke([{"role": "user", "content": prompt}])
-        try:
-            json_match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", response.content)
-            training_plan = json.loads(json_match.group(1)) if json_match else json.loads(response.content)
-        except (json.JSONDecodeError, AttributeError):
-            training_plan = {
-                "model_type": selected_model, "task_type": task_type,
-                "hyperparameters": {},
-                "class_weight": "balanced" if is_imbalanced else None,
-                "max_iterations": 3,
-                "strategy_notes": "Default configuration",
-                "expected_metrics": "Standard metrics",
-            }
+        imbalance_note = (
+            f"Imbalanced data — minority class is {minority_ratio:.1%}. Consider class weights."
+            if is_imbalanced else "Balanced classes"
+        )
 
-        training_plan.setdefault("model_type", selected_model)
-        training_plan.setdefault("task_type", task_type)
-        training_plan.setdefault("max_iterations", 3)
+        prompt = (
+            f"You are an ML expert. Propose a training plan.\n\n"
+            f"Goal: {state.get('goal', '')}\n"
+            f"Task type: {task_type}\n"
+            f"{model_section}\n"
+            f"Target: {target_column}\n"
+            f"Training rows: {n_rows} ({size_bucket}), Features: {n_features}\n"
+            f"Feature names (first 20): {feature_names}\n"
+            f"Val rows: {len(val_df) if val_df is not None else 'N/A'}\n"
+            f"Class distribution: {json.dumps(class_counts)}\n"
+            f"{imbalance_note}"
+            f"{redo_section}"
+        )
+
+        structured_llm = init_chat_model("openai:gpt-5.1").with_structured_output(
+            TrainingPlan, method="function_calling"
+        )
+        training_plan = structured_llm.invoke(prompt).model_dump()
         training_plan["data_summary"] = {
             "train_rows": n_rows,
             "val_rows": len(val_df) if val_df is not None else None,
@@ -637,6 +670,8 @@ Respond with JSON:
             return "SKIP: Cannot run — feature_engineering_executor and label_split_definition must complete first."
 
         model_name = f"{selected_model}_{int(time.time())}"
+        training_plan = state.get("training_plan") or {}
+        plan_max_iters = training_plan.get("max_iterations", 5 if selected_model == "neural_networks" else 3)
         result = _run_training(
             train_ref=train_ref,
             val_ref=state.get("transformed_val_ref"),
@@ -645,7 +680,7 @@ Respond with JSON:
             selected_model=selected_model,
             goal=state.get("goal", ""),
             model_name=model_name,
-            max_iterations=3,
+            max_iterations=plan_max_iters,
         )
 
         feature_redo_requested = result.get("feature_redo_requested", False)
