@@ -23,6 +23,19 @@ class TrainingServiceInterface(Protocol):
         approved: bool,
         feedback: Optional[str],
     ) -> Generator[str, None, None]: ...
+    def generate_graph_sse_events(
+        self,
+        goal: str,
+        linked_datasets: Optional[list[str]],
+        model_pref: Optional[str],
+        thread_id: Optional[str] = None,
+    ) -> Generator[str, None, None]: ...
+    def generate_graph_resume_sse_events(
+        self,
+        thread_id: str,
+        approved: bool,
+        feedback: Optional[str],
+    ) -> Generator[str, None, None]: ...
 
 
 class TrainingRepositoryInterface(Protocol):

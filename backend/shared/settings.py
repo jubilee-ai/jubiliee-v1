@@ -24,6 +24,12 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("OPENAI_API_KEY"),
     )
 
+    # Redis / Celery
+    REDIS_URL: str = Field(
+        default="redis://localhost:6379/0",
+        description="Redis URL for Celery broker and result backend",
+    )
+
     # App config
     CORS_ORIGINS: list[str] = Field(
         default_factory=lambda: [

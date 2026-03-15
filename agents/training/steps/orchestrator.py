@@ -48,8 +48,14 @@ def _get_label_def(state: TrainingAgentState) -> dict:
     return state.get("label_definition") or {}
 
 
+def _is_unsupervised(state: TrainingAgentState) -> bool:
+    return state.get("selected_model") == "unsupervised"
+
+
 def _infer_task_type(goal: str, selected_model: str) -> str:
     """Infer task type from goal and model selection."""
+    if selected_model == "unsupervised":
+        return "unsupervised"
     goal_lower = goal.lower()
     model_lower = selected_model.lower()
     
@@ -214,6 +220,34 @@ def label_split_definition(state: TrainingAgentState) -> TrainingAgentState:
     """Step 3.5: Label + Split Definition + Data Splitting with HITL approval."""
 
     def do_work(s: TrainingAgentState, feedback: Optional[str]) -> TrainingAgentState:
+        if _is_unsupervised(s):
+            dataset_ref = s.get("cleaned_dataset_ref")
+            if not dataset_ref:
+                return {
+                    **s,
+                    "error": "Cannot run unsupervised split passthrough — cleaning must run first.",
+                    "current_step": "cleaning",
+                }
+            split_ref = f"{dataset_ref}_train"
+            df = get_registered_dataset(dataset_ref)
+            register_dataset(split_ref, df)
+            return {
+                **s,
+                "label_definition": {
+                    "target_column": "",
+                    "prediction_horizon": None,
+                    "grain": "",
+                    "as_of_cutoff": None,
+                    "split_strategy": "random",
+                    "forbidden_columns": [],
+                },
+                "split_indices": None,
+                "train_dataset_ref": split_ref,
+                "val_dataset_ref": None,
+                "test_dataset_ref": None,
+                "current_step": "feature_selection_specification",
+            }
+
         dataset_ref = s.get("cleaned_dataset_ref")
         if not dataset_ref:
             return {
@@ -265,6 +299,13 @@ def label_split_definition(state: TrainingAgentState) -> TrainingAgentState:
         }
 
     def get_summary(r: TrainingAgentState) -> str:
+        if _is_unsupervised(r):
+            return (
+                "Unsupervised flow: skipped label/target definition.\n"
+                f"Train: {r.get('train_dataset_ref')}\n"
+                "Val: None\n"
+                "Test: None"
+            )
         ld = _get_label_def(r)
         return (
             f"Target column: {ld.get('target_column', 'unknown')}\n"
@@ -283,6 +324,26 @@ def feature_selection_specification(state: TrainingAgentState) -> TrainingAgentS
     """Step 4: Feature Selection & Specification with HITL approval."""
 
     def do_work(s: TrainingAgentState, feedback: Optional[str]) -> TrainingAgentState:
+        if _is_unsupervised(s):
+            train_ref = s.get("train_dataset_ref")
+            if not train_ref:
+                raise ValueError("No train_dataset_ref in state - step 3.5 must complete first")
+            return {
+                **s,
+                "feature_spec": {"features": []},
+                "analysis_trace": [{
+                    "step": "feature_selection_specification",
+                    "analysis_results": {},
+                    "key_stats": {},
+                    "validation": {"valid": True},
+                    "is_redo": False,
+                    "redo_recommendation": None,
+                }],
+                "feature_redo_requested": False,
+                "feature_redo_recommendation": None,
+                "feature_redo_reason": None,
+            }
+
         train_ref, val_ref, test_ref = s.get("train_dataset_ref"), s.get("val_dataset_ref"), s.get("test_dataset_ref")
         label_def = _get_label_def(s)
         goal = _add_feedback_to_goal(s.get("goal", ""), "feature selection", feedback)
@@ -367,6 +428,8 @@ def feature_selection_specification(state: TrainingAgentState) -> TrainingAgentS
         }
 
     def get_summary(r: TrainingAgentState) -> str:
+        if _is_unsupervised(r):
+            return "Unsupervised flow: skipped feature specification and will train on cleaned features directly."
         features = (r.get("feature_spec") or {}).get("features", [])
         names = [f.get("name", "?") for f in features[:10]]
         more = f" (+{len(features) - 10} more)" if len(features) > 10 else ""
@@ -379,6 +442,28 @@ def feature_engineering_executor(state: TrainingAgentState) -> TrainingAgentStat
     """Step 5: Feature Engineering Executor with HITL approval."""
 
     def do_work(s: TrainingAgentState, feedback: Optional[str]) -> TrainingAgentState:
+        if _is_unsupervised(s):
+            train_ref = s.get("train_dataset_ref")
+            if not train_ref:
+                raise ValueError("No train_dataset_ref in state - step 3.5 must complete first")
+            return {
+                **s,
+                "transformed_train_ref": train_ref,
+                "transformed_val_ref": None,
+                "transformed_test_ref": None,
+                "transformed_dataset_ref": train_ref,
+                "feature_validation_passed": True,
+                "feature_redo_recommendation": None,
+                "audit_trace": s.get("audit_trace", []) + [{
+                    "step": "feature_engineering_executor",
+                    "features_created": [],
+                    "errors": [],
+                    "shapes": {"train": None, "val": None, "test": None},
+                    "temporal_constraints_applied": 0,
+                    "mode": "unsupervised_passthrough",
+                }],
+            }
+
         train_ref, val_ref, test_ref = s.get("train_dataset_ref"), s.get("val_dataset_ref"), s.get("test_dataset_ref")
         feature_spec, label_def = s.get("feature_spec"), _get_label_def(s)
         target_column = label_def.get("target_column", "")
@@ -433,6 +518,8 @@ def feature_engineering_executor(state: TrainingAgentState) -> TrainingAgentStat
         return str(s) if s else "?"
 
     def get_summary(r: TrainingAgentState) -> str:
+        if _is_unsupervised(r):
+            return "Unsupervised flow: feature engineering executor passthrough complete."
         audit = next((t for t in r.get("audit_trace", []) if t.get("step") == "feature_engineering_executor"), {})
         shapes = audit.get("shapes", {})
         return (
@@ -456,21 +543,25 @@ def training_approval(state: TrainingAgentState) -> TrainingAgentState:
         target_column = label_def.get("target_column", "")
         selected_model = state.get("selected_model", "supervised")
         goal = state.get("goal", "")
+        unsupervised = selected_model == "unsupervised"
 
         train_df = get_registered_dataset(train_ref)
         val_df = get_registered_dataset(val_ref) if val_ref else None
         if train_df is None:
             raise ValueError(f"Training dataset not found: {train_ref}")
 
-        n_rows, n_features = len(train_df), len([c for c in train_df.columns if c != target_column])
-        class_counts = train_df[target_column].value_counts().to_dict()
-        total = sum(class_counts.values())
-        minority_ratio = min(class_counts.values()) / total if total > 0 else 0
-        is_imbalanced = minority_ratio < 0.3
-        task_type = _infer_task_type(goal, selected_model)
+        n_rows, n_features = len(train_df), len([c for c in train_df.columns if c != target_column]) if target_column else len(train_df.columns)
+        class_counts = train_df[target_column].value_counts().to_dict() if not unsupervised and target_column else {}
+        total = sum(class_counts.values()) if class_counts else 0
+        minority_ratio = (min(class_counts.values()) / total) if total > 0 else 0
+        is_imbalanced = (minority_ratio < 0.3) if class_counts else False
+        task_type = "unsupervised" if unsupervised else _infer_task_type(goal, selected_model)
 
         features_list = [f.get("name") for f in feature_spec.get("features", [])][:20]
-        imbalance_msg = f"⚠️ IMBALANCED DATA - minority class is {minority_ratio:.1%}" if is_imbalanced else "✓ Balanced classes"
+        imbalance_msg = (
+            f"⚠️ IMBALANCED DATA - minority class is {minority_ratio:.1%}"
+            if is_imbalanced else ("✓ Balanced classes" if class_counts else "N/A for unsupervised")
+        )
         feedback_section = f"## User Feedback to Incorporate:\n{feedback}" if feedback else ""
 
         prompt = f"""You are an ML expert. Propose a training configuration for the following task.
@@ -479,7 +570,7 @@ def training_approval(state: TrainingAgentState) -> TrainingAgentState:
 Goal: {goal}
 Task Type: {task_type}
 Selected Model: {selected_model}
-Target Column: {target_column}
+Target Column: {target_column if target_column else "N/A (unsupervised)"}
 
 ## Data Characteristics
 - Training rows: {n_rows}
@@ -488,7 +579,7 @@ Target Column: {target_column}
 - Validation rows: {len(val_df) if val_df is not None else 'N/A'}
 
 ## Class Distribution (Training)
-{json.dumps(class_counts, indent=2)}
+{json.dumps(class_counts, indent=2) if class_counts else "N/A (unsupervised)"}
 {imbalance_msg}
 
 {feedback_section}
@@ -511,7 +602,7 @@ Propose a training configuration. Respond with a JSON object containing:
 Be specific with hyperparameter values. Consider:
 - Dataset size ({n_rows} rows) - larger datasets can support more complex models
 - Number of features ({n_features}) - may need regularization if many features
-- Class imbalance - use class_weight="balanced" if imbalanced
+- Class imbalance - use class_weight="balanced" if imbalanced (skip for unsupervised)
 - Model type - choose appropriate hyperparameters for {selected_model}
 """
 
@@ -528,6 +619,8 @@ Be specific with hyperparameter values. Consider:
                 "strategy_notes": "Default configuration - LLM response could not be parsed",
                 "expected_metrics": "Standard metrics for the task type",
             }
+        if unsupervised:
+            training_plan["class_weight"] = None
 
         # Ensure required fields and add data summary
         training_plan.setdefault("model_type", selected_model)
@@ -566,7 +659,7 @@ Be specific with hyperparameter values. Consider:
 **Data Summary:**
 - Training: {n_rows} rows, {n_features} features
 - Validation: {len(val_df) if val_df is not None else 'N/A'} rows
-- Class balance: {'Imbalanced' if is_imbalanced else 'Balanced'}
+- Class balance: {'Imbalanced' if is_imbalanced else ('Balanced' if class_counts else 'N/A for unsupervised')}
 """
 
         training_plan = make_serializable(training_plan)
@@ -593,10 +686,12 @@ def training(state: TrainingAgentState) -> TrainingAgentState:
         target_column = label_def.get("target_column", "")
         selected_model = s.get("selected_model", "supervised")
         goal = _add_feedback_to_goal(s.get("goal", ""), "training", feedback)
+        unsupervised = selected_model == "unsupervised"
 
         if not train_ref:
             raise ValueError("No transformed_train_ref in state - step 5 must complete first")
-        if not target_column:
+        task_type = s.get("task_type") or _infer_task_type(goal, selected_model)
+        if not target_column and task_type != "unsupervised":
             raise ValueError("No target_column in label_definition")
 
         model_name = f"{selected_model}_{int(time.time())}"

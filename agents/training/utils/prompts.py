@@ -70,7 +70,20 @@ Stop iterating and run the final test evaluation when:
 - Further iterations show diminishing returns (< 1% improvement)
 - You're confident you've found a strong configuration
 
-Always run `evaluate_model` on the **test set** with your best model before finishing.
+Always run `evaluate_model` on the **test set** with your best model before finishing for supervised tasks.
+For unsupervised tasks, do not call `evaluate_model` (it requires target labels).
+
+## Neural Networks (skill: neural_networks)
+
+When using the `neural_networks` skill, you write **PyTorch training code** that runs in a sandbox.
+Everything you need — the experiment protocol, data pipeline, helpers, templates, error handling —
+is in the SKILL.md injected below. **Follow it exactly.**
+
+Key points to remember:
+- Pass your code via `train_with_skill(skill_name='neural_networks', params={...})` with `code`, `train_dataset_ref`, `target_column`, and `model_name`.
+- **ALWAYS** use `encode_labels(y)` for classification targets — it may be strings. For regression, use raw float values directly.
+- **ALWAYS** pass `preprocessor=preprocessor` to `save_model()` — without it, the model CANNOT process data at inference.
+- If a run fails with EXECUTION ERROR, **read the traceback, fix, and retry**. Do not give up.
 
 ## Neural Networks (skill: neural_networks)
 

@@ -35,6 +35,7 @@ from .steps.label_and_split import (apply_split, compute_split_indices,
                                     run_label_split_definition)
 from .steps.orchestrator import _infer_target_column
 from .steps.select_model import MODEL_FAMILIES
+from .steps.select_model import MODEL_FAMILIES
 from .steps.select_model import select_model as _select_model_impl
 from .steps.training import run_training_agent as _run_training
 
@@ -48,7 +49,7 @@ class TrainingPlan(BaseModel):
     """Training plan proposed by the LLM before model training begins."""
 
     model_type: str = Field(description="Model family: 'supervised', 'unsupervised', or 'neural_networks'")
-    task_type: Literal["classification", "regression"] = Field(description="Whether this is classification or regression")
+    task_type: Literal["classification", "regression", "unsupervised"] = Field(description="Task type: classification, regression, or unsupervised")
     hyperparameters: dict = Field(
         default_factory=dict,
         description="Starting hyperparameters. For neural_networks: architecture, optimizer, lr, weight_decay, epochs, patience. For supervised: estimator-specific params.",
@@ -100,6 +101,8 @@ Summarize the final results.
 
 
 def _infer_task_type(goal: str, selected_model: str) -> str:
+    if selected_model == "unsupervised":
+        return "unsupervised"
     goal_lower = goal.lower()
     model_lower = selected_model.lower()
     if "logistic" not in model_lower:
@@ -353,6 +356,31 @@ def create_simple_training_agent(
             return "SKIP: Cannot run — cleaning must run first."
         _invalidate_downstream("label_split_definition")
 
+        if state.get("selected_model") == "unsupervised":
+            df = get_registered_dataset(dataset_ref)
+            if df is None:
+                return f"SKIP: Dataset not found: {dataset_ref}"
+            train_ref = f"{dataset_ref}_train"
+            register_dataset(train_ref, df)
+            state.update({
+                "label_definition": {
+                    "target_column": "",
+                    "prediction_horizon": None,
+                    "grain": "",
+                    "as_of_cutoff": None,
+                    "split_strategy": "random",
+                    "forbidden_columns": [],
+                },
+                "split_indices": None,
+                "train_dataset_ref": train_ref,
+                "val_dataset_ref": None,
+                "test_dataset_ref": None,
+                "current_step": "feature_selection_specification",
+            })
+            _completed_steps.add("label_split_definition")
+            print(f"🏷️ label_split: unsupervised bypass — train={train_ref}", flush=True)
+            return f"Unsupervised flow: label/split skipped. Train: {train_ref}"
+
         redo_fb = state.pop("_redo_feedback_label_split", None)
 
         existing = state.get("label_definition") or {}
@@ -431,6 +459,16 @@ def create_simple_training_agent(
             fs = (state.get("feature_spec") or {}).get("features", [])
             return f"SKIP: Features already specified ({len(fs)} features). Proceed to the next step."
         label_def = state.get("label_definition") or {}
+        if state.get("selected_model") == "unsupervised":
+            state.update({
+                "feature_spec": {"features": []},
+                "analysis_trace": [],
+                "feature_redo_requested": False,
+                "feature_redo_recommendation": None,
+                "feature_redo_reason": None,
+            })
+            _completed_steps.add("feature_selection_specification")
+            return "Unsupervised flow: feature specification skipped (direct training on cleaned columns)."
         train_ref = state.get("train_dataset_ref")
         target_column = label_def.get("target_column", "")
         if not train_ref or not target_column:
@@ -500,6 +538,19 @@ def create_simple_training_agent(
         if "feature_engineering_executor" in _completed_steps and state.get("feature_validation_passed"):
             return f"SKIP: Features already engineered. Proceed to the next step."
         label_def = state.get("label_definition") or {}
+        if state.get("selected_model") == "unsupervised":
+            train_ref = state.get("train_dataset_ref")
+            if not train_ref:
+                return "SKIP: Cannot run — label_split_definition must run first."
+            state.update({
+                "transformed_train_ref": train_ref,
+                "transformed_val_ref": None,
+                "transformed_test_ref": None,
+                "transformed_dataset_ref": train_ref,
+                "feature_validation_passed": True,
+            })
+            _completed_steps.add("feature_engineering_executor")
+            return "Unsupervised flow: feature engineering passthrough complete."
         train_ref = state.get("train_dataset_ref")
         feature_spec = state.get("feature_spec")
         target_column = label_def.get("target_column", "")
@@ -568,7 +619,8 @@ def create_simple_training_agent(
         label_def = state.get("label_definition") or {}
         target_column = label_def.get("target_column", "")
         selected_model = state.get("selected_model", "supervised")
-        task_type = _infer_task_type(state.get("goal", ""), selected_model)
+        unsupervised = selected_model == "unsupervised"
+        task_type = "unsupervised" if unsupervised else _infer_task_type(state.get("goal", ""), selected_model)
 
         train_df = get_registered_dataset(train_ref)
         val_df = get_registered_dataset(val_ref) if val_ref else None
@@ -576,11 +628,17 @@ def create_simple_training_agent(
             return "SKIP: Cannot run — feature_engineering_executor must run first."
 
         n_rows = len(train_df)
-        n_features = len([c for c in train_df.columns if c != target_column])
-        class_counts = train_df[target_column].value_counts().to_dict()
-        total = sum(class_counts.values())
-        minority_ratio = min(class_counts.values()) / total if total > 0 else 0
-        is_imbalanced = minority_ratio < 0.3
+        if target_column:
+            n_features = len([c for c in train_df.columns if c != target_column])
+            class_counts = train_df[target_column].value_counts().to_dict()
+            total = sum(class_counts.values())
+            minority_ratio = min(class_counts.values()) / total if total > 0 else 0
+            is_imbalanced = minority_ratio < 0.3
+        else:
+            n_features = len(train_df.columns)
+            class_counts = {}
+            minority_ratio = 0
+            is_imbalanced = False
 
         feature_names = [f.get("name") for f in (state.get("feature_spec") or {}).get("features", [])][:20]
 
@@ -611,21 +669,23 @@ def create_simple_training_agent(
         else:
             model_section = f"Model: {selected_model}"
 
-        imbalance_note = (
-            f"Imbalanced data — minority class is {minority_ratio:.1%}. Consider class weights."
-            if is_imbalanced else "Balanced classes"
-        )
+        if task_type == "unsupervised":
+            imbalance_note = "Unsupervised task — no target column or class distribution."
+        elif is_imbalanced:
+            imbalance_note = f"Imbalanced data — minority class is {minority_ratio:.1%}. Consider class weights."
+        else:
+            imbalance_note = "Balanced classes"
 
         prompt = (
             f"You are an ML expert. Propose a training plan.\n\n"
             f"Goal: {state.get('goal', '')}\n"
             f"Task type: {task_type}\n"
             f"{model_section}\n"
-            f"Target: {target_column}\n"
+            f"Target: {target_column or '(none — unsupervised)'}\n"
             f"Training rows: {n_rows} ({size_bucket}), Features: {n_features}\n"
             f"Feature names (first 20): {feature_names}\n"
             f"Val rows: {len(val_df) if val_df is not None else 'N/A'}\n"
-            f"Class distribution: {json.dumps(class_counts)}\n"
+            f"Class distribution: {json.dumps(class_counts) if class_counts else 'N/A (unsupervised)'}\n"
             f"{imbalance_note}"
             f"{redo_section}"
         )
@@ -675,9 +735,12 @@ def create_simple_training_agent(
         label_def = state.get("label_definition") or {}
         target_column = label_def.get("target_column", "")
         selected_model = state.get("selected_model", "supervised")
+        task_type = _infer_task_type(state.get("goal", ""), selected_model)
         train_ref = state.get("transformed_train_ref")
-        if not train_ref or not target_column:
-            return "SKIP: Cannot run — feature_engineering_executor and label_split_definition must complete first."
+        if not train_ref:
+            return "SKIP: Cannot run — feature_engineering_executor must complete first."
+        if not target_column and task_type != "unsupervised":
+            return "SKIP: Cannot run — label_split_definition must define a target column first."
 
         model_name = f"{selected_model}_{int(time.time())}"
         training_plan = state.get("training_plan") or {}
@@ -747,6 +810,10 @@ def create_simple_training_agent(
                 "test_r2": result.get("test_r2"),
                 "test_rmse": result.get("test_rmse"),
                 "test_mae": result.get("test_mae"),
+                "silhouette_score": result.get("silhouette_score"),
+                "davies_bouldin": result.get("davies_bouldin"),
+                "inertia": result.get("inertia"),
+                "reconstruction_loss": result.get("reconstruction_loss"),
                 "iterations": result.get("iterations", []),
                 "num_iterations": result.get("num_iterations", 0),
                 "best_iteration": result.get("best_iteration"),
@@ -772,8 +839,12 @@ def create_simple_training_agent(
         lines = [f"Training {'succeeded' if result.get('success') else 'FAILED'}"]
         lines.append(f"Model: {result.get('model_name', '?')}")
         metric_parts = []
-        for key, label in [("val_accuracy", "Val Accuracy"), ("val_roc_auc", "Val ROC-AUC"),
-                           ("test_accuracy", "Test Accuracy"), ("val_r2", "Val R²"), ("test_r2", "Test R²")]:
+        for key, label in [
+            ("val_accuracy", "Val Accuracy"), ("val_roc_auc", "Val ROC-AUC"),
+            ("test_accuracy", "Test Accuracy"), ("val_r2", "Val R²"), ("test_r2", "Test R²"),
+            ("silhouette_score", "Silhouette"), ("davies_bouldin", "Davies-Bouldin"),
+            ("inertia", "Inertia"),
+        ]:
             v = result.get(key)
             if v is not None:
                 lines.append(f"{label}: {v:.4f}")

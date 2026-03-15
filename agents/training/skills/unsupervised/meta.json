@@ -1,0 +1,50 @@
+{
+  "name": "sklearn_unsupervised",
+  "label": "Sklearn Generic (Unsupervised)",
+  "task_types": ["unsupervised"],
+  "brief": "Train scikit-learn unsupervised estimators with automatic preprocessing and artifact registration. Supports KMeans, MiniBatchKMeans, DBSCAN, AgglomerativeClustering, GaussianMixture, IsolationForest, PCA, and related clustering, anomaly detection, and dimensionality reduction workflows.",
+  "aliases": [
+    "sklearn unsupervised",
+    "unsupervised learning",
+    "unsupervised",
+    "clustering",
+    "cluster",
+    "customer segmentation",
+    "segmentation",
+    "segment customers",
+    "kmeans",
+    "k-means",
+    "mini batch kmeans",
+    "minibatchkmeans",
+    "dbscan",
+    "agglomerative",
+    "agglomerative clustering",
+    "hierarchical",
+    "hierarchical clustering",
+    "gaussian mixture",
+    "gmm",
+    "anomaly detection",
+    "outlier detection",
+    "isolation forest",
+    "anomaly",
+    "outlier",
+    "dimensionality reduction",
+    "principal component analysis",
+    "pca"
+  ],
+  "when_to_use": [
+    "Any scikit-learn model for clustering, anomaly detection, or dimensionality reduction",
+    "KMeans or MiniBatchKMeans for fast segmentation baselines",
+    "DBSCAN for density-based clustering with noise handling",
+    "GaussianMixture for probabilistic or soft cluster assignments",
+    "IsolationForest for anomaly and outlier detection",
+    "PCA for dimensionality reduction and latent structure exploration",
+    "When no target label is available and the goal is pattern discovery"
+  ],
+  "when_not_to_use": [
+    "Classification or regression with a known target column — use the supervised skill",
+    "Tasks requiring direct supervised metrics such as accuracy, ROC-AUC, or R2",
+    "Survival Analysis — use the survival_analysis skill (if available)",
+    "GLM with Poisson/Gamma/Tweedie distributions — use the glm skill (if available)"
+  ]
+}

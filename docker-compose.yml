@@ -1,4 +1,18 @@
 services:
+  redis:
+    image: redis:7-alpine
+    container_name: jubilee-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
   backend:
     build:
       context: .
@@ -6,11 +20,34 @@ services:
     container_name: jubilee-backend
     env_file:
       - .env
+    environment:
+      - REDIS_URL=redis://redis:6379/0
     ports:
       - "8000:8000"
     volumes:
       - ./datasets:/app/datasets
       - ./trained_models:/app/trained_models
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  celery-worker:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: jubilee-celery-worker
+    env_file:
+      - .env
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+    command: celery -A backend.celery_app worker --loglevel=info --concurrency=2
+    volumes:
+      - ./datasets:/app/datasets
+      - ./trained_models:/app/trained_models
+    depends_on:
+      redis:
+        condition: service_healthy
     restart: unless-stopped
 
   ui:
@@ -23,3 +60,6 @@ services:
     ports:
       - "5173:80"
     restart: unless-stopped
+
+volumes:
+  redis_data:
