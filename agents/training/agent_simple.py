@@ -35,10 +35,8 @@ from .steps.label_and_split import (apply_split, compute_split_indices,
                                     run_label_split_definition)
 from .steps.orchestrator import _infer_target_column
 from .steps.select_model import MODEL_FAMILIES
-from .steps.select_model import MODEL_FAMILIES
 from .steps.select_model import select_model as _select_model_impl
 from .steps.training import run_training_agent as _run_training
-
 
 # =============================================================================
 # STRUCTURED OUTPUT SCHEMAS
@@ -119,7 +117,7 @@ def create_simple_training_agent(
     goal: str,
     linked_datasets: Optional[list[str]] = None,
     user_model_preference: Optional[str] = None,
-    model: str = "openai:gpt-5.1",
+    model: str = "openai:gpt-5.4",
     hitl: bool = True,
     checkpointer=None,
     use_external_sources: bool = False,
@@ -317,7 +315,8 @@ def create_simple_training_agent(
         result = run_cleaning_simple(
             dataset_ref=dataset_ref,
             goal=cleaning_goal,
-            max_iterations=max_iters,
+            # max_iterations=max_iters,
+            max_iterations=5,
             target_col=target_col,
             task_type=task_type,
             selected_model=sel_model,
@@ -690,7 +689,7 @@ def create_simple_training_agent(
             f"{redo_section}"
         )
 
-        structured_llm = init_chat_model("openai:gpt-5.1").with_structured_output(
+        structured_llm = init_chat_model("openai:gpt-5.4").with_structured_output(
             TrainingPlan, method="function_calling"
         )
         training_plan = structured_llm.invoke(prompt).model_dump()
@@ -744,7 +743,7 @@ def create_simple_training_agent(
 
         model_name = f"{selected_model}_{int(time.time())}"
         training_plan = state.get("training_plan") or {}
-        plan_max_iters = training_plan.get("max_iterations", 5 if selected_model == "neural_networks" else 3)
+        plan_max_iters = training_plan.get("max_iterations", 8 if selected_model == "neural_networks" else 10)
         result = _run_training(
             train_ref=train_ref,
             val_ref=state.get("transformed_val_ref"),
@@ -765,32 +764,56 @@ def create_simple_training_agent(
         if result.get("success") and not feature_redo_requested:
             if task_type == "regression":
                 val_r2 = result.get("val_r2")
-                if val_r2 is not None and val_r2 < 0.05 and iteration_num <= 2:
+                if val_r2 is not None and val_r2 < 0.30 and iteration_num <= 3:
                     feature_redo_requested = True
                     extra = result.get("feature_redo_recommendation") or ""
                     result["feature_redo_recommendation"] = (
-                        extra + "\n[AUTO] Val R² < 0.05 — features may lack predictive signal. "
-                        "Try adding interactions, polynomial terms, or different encodings."
+                        extra + f"\n[AUTO] Val R² = {val_r2:.4f} (below 0.30 threshold) — "
+                        "features may lack predictive signal or need better engineering. "
+                        "Review mutual information scores, add domain-meaningful interactions, "
+                        "try different encodings for categoricals, and drop near-zero-MI features."
                     )
                     result["feature_redo_reason"] = f"Auto-triggered: val_r2={val_r2:.4f}"
             else:
                 val_roc = result.get("val_roc_auc")
                 val_acc = result.get("val_accuracy")
-                if val_roc is not None and val_roc < 0.55 and iteration_num <= 2:
+                if val_roc is not None and val_roc < 0.70 and iteration_num <= 3:
                     feature_redo_requested = True
                     extra = result.get("feature_redo_recommendation") or ""
                     result["feature_redo_recommendation"] = (
-                        extra + "\n[AUTO] Val ROC-AUC < 0.55 — near-random performance. "
-                        "Features may be uninformative or target is noisy."
+                        extra + f"\n[AUTO] Val ROC-AUC = {val_roc:.4f} (below 0.70 threshold) — "
+                        "features need improvement. Review mutual information scores to identify "
+                        "high-signal features, use ordinal encoding instead of one-hot for tree models, "
+                        "add domain-meaningful ratios/interactions, and drop low-MI features."
                     )
                     result["feature_redo_reason"] = f"Auto-triggered: val_roc_auc={val_roc:.4f}"
-                elif val_acc is not None and val_acc < 0.55 and val_roc is None and iteration_num <= 2:
+                elif val_acc is not None and val_acc < 0.65 and val_roc is None and iteration_num <= 3:
                     feature_redo_requested = True
                     extra = result.get("feature_redo_recommendation") or ""
                     result["feature_redo_recommendation"] = (
-                        extra + "\n[AUTO] Val Accuracy < 0.55 — near-random."
+                        extra + f"\n[AUTO] Val Accuracy = {val_acc:.4f} (below 0.65 threshold) — "
+                        "features need improvement."
                     )
                     result["feature_redo_reason"] = f"Auto-triggered: val_accuracy={val_acc:.4f}"
+
+            # Gate on feature importance: trigger redo if many features are dead weight
+            feat_importances = result.get("feature_importances", {})
+            if feat_importances and iteration_num <= 3:
+                total_features = len(feat_importances)
+                zero_features = sum(1 for v in feat_importances.values() if v < 0.001)
+                if total_features > 5 and zero_features / total_features > 0.5:
+                    feature_redo_requested = True
+                    extra = result.get("feature_redo_recommendation") or ""
+                    dead_names = [k for k, v in feat_importances.items() if v < 0.001]
+                    result["feature_redo_recommendation"] = (
+                        extra + f"\n[AUTO] {zero_features}/{total_features} features have near-zero "
+                        f"importance — over half the feature set is dead weight. "
+                        f"Drop these low-importance features and replace with more informative ones: "
+                        f"{dead_names[:10]}"
+                    )
+                    result["feature_redo_reason"] = (
+                        f"Auto-triggered: {zero_features}/{total_features} features with importance < 0.001"
+                    )
 
         state.update({
             "model_weights_path": result.get("model_name"),
@@ -969,7 +992,7 @@ def invoke_simple_training_agent(
     goal: str,
     linked_datasets: Optional[list[str]] = None,
     user_model_preference: Optional[str] = None,
-    model: str = "openai:gpt-5.1",
+    model: str = "openai:gpt-5.4",
     use_external_sources: bool = False,
 ):
     """Convenience function: create and invoke the simple training agent (no HITL)."""
@@ -977,5 +1000,5 @@ def invoke_simple_training_agent(
         goal, linked_datasets, user_model_preference, model, hitl=False,
         use_external_sources=use_external_sources,
     )
-    result = agent.invoke({"messages": [{"role": "user", "content": goal}]})
-    return result
+    agent.invoke({"messages": [{"role": "user", "content": goal}]})
+    return _state

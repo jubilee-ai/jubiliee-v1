@@ -90,6 +90,27 @@ _PARALLELIZABLE = {
     "BaggingClassifier", "BaggingRegressor",
 }
 
+def _is_tree_based(estimator) -> bool:
+    """Detect tree-based models via sklearn class hierarchy."""
+    from sklearn.tree import BaseDecisionTree
+
+    if isinstance(estimator, BaseDecisionTree):
+        return True
+
+    name = type(estimator).__name__
+    if any(kw in name for kw in ("Forest", "GradientBoosting", "HistGradientBoosting")):
+        return True
+
+    # Meta-estimators (AdaBoost, Bagging) — check their wrapped base estimator
+    base = getattr(estimator, "estimator", None)
+    if base is not None:
+        return _is_tree_based(base)
+    # AdaBoost/Bagging default to DecisionTree when estimator is None
+    if any(kw in name for kw in ("AdaBoost", "Bagging")):
+        return True
+
+    return False
+
 
 # ── Hyperparameter search spaces ─────────────────────────────────────────
 # Uses scipy.stats distributions for continuous/integer parameters so
@@ -103,7 +124,8 @@ _TREE = {
 }
 _FOREST = {
     **_TREE,
-    "n_estimators": randint(50, 300),
+    "n_estimators": randint(100, 1000),
+    "max_features": ["sqrt", "log2", 0.2, 0.3, 0.5],
 }
 _BOOST = {
     **_TREE,
@@ -151,20 +173,22 @@ SEARCH_SPACES: dict[str, dict] = {
     "GradientBoostingRegressor":  _BOOST,
     # Histogram-based gradient boosting (sklearn's fastest tree model, handles NaN natively)
     "HistGradientBoostingClassifier": {
-        "max_iter": randint(50, 500),
-        "learning_rate": loguniform(5e-3, 0.5),
+        "max_iter": randint(100, 1500),
+        "learning_rate": loguniform(5e-3, 0.3),
         "max_depth": randint(3, 15),
         "min_samples_leaf": randint(5, 50),
         "l2_regularization": loguniform(1e-6, 10),
         "max_bins": [63, 127, 255],
+        "max_features": uniform(0.5, 0.5),
     },
     "HistGradientBoostingRegressor": {
-        "max_iter": randint(50, 500),
-        "learning_rate": loguniform(5e-3, 0.5),
+        "max_iter": randint(100, 1500),
+        "learning_rate": loguniform(5e-3, 0.3),
         "max_depth": randint(3, 15),
         "min_samples_leaf": randint(5, 50),
         "l2_regularization": loguniform(1e-6, 10),
         "max_bins": [63, 127, 255],
+        "max_features": uniform(0.5, 0.5),
     },
     # Other boosting
     "AdaBoostClassifier": {"n_estimators": randint(30, 300), "learning_rate": loguniform(5e-3, 2.0)},
@@ -204,20 +228,35 @@ def _resolve_estimator(name: str, overrides: dict | None = None):
     return cls(**init_kw)
 
 
-def _build_preprocessor(X: pd.DataFrame, categorical_cols: list[str]) -> ColumnTransformer:
-    """ColumnTransformer: impute + scale numerics, impute + encode categoricals."""
+def _build_preprocessor(X: pd.DataFrame, categorical_cols: list[str], is_tree: bool = False) -> ColumnTransformer:
+    """ColumnTransformer: impute + scale numerics, impute + encode categoricals.
+
+    For tree-based models: skip scaling (trees are scale-invariant) and use
+    OrdinalEncoder instead of OneHotEncoder (avoids feature fragmentation).
+    """
+    from sklearn.preprocessing import OrdinalEncoder
+
     numeric_cols = [c for c in X.columns if c not in categorical_cols]
     transformers = []
     if numeric_cols:
-        transformers.append(("num", Pipeline([
-            ("impute", SimpleImputer(strategy="median")),
-            ("scale", StandardScaler()),
-        ]), numeric_cols))
+        if is_tree:
+            transformers.append(("num", SimpleImputer(strategy="median"), numeric_cols))
+        else:
+            transformers.append(("num", Pipeline([
+                ("impute", SimpleImputer(strategy="median")),
+                ("scale", StandardScaler()),
+            ]), numeric_cols))
     if categorical_cols:
-        transformers.append(("cat", Pipeline([
-            ("impute", SimpleImputer(strategy="most_frequent")),
-            ("encode", OneHotEncoder(handle_unknown="ignore", sparse_output=False)),
-        ]), categorical_cols))
+        if is_tree:
+            transformers.append(("cat", Pipeline([
+                ("impute", SimpleImputer(strategy="most_frequent")),
+                ("encode", OrdinalEncoder(handle_unknown="use_encoded_value", unknown_value=-1)),
+            ]), categorical_cols))
+        else:
+            transformers.append(("cat", Pipeline([
+                ("impute", SimpleImputer(strategy="most_frequent")),
+                ("encode", OneHotEncoder(handle_unknown="ignore", sparse_output=False)),
+            ]), categorical_cols))
     return ColumnTransformer(transformers=transformers, remainder="passthrough")
 
 
@@ -236,8 +275,8 @@ def _select_scoring(is_clf: bool, y: pd.Series) -> str:
 
 # ── Main entry point ─────────────────────────────────────────────────────
 
-_SUBSAMPLE_SEARCH = 30_000
-_MAX_TOTAL_FITS = 40
+_SUBSAMPLE_SEARCH = 150_000
+_MAX_TOTAL_FITS = 200
 
 _SLOW_ESTIMATORS = {
     "GradientBoostingClassifier", "GradientBoostingRegressor",
@@ -330,17 +369,18 @@ def run(params: dict) -> str:
         return f"TRAINING FAILED\nError: {e}"
 
     is_clf = is_classifier(estimator)
+    is_tree = _is_tree_based(estimator)
     task_type = "classification" if is_clf else "regression"
     step_name = "model"
 
     pipeline = Pipeline([
-        ("preprocessor", _build_preprocessor(X, categorical_cols)),
+        ("preprocessor", _build_preprocessor(X, categorical_cols, is_tree=is_tree)),
         (step_name, estimator),
     ])
 
     # ── Auto-tune or direct fit ──────────────────────────────────────────
     auto_tune = params.get("auto_tune", True)
-    n_search_iter = params.get("n_search_iter", 20)
+    n_search_iter = params.get("n_search_iter", 50)
     cv_folds = max(2, min(params.get("cv_folds", 5), len(y)))
     best_params: dict = {}
     cv_score: float | None = None
@@ -408,7 +448,7 @@ def run(params: dict) -> str:
             best_raw = {k.split("__", 1)[-1]: v for k, v in best_params.items()}
             full_estimator = _resolve_estimator(estimator_name, {**fixed_params, **best_raw})
             pipeline = Pipeline([
-                ("preprocessor", _build_preprocessor(X, categorical_cols)),
+                ("preprocessor", _build_preprocessor(X, categorical_cols, is_tree=is_tree)),
                 (step_name, full_estimator),
             ])
             pipeline.fit(X, y)
@@ -422,6 +462,24 @@ def run(params: dict) -> str:
             return f"TRAINING FAILED\nError: {e}"
 
     print(f"[sklearn_generic] Training complete.")
+
+    # ── Calibrate classifier probabilities ────────────────────────────────
+    if is_clf and hasattr(pipeline, "predict_proba") and n_rows >= 500:
+        from sklearn.calibration import CalibratedClassifierCV
+        from sklearn.model_selection import train_test_split as _cal_split
+
+        try:
+            cal_size = min(0.15, 5000 / n_rows)
+            X_main, X_cal, y_main, y_cal = _cal_split(
+                X, y, test_size=cal_size, stratify=y, random_state=42,
+            )
+            pipeline.fit(X_main, y_main)
+            calibrated = CalibratedClassifierCV(pipeline, cv="prefit", method="isotonic")
+            calibrated.fit(X_cal, y_cal)
+            pipeline = calibrated
+            print(f"[sklearn_generic] Calibrated probabilities (isotonic, {len(X_cal)} cal samples)")
+        except Exception as e:
+            print(f"[sklearn_generic] Calibration skipped: {e}")
 
     # ── Evaluate on training data ────────────────────────────────────────
     y_pred = pipeline.predict(X)

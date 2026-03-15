@@ -521,6 +521,76 @@ manually creating interactions or non-linear transforms — the network learns t
   through learned representations.
 """,
 
+    "supervised": """
+## Model-Specific Guidance: Supervised Learning (Tree-Based Ensembles)
+
+The supervised skill uses sklearn estimators, most commonly **HistGradientBoostingClassifier/Regressor**
+and **RandomForestClassifier/Regressor**. These are tree-based ensembles — feature engineering
+should follow tree-friendly practices.
+
+### Use the Analysis Results — They Are Your Primary Guide
+
+You have been provided with comprehensive data analysis. **Use it systematically:**
+
+1. **Mutual Information (MI) scores** — this is the most important signal. Features with
+   MI > 0.01 are worth including. Features with MI < 0.001 are likely noise — exclude them
+   unless domain logic strongly argues otherwise. Rank features by MI and prioritize the top ones.
+
+2. **Correlation matrix** — identify highly correlated pairs (|r| > 0.95). Drop one from
+   each pair (keep the one with higher MI). Mildly correlated features (|r| < 0.90) are
+   fine to keep — trees handle them well.
+
+3. **Group summaries** — for categorical features, check if the target mean varies
+   meaningfully across groups. If a categorical's groups all have similar target rates,
+   it carries little signal. If groups differ substantially, include it.
+
+4. **Feature diagnostics** — honor leakage warnings. Features flagged as high leakage
+   risk should be excluded.
+
+5. **Cardinality analysis** — use the suggested encoding strategy. Low cardinality (≤5)
+   → one_hot. Medium (6-15) → ordinal if ordered, one_hot if nominal. High (>15) →
+   ordinal or group_agg (mean-target encoding).
+
+6. **Distribution analysis** — for tree models, skewed distributions are fine (no need
+   for log transforms). But note extreme outliers that might signal data quality issues.
+
+### Encoding Strategy
+- ORDINAL encode categoricals — trees split on thresholds so ordinal encoding
+  (0, 1, 2, ...) works efficiently. The tree can isolate individual categories
+  by splitting above and below each ordinal value.
+- One-hot encode ONLY for low cardinality (≤5 values) or when no natural ordering exists
+  and cardinality is moderate (6-10).
+- For high cardinality (>15), use GROUP_AGG (mean-target encoding) to compress into a
+  single numeric column. This is far superior to one-hot for tree models.
+- For binary Yes/No or True/False features, use ordinal with order ["No", "Yes"].
+
+### Transformations
+- PASSTHROUGH numeric features as-is. Trees are SCALE-INVARIANT — scaling adds no value.
+- SKIP log transforms and binning — trees find optimal split points natively.
+- CREATE ratio features ONLY when they encode clear domain meaning (e.g., amount/tenure,
+  charges/months). Don't create ratios just for the sake of it.
+- CREATE difference features when meaningful (e.g., current - baseline).
+- Trees learn interactions automatically, so don't over-engineer interaction terms.
+  Only create interactions when domain knowledge strongly suggests them AND the
+  individual features both have high MI.
+
+### Feature Selection
+- Include MORE features rather than fewer — tree ensembles handle high-dimensional
+  spaces well via feature subsampling (max_features) and regularization.
+- Keep mildly correlated features (|r| < 0.90) — they contribute ensemble diversity.
+- Only drop: (a) features with MI ≈ 0, (b) one from near-duplicate pairs (|r| > 0.95),
+  (c) leakage-flagged features, (d) forbidden columns.
+- 15-50 features is typical for tree-based models.
+
+### What to Avoid
+- DO NOT create massive one-hot expansions from high-cardinality categoricals.
+- DO NOT scale or normalize — unnecessary for tree models.
+- DO NOT bin continuous features — trees find better splits natively.
+- DO NOT apply log transforms unless creating a specific domain-meaningful ratio.
+- DO NOT ignore the MI scores — they are computed on your actual data and are the most
+  reliable signal for feature relevance.
+""",
+
     "survival_analysis": """
 ## Model-Specific Guidance: Survival Analysis (Cox PH / AFT)
 

@@ -42,29 +42,48 @@ def _execute_passthrough(df: pd.DataFrame, formula: dict, feature_name: str) -> 
     return df
 
 
+def _backtick_escape(expression: str, columns: list[str]) -> str:
+    """Wrap column names that aren't valid Python identifiers in backticks for pandas eval."""
+    import re
+    needs_escape = sorted(
+        [c for c in columns if not c.isidentifier() or c in ("int", "float", "str", "bool")],
+        key=len, reverse=True,
+    )
+    for col in needs_escape:
+        expression = re.sub(rf'(?<![`\w]){re.escape(col)}(?![`\w])', f'`{col}`', expression)
+    return expression
+
+
 def _execute_expression(df: pd.DataFrame, formula: dict, feature_name: str) -> pd.DataFrame:
     """Compute expression and add as new column."""
     expression = formula["expression"]
     source_columns = formula.get("source_columns", [])
-    
-    # Validate source columns exist
+
     for col in source_columns:
         if col not in df.columns:
             raise ValueError(f"Source column '{col}' not found for expression")
-    
+
     df = df.copy()
     try:
-        # Use pandas eval with local column references
-        df[feature_name] = df.eval(expression)
+        escaped = _backtick_escape(expression, list(df.columns))
+        df[feature_name] = df.eval(escaped)
     except Exception:
-        # Fallback: try with explicit column references
         import numpy as np
-        local_vars = {col: df[col] for col in df.columns}
-        local_vars["log"] = np.log
-        local_vars["sqrt"] = np.sqrt
-        local_vars["abs"] = np.abs
-        df[feature_name] = eval(expression, {"__builtins__": {}}, local_vars)
-    
+        local_vars = {}
+        for col in df.columns:
+            safe = col if col.isidentifier() else f"c_{col}"
+            local_vars[safe] = df[col]
+        local_vars.update({
+            "log": np.log, "log1p": np.log1p, "sqrt": np.sqrt,
+            "abs": np.abs, "exp": np.exp,
+            "int": int, "float": float, "np": np,
+        })
+        safe_expr = expression
+        for col in sorted(df.columns, key=len, reverse=True):
+            if not col.isidentifier():
+                safe_expr = safe_expr.replace(col, f"c_{col}")
+        df[feature_name] = eval(safe_expr, {"__builtins__": {}}, local_vars)
+
     return df
 
 

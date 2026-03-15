@@ -15,7 +15,6 @@ from pathlib import Path
 from typing import Any, Optional
 
 import numpy as np
-
 from dotenv import load_dotenv
 from langchain.agents import create_agent
 from langchain.agents.structured_output import ToolStrategy
@@ -36,8 +35,8 @@ if str(_MODEL_TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(_MODEL_TOOLS_DIR))
 
 from model_storage import (delete_model, evaluate_model_tool, get_model_info,
-                           get_model_info_tool, list_models, load_model,
-                           list_trained_models_tool)
+                           get_model_info_tool, list_models,
+                           list_trained_models_tool, load_model)
 from utils import get_registered_dataset
 
 SKILLS_DIR = Path(__file__).parent.parent / "skills"
@@ -260,7 +259,8 @@ def _run_quick_baseline(
     This runs in <10s even on large datasets and gives the NN agent a
     concrete target to beat.
     """
-    from sklearn.ensemble import HistGradientBoostingClassifier, HistGradientBoostingRegressor
+    from sklearn.ensemble import (HistGradientBoostingClassifier,
+                                  HistGradientBoostingRegressor)
     from sklearn.metrics import accuracy_score, r2_score, roc_auc_score
     from sklearn.preprocessing import LabelEncoder
 
@@ -367,18 +367,16 @@ def _should_continue_iterating(
     """Decide whether the agent should be re-invoked for more experiments.
 
     Returns True when there are iterations remaining AND at least one of:
-    - Fewer than 3 successful experiments have been run
-    - The most recent iteration improved the best metric
+    - Fewer than 5 successful experiments have been run
+    - Any of the last 3 iterations improved the best metric
+    - Fewer than 2 consecutive non-improving rounds have occurred
     """
     n_used = len(iterations)
     if n_used >= max_iterations:
         return False
 
     successful = [it for it in iterations if it.success]
-    if len(successful) < 3:
-        return True
-
-    if len(successful) < 2:
+    if len(successful) < 5:
         return True
 
     def _metric(it: TrainingIteration) -> float:
@@ -388,10 +386,25 @@ def _should_continue_iterating(
             return it.val_r2 or it.train_r2 or -float("inf")
         return it.val_roc_auc or it.val_accuracy or -float("inf")
 
-    best_before_last = max(_metric(it) for it in successful[:-1])
-    last_metric = _metric(successful[-1])
-    if last_metric > best_before_last:
+    metrics = [_metric(it) for it in successful]
+    best_overall = max(metrics)
+
+    # Continue if any of the last 3 iterations set a new best
+    recent_window = metrics[-3:]
+    if max(recent_window) >= best_overall:
         return True
+
+    # Stop only after 2 consecutive rounds with no improvement
+    if len(metrics) >= 2:
+        last_two_bests = [max(metrics[:i+1]) for i in range(len(metrics))]
+        stale_count = 0
+        for i in range(len(last_two_bests) - 1, 0, -1):
+            if last_two_bests[i] <= last_two_bests[i - 1]:
+                stale_count += 1
+            else:
+                break
+        if stale_count < 2:
+            return True
 
     return False
 
@@ -609,7 +622,8 @@ def _evaluate_model_on_test(
         X = test_df[[c for c in test_df.columns if c != target_column]]
 
         if task_type == "regression":
-            from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+            from sklearn.metrics import (mean_absolute_error,
+                                         mean_squared_error, r2_score)
             y_pred = model.predict(X)
             result["test_r2"] = float(r2_score(y_true, y_pred))
             result["test_rmse"] = float(np.sqrt(mean_squared_error(y_true, y_pred)))
@@ -724,7 +738,7 @@ def run_training_agent(
     goal: str,
     model_name: Optional[str] = None,
     max_iterations: int = 6,
-    llm_model: str = "openai:gpt-5.1",
+    llm_model: str = "openai:gpt-5.4",
     estimator_hint: Optional[str] = None,
 ) -> dict[str, Any]:
     """Run the training agent.
@@ -886,7 +900,7 @@ Follow the skill documentation below — it covers model selection and training.
 
     all_iterations: list[TrainingIteration] = []
     continuation_round = 0
-    max_continuation_rounds = 2
+    max_continuation_rounds = 5
     _baseline = baseline_metrics
 
     try:

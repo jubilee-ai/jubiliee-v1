@@ -628,11 +628,21 @@ def evaluate_model_tool(
     try:
         y_pred = model.predict(X)
         
-        # Check if classification or regression based on the actual target values,
-        # not model attributes (XGBRegressor can have predict_proba/classes_ inherited).
-        from sklearn.utils.multiclass import type_of_target
-        target_type = type_of_target(y_true)
-        is_classification = target_type in ("binary", "multiclass", "multiclass-multioutput")
+        # Determine task type: prefer model metadata, fall back to target inspection.
+        # type_of_target misclassifies integer regression targets (e.g. house prices)
+        # as "multiclass", so check the model type string first.
+        model_type_str = (info.get("model_type") or "").lower()
+        hp = info.get("hyperparameters") or {}
+        task_hint = hp.get("task_type", "")
+
+        if "regress" in model_type_str or task_hint == "regression":
+            is_classification = False
+        elif "classif" in model_type_str or task_hint == "classification":
+            is_classification = True
+        else:
+            from sklearn.utils.multiclass import type_of_target
+            target_type = type_of_target(y_true)
+            is_classification = target_type in ("binary", "multiclass", "multiclass-multioutput")
         
         if is_classification:
             # Classification metrics

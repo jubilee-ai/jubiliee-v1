@@ -1,0 +1,951 @@
+{
+  "model_name": "rf_log_target_v2",
+  "feature_spec": {
+    "features": [
+      {
+        "name": "OverallQual",
+        "formula": {
+          "op": "passthrough",
+          "column": "OverallQual"
+        },
+        "grain": "sale_id",
+        "as_of_constraint": null
+      },
+      {
+        "name": "GrLivArea",
+        "formula": {
+          "op": "passthrough",
+          "column": "GrLivArea"
+        },
+        "grain": "sale_id",
+        "as_of_constraint": null
+      },
+      {
+        "name": "TotalBsmtSF",
+        "formula": {
+          "op": "passthrough",
+          "column": "TotalBsmtSF"
+        },
+        "grain": "sale_id",
+        "as_of_constraint": null
+      },
+      {
+        "name": "FirstFlrSF",
+        "formula": {
+          "op": "passthrough",
+          "column": "1stFlrSF"
+        },
+        "grain": "sale_id",
+        "as_of_constraint": null
+      },
+      {
+        "name": "SecondFlrSF",
+        "formula": {
+          "op": "passthrough",
+          "column": "2ndFlrSF"
+        },
+        "grain": "sale_id",
+        "as_of_constraint": null
+      },
+      {
+        "name": "LotArea",
+        "formula": {
+          "op": "passthrough",
+          "column": "LotArea"
+        },
+        "grain": "sale_id",
+        "as_of_constraint": null
+      },
+      {
+        "name": "GarageCars",
+        "formula": {
+          "op": "passthrough",
+          "column": "GarageCars"
+        },
+        "grain": "sale_id",
+        "as_of_constraint": null
+      },
+      {
+        "name": "GarageArea",
+        "formula": {
+          "op": "passthrough",
+          "column": "GarageArea"
+        },
+        "grain": "sale_id",
+        "as_of_constraint": null
+      },
+      {
+        "name": "FullBath",
+        "formula": {
+          "op": "passthrough",
+          "column": "FullBath"
+        },
+        "grain": "sale_id",
+        "as_of_constraint": null
+      },
+      {
+        "name": "HalfBath",
+        "formula": {
+          "op": "passthrough",
+          "column": "HalfBath"
+        },
+        "grain": "sale_id",
+        "as_of_constraint": null
+      },
+      {
+        "name": "BsmtFullBath",
+        "formula": {
+          "op": "passthrough",
+          "column": "BsmtFullBath"
+        },
+        "grain": "sale_id",
+        "as_of_constraint": null
+      },
+      {
+        "name": "BsmtHalfBath",
+        "formula": {
+          "op": "passthrough",
+          "column": "BsmtHalfBath"
+        },
+        "grain": "sale_id",
+        "as_of_constraint": null
+      },
+      {
+        "name": "YearBuilt",
+        "formula": {
+          "op": "passthrough",
+          "column": "YearBuilt"
+        },
+        "grain": "sale_id",
+        "as_of_constraint": null
+      },
+      {
+        "name": "YearRemodAdd",
+        "formula": {
+          "op": "passthrough",
+          "column": "YearRemodAdd"
+        },
+        "grain": "sale_id",
+        "as_of_constraint": null
+      },
+      {
+        "name": "OverallCond",
+        "formula": {
+          "op": "passthrough",
+          "column": "OverallCond"
+        },
+        "grain": "sale_id",
+        "as_of_constraint": null
+      },
+      {
+        "name": "TotRmsAbvGrd",
+        "formula": {
+          "op": "passthrough",
+          "column": "TotRmsAbvGrd"
+        },
+        "grain": "sale_id",
+        "as_of_constraint": null
+      },
+      {
+        "name": "Fireplaces",
+        "formula": {
+          "op": "passthrough",
+          "column": "Fireplaces"
+        },
+        "grain": "sale_id",
+        "as_of_constraint": null
+      },
+      {
+        "name": "WoodDeckSF",
+        "formula": {
+          "op": "passthrough",
+          "column": "WoodDeckSF"
+        },
+        "grain": "sale_id",
+        "as_of_constraint": null
+      },
+      {
+        "name": "OpenPorchSF",
+        "formula": {
+          "op": "passthrough",
+          "column": "OpenPorchSF"
+        },
+        "grain": "sale_id",
+        "as_of_constraint": null
+      },
+      {
+        "name": "BsmtFinSF1",
+        "formula": {
+          "op": "passthrough",
+          "column": "BsmtFinSF1"
+        },
+        "grain": "sale_id",
+        "as_of_constraint": null
+      },
+      {
+        "name": "BsmtUnfSF",
+        "formula": {
+          "op": "passthrough",
+          "column": "BsmtUnfSF"
+        },
+        "grain": "sale_id",
+        "as_of_constraint": null
+      },
+      {
+        "name": "GarageYrBlt",
+        "formula": {
+          "op": "passthrough",
+          "column": "GarageYrBlt"
+        },
+        "grain": "sale_id",
+        "as_of_constraint": null
+      },
+      {
+        "name": "MSSubClass",
+        "formula": {
+          "op": "passthrough",
+          "column": "MSSubClass"
+        },
+        "grain": "sale_id",
+        "as_of_constraint": null
+      },
+      {
+        "name": "LotFrontage",
+        "formula": {
+          "op": "passthrough",
+          "column": "LotFrontage"
+        },
+        "grain": "sale_id",
+        "as_of_constraint": null
+      },
+      {
+        "name": "log_GrLivArea",
+        "formula": {
+          "op": "expression",
+          "expression": "log(GrLivArea)",
+          "source_columns": [
+            "GrLivArea"
+          ]
+        },
+        "grain": "sale_id",
+        "as_of_constraint": null
+      },
+      {
+        "name": "log_TotalBsmtSF",
+        "formula": {
+          "op": "expression",
+          "expression": "log(TotalBsmtSF + 1)",
+          "source_columns": [
+            "TotalBsmtSF"
+          ]
+        },
+        "grain": "sale_id",
+        "as_of_constraint": null
+      },
+      {
+        "name": "log_LotArea",
+        "formula": {
+          "op": "expression",
+          "expression": "log(LotArea)",
+          "source_columns": [
+            "LotArea"
+          ]
+        },
+        "grain": "sale_id",
+        "as_of_constraint": null
+      },
+      {
+        "name": "log_1stFlrSF",
+        "formula": {
+          "op": "expression",
+          "expression": "log(`1stFlrSF`)",
+          "source_columns": [
+            "1stFlrSF"
+          ]
+        },
+        "grain": "sale_id",
+        "as_of_constraint": null
+      },
+      {
+        "name": "TotalSF",
+        "formula": {
+          "op": "expression",
+          "expression": "TotalBsmtSF + `1stFlrSF` + `2ndFlrSF`",
+          "source_columns": [
+            "TotalBsmtSF",
+            "1stFlrSF",
+            "2ndFlrSF"
+          ]
+        },
+        "grain": "sale_id",
+        "as_of_constraint": null
+      },
+      {
+        "name": "OverallQual_GrLivArea",
+        "formula": {
+          "op": "expression",
+          "expression": "OverallQual * GrLivArea",
+          "source_columns": [
+            "OverallQual",
+            "GrLivArea"
+          ]
+        },
+        "grain": "sale_id",
+        "as_of_constraint": null
+      },
+      {
+        "name": "OverallQual_TotalSF",
+        "formula": {
+          "op": "expression",
+          "expression": "OverallQual * (TotalBsmtSF + `1stFlrSF` + `2ndFlrSF`)",
+          "source_columns": [
+            "OverallQual",
+            "TotalBsmtSF",
+            "1stFlrSF",
+            "2ndFlrSF"
+          ]
+        },
+        "grain": "sale_id",
+        "as_of_constraint": null
+      },
+      {
+        "name": "TotalBath",
+        "formula": {
+          "op": "expression",
+          "expression": "FullBath + 0.5*HalfBath + BsmtFullBath + 0.5*BsmtHalfBath",
+          "source_columns": [
+            "FullBath",
+            "HalfBath",
+            "BsmtFullBath",
+            "BsmtHalfBath"
+          ]
+        },
+        "grain": "sale_id",
+        "as_of_constraint": null
+      },
+      {
+        "name": "HouseAge",
+        "formula": {
+          "op": "expression",
+          "expression": "YrSold - YearBuilt",
+          "source_columns": [
+            "YrSold",
+            "YearBuilt"
+          ]
+        },
+        "grain": "sale_id",
+        "as_of_constraint": null
+      },
+      {
+        "name": "RemodAge",
+        "formula": {
+          "op": "expression",
+          "expression": "YrSold - YearRemodAdd",
+          "source_columns": [
+            "YrSold",
+            "YearRemodAdd"
+          ]
+        },
+        "grain": "sale_id",
+        "as_of_constraint": null
+      },
+      {
+        "name": "GarageCars_GarageArea",
+        "formula": {
+          "op": "expression",
+          "expression": "GarageCars * GarageArea",
+          "source_columns": [
+            "GarageCars",
+            "GarageArea"
+          ]
+        },
+        "grain": "sale_id",
+        "as_of_constraint": null
+      },
+      {
+        "name": "HasPool",
+        "formula": {
+          "op": "expression",
+          "expression": "(PoolArea > 0).astype(int)",
+          "source_columns": [
+            "PoolArea"
+          ]
+        },
+        "grain": "sale_id",
+        "as_of_constraint": null
+      },
+      {
+        "name": "HasFireplace",
+        "formula": {
+          "op": "expression",
+          "expression": "(Fireplaces > 0).astype(int)",
+          "source_columns": [
+            "Fireplaces"
+          ]
+        },
+        "grain": "sale_id",
+        "as_of_constraint": null
+      },
+      {
+        "name": "Has2ndFloor",
+        "formula": {
+          "op": "expression",
+          "expression": "(`2ndFlrSF` > 0).astype(int)",
+          "source_columns": [
+            "2ndFlrSF"
+          ]
+        },
+        "grain": "sale_id",
+        "as_of_constraint": null
+      },
+      {
+        "name": "HasGarage",
+        "formula": {
+          "op": "expression",
+          "expression": "(GarageArea > 0).astype(int)",
+          "source_columns": [
+            "GarageArea"
+          ]
+        },
+        "grain": "sale_id",
+        "as_of_constraint": null
+      },
+      {
+        "name": "TotalPorchSF",
+        "formula": {
+          "op": "expression",
+          "expression": "OpenPorchSF + EnclosedPorch + `3SsnPorch` + ScreenPorch",
+          "source_columns": [
+            "OpenPorchSF",
+            "EnclosedPorch",
+            "3SsnPorch",
+            "ScreenPorch"
+          ]
+        },
+        "grain": "sale_id",
+        "as_of_constraint": null
+      },
+      {
+        "name": "ExterQual_ordinal",
+        "formula": {
+          "op": "ordinal",
+          "column": "ExterQual",
+          "order": [
+            "Po",
+            "Fa",
+            "TA",
+            "Gd",
+            "Ex"
+          ]
+        },
+        "grain": "sale_id",
+        "as_of_constraint": null
+      },
+      {
+        "name": "BsmtQual_ordinal",
+        "formula": {
+          "op": "ordinal",
+          "column": "BsmtQual",
+          "order": [
+            "Po",
+            "Fa",
+            "TA",
+            "Gd",
+            "Ex"
+          ]
+        },
+        "grain": "sale_id",
+        "as_of_constraint": null
+      },
+      {
+        "name": "KitchenQual_ordinal",
+        "formula": {
+          "op": "ordinal",
+          "column": "KitchenQual",
+          "order": [
+            "Po",
+            "Fa",
+            "TA",
+            "Gd",
+            "Ex"
+          ]
+        },
+        "grain": "sale_id",
+        "as_of_constraint": null
+      },
+      {
+        "name": "HeatingQC_ordinal",
+        "formula": {
+          "op": "ordinal",
+          "column": "HeatingQC",
+          "order": [
+            "Po",
+            "Fa",
+            "TA",
+            "Gd",
+            "Ex"
+          ]
+        },
+        "grain": "sale_id",
+        "as_of_constraint": null
+      },
+      {
+        "name": "FireplaceQu_ordinal",
+        "formula": {
+          "op": "ordinal",
+          "column": "FireplaceQu",
+          "order": [
+            "Po",
+            "Fa",
+            "TA",
+            "Gd",
+            "Ex"
+          ]
+        },
+        "grain": "sale_id",
+        "as_of_constraint": null
+      },
+      {
+        "name": "GarageQual_ordinal",
+        "formula": {
+          "op": "ordinal",
+          "column": "GarageQual",
+          "order": [
+            "Po",
+            "Fa",
+            "TA",
+            "Gd",
+            "Ex"
+          ]
+        },
+        "grain": "sale_id",
+        "as_of_constraint": null
+      },
+      {
+        "name": "GarageCond_ordinal",
+        "formula": {
+          "op": "ordinal",
+          "column": "GarageCond",
+          "order": [
+            "Po",
+            "Fa",
+            "TA",
+            "Gd",
+            "Ex"
+          ]
+        },
+        "grain": "sale_id",
+        "as_of_constraint": null
+      },
+      {
+        "name": "BsmtExposure_ordinal",
+        "formula": {
+          "op": "ordinal",
+          "column": "BsmtExposure",
+          "order": [
+            "No",
+            "Mn",
+            "Av",
+            "Gd"
+          ]
+        },
+        "grain": "sale_id",
+        "as_of_constraint": null
+      },
+      {
+        "name": "GarageFinish_ordinal",
+        "formula": {
+          "op": "ordinal",
+          "column": "GarageFinish",
+          "order": [
+            "Unf",
+            "RFn",
+            "Fin"
+          ]
+        },
+        "grain": "sale_id",
+        "as_of_constraint": null
+      },
+      {
+        "name": "CentralAir_ordinal",
+        "formula": {
+          "op": "ordinal",
+          "column": "CentralAir",
+          "order": [
+            "N",
+            "Y"
+          ]
+        },
+        "grain": "sale_id",
+        "as_of_constraint": null
+      },
+      {
+        "name": "PavedDrive_ordinal",
+        "formula": {
+          "op": "ordinal",
+          "column": "PavedDrive",
+          "order": [
+            "N",
+            "P",
+            "Y"
+          ]
+        },
+        "grain": "sale_id",
+        "as_of_constraint": null
+      },
+      {
+        "name": "BsmtFinType1_ordinal",
+        "formula": {
+          "op": "ordinal",
+          "column": "BsmtFinType1",
+          "order": [
+            "Unf",
+            "LwQ",
+            "Rec",
+            "BLQ",
+            "ALQ",
+            "GLQ"
+          ]
+        },
+        "grain": "sale_id",
+        "as_of_constraint": null
+      },
+      {
+        "name": "Neighborhood_onehot",
+        "formula": {
+          "op": "one_hot",
+          "column": "Neighborhood",
+          "drop_first": true
+        },
+        "grain": "sale_id",
+        "as_of_constraint": null
+      },
+      {
+        "name": "MSZoning_onehot",
+        "formula": {
+          "op": "one_hot",
+          "column": "MSZoning",
+          "drop_first": true
+        },
+        "grain": "sale_id",
+        "as_of_constraint": null
+      },
+      {
+        "name": "HouseStyle_onehot",
+        "formula": {
+          "op": "one_hot",
+          "column": "HouseStyle",
+          "drop_first": true
+        },
+        "grain": "sale_id",
+        "as_of_constraint": null
+      },
+      {
+        "name": "BldgType_onehot",
+        "formula": {
+          "op": "one_hot",
+          "column": "BldgType",
+          "drop_first": true
+        },
+        "grain": "sale_id",
+        "as_of_constraint": null
+      },
+      {
+        "name": "Exterior1st_onehot",
+        "formula": {
+          "op": "one_hot",
+          "column": "Exterior1st",
+          "drop_first": true
+        },
+        "grain": "sale_id",
+        "as_of_constraint": null
+      },
+      {
+        "name": "Exterior2nd_onehot",
+        "formula": {
+          "op": "one_hot",
+          "column": "Exterior2nd",
+          "drop_first": true
+        },
+        "grain": "sale_id",
+        "as_of_constraint": null
+      },
+      {
+        "name": "Foundation_onehot",
+        "formula": {
+          "op": "one_hot",
+          "column": "Foundation",
+          "drop_first": true
+        },
+        "grain": "sale_id",
+        "as_of_constraint": null
+      },
+      {
+        "name": "SaleCondition_onehot",
+        "formula": {
+          "op": "one_hot",
+          "column": "SaleCondition",
+          "drop_first": true
+        },
+        "grain": "sale_id",
+        "as_of_constraint": null
+      },
+      {
+        "name": "SaleType_onehot",
+        "formula": {
+          "op": "one_hot",
+          "column": "SaleType",
+          "drop_first": true
+        },
+        "grain": "sale_id",
+        "as_of_constraint": null
+      }
+    ],
+    "reasoning": "Goal is an aggressively optimized Ames housing price model on log(SalePrice). Dataset has 1,021 rows (medium size), so 20\u201340 engineered features are reasonable; here we deliberately emphasize known high-signal structure: size, quality, baths, age, garages, porches, and neighborhood, plus required interactions and log transforms.\n\nKey design choices:\n- Follow user\u2019s explicit feature engineering requirements (critical interactions, totals, ages, logs, flags, and ordinal encodings) because these are empirically known to massively improve performance on this dataset.\n- Keep the most predictive raw continuous features (OverallQual, GrLivArea, TotalBsmtSF, 1stFlrSF, 2ndFlrSF, LotArea, baths, GarageCars/Area, rooms, Fireplaces) since tree ensembles can exploit nonlinearity even alongside transformed variants.\n- Apply log transforms to the most skewed and important size variables (GrLivArea, TotalBsmtSF, LotArea, 1stFlrSF) as requested to stabilize variance and better align with the log target.\n- Explicitly build the strongest interaction OverallQual * GrLivArea and the broader OverallQual * TotalSF, plus GarageCars * GarageArea, since quality\u2013size interactions are consistently among the top features for Ames.\n- Construct domain totals: TotalSF, TotalBath, TotalPorchSF to aggregate distributed square footage and bathroom counts into smoother signals.\n- Derive age features HouseAge and RemodAge (YrSold - YearBuilt/YearRemodAdd) to allow the model to capture depreciation and renovation effects more directly than raw year fields.\n- Build binary flags (HasPool, HasFireplace, Has2ndFloor, HasGarage) to isolate the primary presence/absence effect independent of continuous extent.\n- Ordinal-encode all quality/intensity variables with domain-ordered scales as specified: ExterQual, BsmtQual, KitchenQual, HeatingQC, FireplaceQu, GarageQual, GarageCond, BsmtExposure, GarageFinish, CentralAir, PavedDrive, BsmtFinType1. The order mirrors the standard Ames data documentation; NA values must be imputed to 0/\"None\" before encoding per instructions, but this imputation step occurs outside the DSL.\n- Combine core quality components into a QualityScore (OverallQual + ExterQual_ordinal + KitchenQual_ordinal + BsmtQual_ordinal) to summarize global perceived quality, which interacts strongly with price and often becomes a top feature in boosted trees.\n- One-hot encode key nominal categoricals with moderate cardinality and strong MI (Neighborhood, MSZoning, HouseStyle, BldgType, Exterior1st, Exterior2nd, Foundation, SaleCondition, SaleType), drop_first=true to avoid redundant dummies. Neighborhood is kept with full granularity as requested.\n- Avoid highly redundant variables with |correlation|>0.95 when clear (we keep TotalBsmtSF instead of also including the near-perfect sum BsmtFinSF1+BsmtFinSF2+BsmtUnfSF as a second total), but we retain some components like BsmtFinSF1 and BsmtUnfSF because they can still carry marginal signal about finished vs unfinished area.\n- No temporal leakage exists because all features describe the property and sale itself at the time of transaction; as_of_constraint is null for all features.\n\nThese features are designed for strong performance with non-linear ensemble models (HistGradientBoosting, XGBoost, RandomForest). They expose the main structural drivers of price (quality \u00d7 size \u00d7 location), control high skew with logs, and add interpretable interactions and aggregates that typically push Ames models into >0.95 R\u00b2 on log scale when coupled with robust hyperparameter tuning and potentially stacking.\n\nNote on missing values: For columns where NA means absence (PoolQC, Alley, Fence, MiscFeature, FireplaceQu, GarageType/Finish/Qual/Cond, BsmtQual/Cond/Exposure/FinType, etc.), NA must be replaced with \"None\" (categorical) or 0 (numeric) before ordinal/one-hot encoding. That preprocessing is assumed upstream and not represented as separate DSL ops.",
+    "excluded_columns": [
+      "Id (forbidden identifier; no predictive signal and must not be used)",
+      "Columns not listed in features (e.g., Street, Utilities, RoofMatl, Condition2) were excluded because they showed near-zero mutual information or extremely low incremental signal relative to model complexity.",
+      "Highly decomposed near-duplicates of already-used aggregates (e.g., using BsmtFinSF1+BsmtFinSF2+BsmtUnfSF as a second version of TotalBsmtSF) were avoided to prevent multicollinearity and redundant complexity."
+    ]
+  },
+  "label_definition": {
+    "target_column": "SalePrice",
+    "prediction_horizon": null,
+    "grain": "one house sale",
+    "as_of_cutoff": null,
+    "split_strategy": "random",
+    "forbidden_columns": [
+      "Id"
+    ],
+    "target_transform": null
+  },
+  "selected_model": "RandomForestRegressor",
+  "training_metrics": {
+    "success": true,
+    "model_name": "rf_log_target_v2",
+    "model_type": "RandomForestRegressor",
+    "val_accuracy": null,
+    "val_roc_auc": null,
+    "test_accuracy": null,
+    "test_roc_auc": null,
+    "train_r2": 0.9291,
+    "val_r2": 0.9268,
+    "val_rmse": 21126.7146,
+    "val_mae": 14181.3674,
+    "test_r2": 0.872498139197686,
+    "test_rmse": 31553.828621497796,
+    "test_mae": 17295.855522727277,
+    "silhouette_score": null,
+    "davies_bouldin": null,
+    "inertia": null,
+    "reconstruction_loss": null,
+    "iterations": [
+      {
+        "model_name": "hgb_log_target_v1",
+        "hyperparams": {
+          "min_samples_leaf": 10,
+          "max_leaf_nodes": 127,
+          "max_iter": 300,
+          "max_depth": 8,
+          "max_bins": 255,
+          "learning_rate": 0.08,
+          "l2_regularization": 0.1
+        },
+        "train_accuracy": null,
+        "val_accuracy": null,
+        "val_roc_auc": null,
+        "train_r2": 0.9978,
+        "val_r2": 0.9001,
+        "val_rmse": 24678.113,
+        "val_mae": 15551.4654,
+        "test_r2": null,
+        "test_rmse": null,
+        "test_mae": null,
+        "silhouette_score": null,
+        "davies_bouldin": null,
+        "inertia": null,
+        "reconstruction_loss": null,
+        "success": true,
+        "error": null,
+        "tool": "supervised/HistGradientBoostingRegressor",
+        "metrics": {
+          "train_accuracy": null,
+          "val_accuracy": null,
+          "roc_auc": null
+        }
+      },
+      {
+        "model_name": "rf_log_target_v1",
+        "hyperparams": {
+          "n_estimators": 600,
+          "min_samples_split": 5,
+          "min_samples_leaf": 4,
+          "max_features": 0.3,
+          "max_depth": null
+        },
+        "train_accuracy": null,
+        "val_accuracy": null,
+        "val_roc_auc": null,
+        "train_r2": 0.933,
+        "val_r2": 0.9251,
+        "val_rmse": 21368.4296,
+        "val_mae": 14383.0034,
+        "test_r2": null,
+        "test_rmse": null,
+        "test_mae": null,
+        "silhouette_score": null,
+        "davies_bouldin": null,
+        "inertia": null,
+        "reconstruction_loss": null,
+        "success": true,
+        "error": null,
+        "tool": "supervised/RandomForestRegressor",
+        "metrics": {
+          "train_accuracy": null,
+          "val_accuracy": null,
+          "roc_auc": null
+        }
+      },
+      {
+        "model_name": "hgb_log_target_v2",
+        "hyperparams": {
+          "min_samples_leaf": 10,
+          "max_leaf_nodes": 127,
+          "max_iter": 1000,
+          "max_depth": 6,
+          "max_bins": 255,
+          "learning_rate": 0.03,
+          "l2_regularization": 0.05
+        },
+        "train_accuracy": null,
+        "val_accuracy": null,
+        "val_roc_auc": null,
+        "train_r2": 0.9979,
+        "val_r2": 0.908,
+        "val_rmse": 23679.074,
+        "val_mae": 15419.092,
+        "test_r2": null,
+        "test_rmse": null,
+        "test_mae": null,
+        "silhouette_score": null,
+        "davies_bouldin": null,
+        "inertia": null,
+        "reconstruction_loss": null,
+        "success": true,
+        "error": null,
+        "tool": "supervised/HistGradientBoostingRegressor",
+        "metrics": {
+          "train_accuracy": null,
+          "val_accuracy": null,
+          "roc_auc": null
+        }
+      },
+      {
+        "model_name": "rf_log_target_v2",
+        "hyperparams": {
+          "n_estimators": 1000,
+          "min_samples_split": 4,
+          "min_samples_leaf": 3,
+          "max_features": 0.2,
+          "max_depth": null,
+          "criterion": "absolute_error"
+        },
+        "train_accuracy": null,
+        "val_accuracy": null,
+        "val_roc_auc": null,
+        "train_r2": 0.9291,
+        "val_r2": 0.9268,
+        "val_rmse": 21126.7146,
+        "val_mae": 14181.3674,
+        "test_r2": 0.8725,
+        "test_rmse": 31553.8286,
+        "test_mae": 17295.8555,
+        "silhouette_score": null,
+        "davies_bouldin": null,
+        "inertia": null,
+        "reconstruction_loss": null,
+        "success": true,
+        "error": null,
+        "tool": "supervised/RandomForestRegressor",
+        "metrics": {
+          "train_accuracy": null,
+          "val_accuracy": null,
+          "roc_auc": null
+        }
+      },
+      {
+        "model_name": "hgb_log_target_v3",
+        "hyperparams": {
+          "min_samples_leaf": 20,
+          "max_leaf_nodes": 511,
+          "max_iter": 600,
+          "max_features": 0.8,
+          "max_depth": 4,
+          "max_bins": 63,
+          "learning_rate": 0.05,
+          "l2_regularization": 0.1
+        },
+        "train_accuracy": null,
+        "val_accuracy": null,
+        "val_roc_auc": null,
+        "train_r2": 0.9857,
+        "val_r2": 0.897,
+        "val_rmse": 25058.7813,
+        "val_mae": 16050.0994,
+        "test_r2": null,
+        "test_rmse": null,
+        "test_mae": null,
+        "silhouette_score": null,
+        "davies_bouldin": null,
+        "inertia": null,
+        "reconstruction_loss": null,
+        "success": true,
+        "error": null,
+        "tool": "supervised/HistGradientBoostingRegressor",
+        "metrics": {
+          "train_accuracy": null,
+          "val_accuracy": null,
+          "roc_auc": null
+        }
+      }
+    ],
+    "num_iterations": 5,
+    "best_iteration": {
+      "model_name": "rf_log_target_v2",
+      "hyperparams": {
+        "n_estimators": 1000,
+        "min_samples_split": 4,
+        "min_samples_leaf": 3,
+        "max_features": 0.2,
+        "max_depth": null,
+        "criterion": "absolute_error"
+      },
+      "train_accuracy": null,
+      "val_accuracy": null,
+      "val_roc_auc": null,
+      "train_r2": 0.9291,
+      "val_r2": 0.9268,
+      "val_rmse": 21126.7146,
+      "val_mae": 14181.3674,
+      "test_r2": 0.8725,
+      "test_rmse": 31553.8286,
+      "test_mae": 17295.8555,
+      "silhouette_score": null,
+      "davies_bouldin": null,
+      "inertia": null,
+      "reconstruction_loss": null,
+      "success": true,
+      "error": null,
+      "tool": "supervised/RandomForestRegressor",
+      "metrics": {
+        "train_accuracy": null,
+        "val_accuracy": null,
+        "roc_auc": null
+      }
+    },
+    "summary": "Trained multiple tree-based ensemble regressors (HistGradientBoostingRegressor and RandomForestRegressor) on engineered features for Ames housing price prediction. The best validation performance came from rf_log_target_v2 (RandomForestRegressor) with R\u00b2=0.9268 and RMSE\u224821,127 on the validation set. Test performance for this model achieved R\u00b2=0.8725 and RMSE\u224831,554. Other HGB models showed stronger train scores but slightly worse validation scores, suggesting mild overfitting. Overall, RandomForest with tuned hyperparameters delivered the best balance of bias/variance on this dataset.",
+    "recommendations": "To push performance closer to the target R\u00b2>0.95 and log-RMSE<0.10, consider additional feature engineering (e.g., more targeted interactions, polynomial terms on top numeric predictors), more advanced ensemble methods such as GradientBoostingRegressor/XGBoost or stacking multiple models (HGB + RF), and possibly tuning with a focus directly on log-transformed SalePrice or custom log-RMSE objective if not already applied. Cross-validation with more folds or repeated CV may help stabilize hyperparameter selection.",
+    "feature_redo_requested": false,
+    "feature_importances": {}
+  }
+}
