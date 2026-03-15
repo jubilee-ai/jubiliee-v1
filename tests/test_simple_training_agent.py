@@ -83,5 +83,111 @@ def test_simple_agent_end_to_end():
     return result
 
 
+def create_clustering_dataset(n=400, seed=42):
+    """Create synthetic customer data for clustering."""
+    np.random.seed(seed)
+
+    segments = np.random.choice(3, n, p=[0.3, 0.4, 0.3])
+    age = np.where(segments == 0, np.random.normal(25, 5, n),
+          np.where(segments == 1, np.random.normal(45, 10, n),
+                   np.random.normal(65, 8, n))).clip(18, 90).astype(int)
+    income = np.where(segments == 0, np.random.normal(30000, 8000, n),
+             np.where(segments == 1, np.random.normal(70000, 15000, n),
+                      np.random.normal(50000, 12000, n))).clip(15000).round(2)
+    spending = (income * np.random.uniform(0.2, 0.8, n)).round(2)
+    visits = np.random.poisson(np.where(segments == 0, 15, np.where(segments == 1, 8, 3)), n)
+
+    return pd.DataFrame({
+        "age": age, "income": income,
+        "spending": spending, "visits_per_month": visits,
+    })
+
+
+def test_nn_supervised():
+    """Test neural network training on supervised classification task."""
+    print("\n" + "=" * 70)
+    print("TEST: Neural Network — Supervised Classification")
+    print("=" * 70)
+
+    clear_registry()
+
+    df = create_credit_dataset(n=500)
+    register_dataset("nn_credit_raw", df, register_sql=False)
+    print(f"    Registered 'nn_credit_raw': {df.shape}")
+
+    from agents.training.agent_simple import create_simple_training_agent
+
+    agent, state = create_simple_training_agent(
+        goal="Predict loan default using a neural network",
+        linked_datasets=["nn_credit_raw"],
+        user_model_preference="neural_networks",
+        hitl=False,
+    )
+
+    result = agent.invoke(
+        {"messages": [{"role": "user", "content": "Train a neural network to predict default. Dataset: nn_credit_raw."}]}
+    )
+
+    last_msg = result["messages"][-1].content if result.get("messages") else ""
+    print(f"    Final message (first 500 chars):\n{last_msg[:500]}")
+
+    assert state.get("selected_model") == "neural_networks", f"Expected neural_networks, got {state.get('selected_model')}"
+    print("\n    TEST PASSED")
+    return result
+
+
+def test_nn_unsupervised():
+    """Test neural network training on unsupervised clustering task."""
+    print("\n" + "=" * 70)
+    print("TEST: Unsupervised — Customer Segmentation")
+    print("=" * 70)
+
+    clear_registry()
+
+    df = create_clustering_dataset(n=400)
+    register_dataset("customer_raw", df, register_sql=False)
+    print(f"    Registered 'customer_raw': {df.shape}")
+
+    from agents.training.agent_simple import create_simple_training_agent
+
+    agent, state = create_simple_training_agent(
+        goal="Segment customers into meaningful groups based on demographics and behavior",
+        linked_datasets=["customer_raw"],
+        user_model_preference="unsupervised",
+        hitl=False,
+    )
+
+    result = agent.invoke(
+        {"messages": [{"role": "user", "content": "Cluster customer_raw into segments."}]}
+    )
+
+    last_msg = result["messages"][-1].content if result.get("messages") else ""
+    print(f"    Final message (first 500 chars):\n{last_msg[:500]}")
+
+    assert state.get("selected_model") == "unsupervised", f"Expected unsupervised, got {state.get('selected_model')}"
+    print("\n    TEST PASSED")
+    return result
+
+
 if __name__ == "__main__":
-    test_simple_agent_end_to_end()
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--test", type=str, default="supervised",
+                        choices=["supervised", "nn", "unsupervised", "all"],
+                        help="Which test to run")
+    args = parser.parse_args()
+
+    tests = {
+        "supervised": test_simple_agent_end_to_end,
+        "nn": test_nn_supervised,
+        "unsupervised": test_nn_unsupervised,
+    }
+
+    if args.test == "all":
+        for name, fn in tests.items():
+            try:
+                fn()
+            except Exception as e:
+                print(f"\n    TEST FAILED: {name} — {e}")
+    else:
+        tests[args.test]()

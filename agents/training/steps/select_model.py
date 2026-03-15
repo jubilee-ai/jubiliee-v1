@@ -178,6 +178,23 @@ Your job is NOT to pick a specific algorithm — only to narrow the approach dow
 # =============================================================================
 
 
+def _derive_task_type(family_key: str, goal: str) -> str:
+    """Derive the task_type from the selected model family and goal text.
+
+    Returns "unsupervised" for unsupervised families, otherwise infers
+    "classification" vs "regression" from the goal.
+    """
+    if family_key == "unsupervised":
+        return "unsupervised"
+    goal_lower = goal.lower()
+    if any(w in goal_lower for w in [
+        "regress", "predict value", "forecast", "amount", "price",
+        "cost", "salary", "revenue", "income",
+    ]):
+        return "regression"
+    return "classification"
+
+
 def select_model(state: "TrainingAgentState") -> "TrainingAgentState":
     """
     Step 1: Select Model Family
@@ -185,6 +202,7 @@ def select_model(state: "TrainingAgentState") -> "TrainingAgentState":
     - If user specifies a family, use that
     - Return an explanation
     - User can comment and regenerate (3 total regens)
+    - Sets task_type: "classification" | "regression" | "unsupervised"
     """
     explicit_pref = state.get("user_model_preference") or _extract_family_from_goal(
         state.get("goal", "")
@@ -201,9 +219,11 @@ def select_model(state: "TrainingAgentState") -> "TrainingAgentState":
             }
 
         family_info = MODEL_FAMILIES[family_key]
+        task_type = _derive_task_type(family_key, state.get("goal", ""))
         return {
             **state,
             "selected_model": family_key,
+            "task_type": task_type,
             "model_explanation": f"User specified {family_key}: {family_info['description']}",
             "audit_trace": [
                 *state.get("audit_trace", []),
@@ -211,11 +231,12 @@ def select_model(state: "TrainingAgentState") -> "TrainingAgentState":
                     "step": "select_model",
                     "action": "user_specified",
                     "family": family_key,
+                    "task_type": task_type,
                 },
             ],
             "explanations": [
                 *state.get("explanations", []),
-                f"Using user-specified model family: {family_key}",
+                f"Using user-specified model family: {family_key} (task_type: {task_type})",
             ],
             "current_step": "select_model",
         }
@@ -240,10 +261,12 @@ def select_model(state: "TrainingAgentState") -> "TrainingAgentState":
     )
 
     result: ModelFamilySelectionOutput = structured_llm.invoke(prompt)
+    task_type = _derive_task_type(result.selected_family, state.get("goal", ""))
 
     return {
         **state,
         "selected_model": result.selected_family,
+        "task_type": task_type,
         "model_explanation": result.explanation,
         "model_regen_count": state.get("model_regen_count", 0),
         "audit_trace": [
@@ -252,13 +275,14 @@ def select_model(state: "TrainingAgentState") -> "TrainingAgentState":
                 "step": "select_model",
                 "action": "llm_selected",
                 "family": result.selected_family,
+                "task_type": task_type,
                 "confidence": result.confidence,
                 "alternatives": result.alternative_families,
             },
         ],
         "explanations": [
             *state.get("explanations", []),
-            f"Selected model family: {result.selected_family}. Reason: {result.explanation}",
+            f"Selected model family: {result.selected_family} (task_type: {task_type}). Reason: {result.explanation}",
         ],
         "current_step": "select_model",
     }

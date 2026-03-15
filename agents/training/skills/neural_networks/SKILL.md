@@ -28,10 +28,11 @@ The sandbox executes your code and returns everything you `print()`.
 | Helper | Signature | Purpose |
 |--------|-----------|---------|
 | `load_dataset` | `(ref) → DataFrame` | Load dataset by reference |
-| `encode_labels` | `(y) → (encoded_y, n_classes)` | Encode string labels to ints (classification) or pass-through (regression). Mapping auto-saved with model. |
+| `encode_labels` | `(y=None) → (encoded_y, n_classes)` | Encode string labels to ints (classification), pass-through (regression), or no-op when y=None (unsupervised). |
 | `preprocess` | `(X_df, categorical_cols=None, preprocessor=None) → (np.ndarray, preprocessor)` | Fit/transform with ColumnTransformer. Pass fitted preprocessor for val/test. |
-| `save_model` | `(model, name=..., metrics=..., preprocessor=..., feature_names=None, target_column=None, task_type=..., n_classes=None) → name` | Save and register model. Returns the model name. **Always pass `preprocessor`**. Custom `nn.Module` subclasses supported. |
+| `save_model` | `(model, name=..., metrics=..., preprocessor=..., task_type=..., encoder=None, ...) → name` | Save and register model. **Always pass `preprocessor`** (except unsupervised). For autoencoders, pass `encoder` for `transform()`. |
 | `compute_metrics` | `(y_true, y_pred, y_proba=None, task_type=...) → dict` | Accuracy/ROC-AUC (classification) or R²/RMSE/MAE (regression) |
+| `compute_unsupervised_metrics` | `(X, labels=None, reconstruction=None, original=None) → dict` | Silhouette/Davies-Bouldin (clustering) or reconstruction loss (autoencoders) |
 | `to_tensor` | `(array) → FloatTensor` | Numpy to tensor |
 | `extract_params` | `(class_name, module_hint=None) → dict` | Discover constructor params for any class |
 
@@ -115,3 +116,68 @@ This is **tabular data**. Write complete, self-contained Python scripts. Your co
 | Val metric flat (plateau) | Try OneCycleLR, switch optimizer, change activation, +SWA |
 | High variance across seeds | +ensemble, +SWA, +regularization |
 | Categoricals hurting | Use entity embeddings instead of one-hot |
+
+---
+
+## Unsupervised Neural Networks
+
+When `params.get("task_type") == "unsupervised"` or no `target_column` is provided, train an unsupervised model.
+
+### Pre-loaded Helpers (Unsupervised)
+
+| Helper | Signature | Purpose |
+|--------|-----------|---------|
+| `encode_labels` | `(y=None) → (None, 0)` | No-op when called with None. Do not encode labels for unsupervised tasks. |
+| `compute_unsupervised_metrics` | `(X, labels=None, reconstruction=None, original=None) → dict` | Silhouette/Davies-Bouldin (clustering) or reconstruction loss (autoencoders) |
+| `save_model` | `(..., encoder=None)` | Pass the encoder module separately for autoencoders so `transform()` returns embeddings. |
+
+### Model Types
+
+**Autoencoders** — reconstruction-based representation learning:
+- Define separate `Encoder` and `Decoder` nn.Module subclasses.
+- Train with MSE reconstruction loss: `criterion = nn.MSELoss()`.
+- Evaluate with `compute_unsupervised_metrics(X=X_np, reconstruction=reconstructed, original=X_np)`.
+- Save with `save_model(model, ..., task_type="unsupervised", encoder=encoder)`.
+- Bottleneck dimension: start at `input_dim // 4`, iterate.
+
+**Deep Clustering** (autoencoder + KMeans):
+1. Pre-train an autoencoder to convergence.
+2. Extract embeddings: `z = encoder(X_t)`.
+3. Run KMeans on embeddings to get cluster labels.
+4. Evaluate with `compute_unsupervised_metrics(X=z_np, labels=cluster_labels)`.
+5. Optionally fine-tune jointly with clustering loss + reconstruction loss.
+
+**Variational Autoencoders (VAE)**:
+- Add KL divergence term: `kl_loss = -0.5 * torch.mean(1 + log_var - mu.pow(2) - log_var.exp())`.
+- Total loss: `reconstruction_loss + beta * kl_loss` (beta=0.1 to 1.0).
+
+### Architecture Guidance (Unsupervised)
+
+| Rows | Encoder Layers | Bottleneck | Decoder |
+|------|----------------|------------|---------|
+| < 1K | 1-2 | dim//4 | Mirror encoder |
+| 1K-10K | 2-3 | dim//8 to dim//4 | Mirror encoder |
+| 10K+ | 3-4 | 16-64 | Mirror encoder |
+
+**Key patterns:**
+- Mirror architecture: decoder is the reverse of encoder.
+- Use `nn.BatchNorm1d` in both encoder and decoder.
+- Avoid dropout in decoder (hurts reconstruction quality).
+- Tie weights when possible: `decoder.weight = encoder.weight.T`.
+
+### Metrics
+
+| Metric | Type | Direction | When to use |
+|--------|------|-----------|-------------|
+| `reconstruction_loss` | Autoencoder | Lower is better | Primary metric for autoencoders |
+| `silhouette_score` | Clustering | Higher is better (-1 to 1) | Primary metric for deep clustering |
+| `davies_bouldin` | Clustering | Lower is better | Secondary clustering metric |
+
+### Experiment Protocol (Unsupervised)
+
+1. **Baseline autoencoder**: Simple architecture, MSE loss, no regularization.
+2. **Tune bottleneck**: Try different latent dimensions.
+3. **Add regularization**: Dropout in encoder, weight decay.
+4. **Try deeper**: Add layers if reconstruction loss plateaus.
+5. **Clustering**: After autoencoder converges, try KMeans on embeddings with different k.
+6. **Joint training**: If clustering is promising, add clustering loss.

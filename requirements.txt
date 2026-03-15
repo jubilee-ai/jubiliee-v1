@@ -4,6 +4,7 @@ transformers
 langchain
 langchain-core
 langchain-openai
+langchain-mcp-adapters
 langgraph
 pydantic
 pydantic-settings
@@ -17,6 +18,7 @@ chronos-forecasting[extras]>=2.2
 # timesfm: PyPI 1.0.0 is outdated; install from GitHub for TimesFM 2.5 support
 git+https://github.com/google-research/timesfm.git
 skops
+kaggle
 huggingface_hub
 datasets
 bm25s
@@ -25,3 +27,5 @@ python-dotenv
 sqlalchemy
 fastapi
 uvicorn[standard]
+celery[redis]
+redis

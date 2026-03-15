@@ -54,6 +54,8 @@ def _is_unsupervised(state: TrainingAgentState) -> bool:
 
 def _infer_task_type(goal: str, selected_model: str) -> str:
     """Infer task type from goal and model selection."""
+    if selected_model == "unsupervised":
+        return "unsupervised"
     goal_lower = goal.lower()
     model_lower = selected_model.lower()
     
@@ -688,7 +690,8 @@ def training(state: TrainingAgentState) -> TrainingAgentState:
 
         if not train_ref:
             raise ValueError("No transformed_train_ref in state - step 5 must complete first")
-        if not unsupervised and not target_column:
+        task_type = s.get("task_type") or _infer_task_type(goal, selected_model)
+        if not target_column and task_type != "unsupervised":
             raise ValueError("No target_column in label_definition")
 
         model_name = f"{selected_model}_{int(time.time())}"

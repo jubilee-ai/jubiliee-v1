@@ -147,13 +147,22 @@ def _extract_simple_interrupt(interrupt_data: list, thread_id: str | None = None
     for item in interrupt_data:
         val = item.value if hasattr(item, "value") else item
         if isinstance(val, dict) and "node" in val:
-            return {
+            result = {
                 "node": val.get("node", "unknown"),
                 "summary": val.get("summary", ""),
                 "message": val.get(
                     "message", "Approve to continue, or provide feedback to redo."
                 ),
             }
+            snap = val.get("state_snapshot")
+            if snap:
+                if snap.get("plan"):
+                    result["plan"] = snap["plan"]
+                if snap.get("plan_strategy"):
+                    result["plan_strategy"] = snap["plan_strategy"]
+                if snap.get("plan_index") is not None:
+                    result["plan_index"] = snap["plan_index"]
+            return result
     return default
 
 
@@ -351,6 +360,146 @@ def generate_simple_resume_sse_events(
         yield f"data: {json.dumps({'type': 'error', 'error': str(e), 'thread_id': thread_id})}\n\n"
 
 
+def generate_graph_sse_events(
+    goal: str,
+    linked_datasets: Optional[list[str]],
+    model_pref: Optional[str],
+    thread_id: Optional[str] = None,
+):
+    """SSE generator using the agentic graph (planner + executor + evaluator)."""
+    from agents.training.core.graph import create_training_agent
+    from agents.training.core.state import create_initial_state
+    from langgraph.checkpoint.memory import MemorySaver
+
+    thread_id = thread_id or f"graph-{uuid.uuid4().hex[:8]}"
+
+    registered_refs = []
+    if linked_datasets:
+        for dataset_path in linked_datasets:
+            ref = load_and_register_dataset(dataset_path)
+            if ref:
+                registered_refs.append(ref)
+                yield f"data: {json.dumps({'type': 'dataset_loaded', 'dataset': dataset_path, 'ref': ref, 'thread_id': thread_id})}\n\n"
+
+    final_linked = registered_refs if registered_refs else linked_datasets
+    checkpointer = MemorySaver()
+    agent = create_training_agent(checkpointer=checkpointer)
+    initial_state = create_initial_state(
+        goal=goal,
+        linked_datasets=final_linked,
+        user_model_preference=model_pref,
+    )
+
+    repository.put_simple_agent_store(
+        thread_id, {"agent": agent, "checkpointer": checkpointer, "mode": "graph"}
+    )
+
+    config = {"configurable": {"thread_id": thread_id}}
+    yield f"data: {json.dumps({'type': 'started', 'node': 'planner', 'progress': 0, 'message': 'Agentic pipeline started', 'thread_id': thread_id})}\n\n"
+
+    try:
+        for event in agent.stream(initial_state, config=config, stream_mode="updates"):
+            if "__interrupt__" in event:
+                info = _extract_simple_interrupt(event["__interrupt__"], thread_id)
+                interrupt_event = {"type": "interrupt", "thread_id": thread_id, **info}
+                yield f"data: {json.dumps(serialize_state(interrupt_event))}\n\n"
+                return
+
+            for node_name, node_output in event.items():
+                if node_name.startswith("__"):
+                    continue
+                progress_payload = {
+                    "type": "node_update",
+                    "node": node_name,
+                    "thread_id": thread_id,
+                }
+                if isinstance(node_output, dict):
+                    if node_output.get("plan"):
+                        progress_payload["plan"] = node_output["plan"]
+                    if node_output.get("current_step"):
+                        progress_payload["current_step"] = node_output["current_step"]
+                yield f"data: {json.dumps(serialize_state(progress_payload))}\n\n"
+
+        yield f"data: {json.dumps({'type': 'completed', 'node': 'end', 'progress': 100, 'message': 'Pipeline completed', 'thread_id': thread_id})}\n\n"
+    except Exception as e:
+        traceback.print_exc()
+        yield f"data: {json.dumps({'type': 'error', 'error': str(e), 'thread_id': thread_id})}\n\n"
+
+
+def generate_graph_resume_sse_events(
+    thread_id: str,
+    approved: bool,
+    feedback: Optional[str],
+):
+    """Resume the agentic graph after a HITL interrupt."""
+    from langgraph.types import Command
+
+    store = repository.get_simple_agent_store(thread_id)
+    if not store:
+        yield f"data: {json.dumps({'type': 'error', 'error': 'Graph thread not found', 'thread_id': thread_id})}\n\n"
+        return
+
+    agent = store["agent"]
+    config = {"configurable": {"thread_id": thread_id}}
+
+    resume_value = {"approved": approved}
+    if not approved:
+        resume_value["feedback"] = feedback or "Please redo this step."
+
+    try:
+        state_snapshot = agent.get_state(config)
+        interrupt_ids = [
+            intr.id
+            for task in (state_snapshot.tasks or [])
+            for intr in (task.interrupts or [])
+        ]
+    except Exception:
+        interrupt_ids = store.get("interrupt_ids", [])
+
+    if len(interrupt_ids) > 1:
+        resume_value = {iid: resume_value for iid in interrupt_ids}
+
+    try:
+        for event in agent.stream(Command(resume=resume_value), config=config, stream_mode="updates"):
+            if "__interrupt__" in event:
+                info = _extract_simple_interrupt(event["__interrupt__"], thread_id)
+                interrupt_event = {"type": "interrupt", "thread_id": thread_id, **info}
+                yield f"data: {json.dumps(serialize_state(interrupt_event))}\n\n"
+                return
+
+            for node_name, node_output in event.items():
+                if node_name.startswith("__"):
+                    continue
+                progress_payload = {
+                    "type": "node_update",
+                    "node": node_name,
+                    "thread_id": thread_id,
+                }
+                if isinstance(node_output, dict):
+                    if node_output.get("plan"):
+                        progress_payload["plan"] = node_output["plan"]
+                    if node_output.get("current_step"):
+                        progress_payload["current_step"] = node_output["current_step"]
+                yield f"data: {json.dumps(serialize_state(progress_payload))}\n\n"
+
+        yield f"data: {json.dumps({'type': 'completed', 'node': 'end', 'progress': 100, 'message': 'Pipeline completed', 'thread_id': thread_id})}\n\n"
+    except Exception as e:
+        traceback.print_exc()
+        yield f"data: {json.dumps({'type': 'error', 'error': str(e), 'thread_id': thread_id})}\n\n"
+
+
+def _celery_available() -> bool:
+    """Check if Celery + Redis are reachable."""
+    try:
+        import redis as _redis
+        url = __import__("os").environ.get("REDIS_URL", "redis://localhost:6379/0")
+        r = _redis.from_url(url, socket_connect_timeout=1)
+        r.ping()
+        return True
+    except Exception:
+        return False
+
+
 def start_training(request: TrainRequest) -> TrainResponse:
     job_id = str(uuid.uuid4())
     repository.start_training(
@@ -361,6 +510,20 @@ def start_training(request: TrainRequest) -> TrainResponse:
             "model_preference": request.user_model_preference,
         },
     )
+
+    if _celery_available():
+        from backend.training.tasks import run_training_task
+        run_training_task.delay(
+            job_id=job_id,
+            goal=request.goal,
+            linked_datasets=request.linked_datasets,
+            model_pref=request.user_model_preference,
+        )
+        return TrainResponse(
+            job_id=job_id,
+            status="pending",
+            message="Training job queued via Celery. Poll /api/train/{job_id} for status.",
+        )
 
     thread = threading.Thread(
         target=run_training_sync,
@@ -376,7 +539,7 @@ def start_training(request: TrainRequest) -> TrainResponse:
     return TrainResponse(
         job_id=job_id,
         status="pending",
-        message="Training job started. Poll /api/train/{job_id} for status.",
+        message="Training job started (thread). Poll /api/train/{job_id} for status.",
     )
 
 
