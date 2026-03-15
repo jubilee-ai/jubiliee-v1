@@ -1,5 +1,10 @@
 """
 Graph construction and compilation for the ML Training Agent.
+
+Architecture: Planner → Dispatcher → Step → Evaluator loop.
+The planner generates a dynamic execution plan, the dispatcher routes to
+each step, and the evaluator decides whether to continue, amend, replan,
+or finish.
 """
 
 import uuid
@@ -9,13 +14,10 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, StateGraph
 from langgraph.types import Command
 
-from .edges import (
-    data_collection_result,
-    feature_validation_result,
-    should_regen_model,
-    should_skip_label_definition,
-    training_decision,
-)
+from .dispatcher import dispatcher_node
+from .edges import route_to_step, should_continue
+from .evaluator import evaluator_node
+from .planner import planner_node
 from ..steps.orchestrator import (
     cleaning_node,
     data_collection,
@@ -29,6 +31,18 @@ from ..steps.orchestrator import (
 )
 from .state import TrainingAgentState, create_initial_state
 
+ALL_STEP_NAMES = [
+    "data_collection",
+    "select_model",
+    "cleaning",
+    "label_split_definition",
+    "feature_selection_specification",
+    "feature_engineering_executor",
+    "training_approval",
+    "training",
+    "generate_report",
+]
+
 
 # =============================================================================
 # GRAPH CONSTRUCTION
@@ -37,33 +51,34 @@ from .state import TrainingAgentState, create_initial_state
 
 def build_training_agent_graph() -> StateGraph:
     """
-    Build the ML Training Agent graph with all nodes and edges.
+    Build the ML Training Agent graph with planner + executor + evaluator.
 
     Flow:
-    1. select_model → (regen loop or continue)
-    2. data_collection
-    3. cleaning (uses simple cleaning agent with internal iteration)
-    3.5. label_split_definition → (skip if not relevant)
-    4. feature_selection_specification
-    5. feature_engineering_executor → (back to 4 if validation fails)
-    6. training_approval → (user approves hyperparameters BEFORE training)
-    7. training → (iterative with human checkpoints)
-    8. generate_report → END
+      START → planner (HITL) → dispatcher → [step node] (HITL) → evaluator
+        ├─ continue → dispatcher (next step)
+        ├─ replan  → planner (new plan)
+        └─ done    → END
     """
 
-    # Initialize the graph with state schema
     graph = StateGraph(TrainingAgentState)
 
     # -------------------------------------------------------------------------
     # ADD NODES
     # -------------------------------------------------------------------------
-    graph.add_node("select_model", select_model)
+
+    # Agentic control nodes
+    graph.add_node("planner", planner_node)
+    graph.add_node("dispatcher", dispatcher_node)
+    graph.add_node("evaluator", evaluator_node)
+
+    # Pipeline step nodes (unchanged implementations)
     graph.add_node("data_collection", data_collection)
+    graph.add_node("select_model", select_model)
     graph.add_node("cleaning", cleaning_node)
     graph.add_node("label_split_definition", label_split_definition)
     graph.add_node("feature_selection_specification", feature_selection_specification)
     graph.add_node("feature_engineering_executor", feature_engineering_executor)
-    graph.add_node("training_approval", training_approval)  # Approval before training
+    graph.add_node("training_approval", training_approval)
     graph.add_node("training", training)
     graph.add_node("generate_report", generate_report)
 
@@ -71,65 +86,31 @@ def build_training_agent_graph() -> StateGraph:
     # ADD EDGES
     # -------------------------------------------------------------------------
 
-    # Entry point
-    graph.set_entry_point("select_model")
+    # Entry: always start with the planner
+    graph.set_entry_point("planner")
 
-    # Step 1 → Step 2 (with potential regen loop)
+    # Planner → Dispatcher (plan approved, start executing)
+    graph.add_edge("planner", "dispatcher")
+
+    # Dispatcher → step node (dynamic routing based on current_step)
+    step_routing = {name: name for name in ALL_STEP_NAMES}
+    step_routing["done"] = END
+    graph.add_conditional_edges("dispatcher", route_to_step, step_routing)
+
+    # Every step node → evaluator
+    for step_name in ALL_STEP_NAMES:
+        graph.add_edge(step_name, "evaluator")
+
+    # Evaluator → dispatcher (continue), planner (replan), or END (done)
     graph.add_conditional_edges(
-        "select_model",
-        should_regen_model,
-        {"regen": "select_model", "continue": "data_collection"},  # Loop back for regeneration
-    )
-
-    # Step 2 → Step 3 (only if data collection succeeded)
-    graph.add_conditional_edges(
-        "data_collection",
-        data_collection_result,
-        {"success": "cleaning", "retry": "data_collection"},
-    )
-
-    # Step 3 → Step 3.5 (cleaning handles its own iteration internally)
-    graph.add_edge("cleaning", "label_split_definition")
-
-    # Step 3.5 → Step 4 (with skip option)
-    graph.add_conditional_edges(
-        "label_split_definition",
-        should_skip_label_definition,
+        "evaluator",
+        should_continue,
         {
-            "skip": "feature_selection_specification",
-            "define": "feature_selection_specification",  # Both go to step 4, but with different state
+            "continue": "dispatcher",
+            "replan": "planner",
+            "done": END,
         },
     )
-
-    # Step 4 → Step 5
-    graph.add_edge("feature_selection_specification", "feature_engineering_executor")
-
-    # Step 5 → Step 6 (training_approval) or back to Step 4 (validation check)
-    graph.add_conditional_edges(
-        "feature_engineering_executor",
-        feature_validation_result,
-        {
-            "passed": "training_approval",  # Go to approval step first
-            "failed": "feature_selection_specification",  # Back to step 4 for spec revision
-        },
-    )
-
-    # Step 6.5 → Step 7 (training_approval → training)
-    graph.add_edge("training_approval", "training")
-
-    # Step 7 → Step 8, iterate training, or redo feature engineering
-    graph.add_conditional_edges(
-        "training",
-        training_decision,
-        {
-            "iterate": "training",  # Back to training for another iteration
-            "complete": "generate_report",
-            "redo_features": "feature_selection_specification",  # Loop back to feature engineering
-        },
-    )
-
-    # Step 8 → END
-    graph.add_edge("generate_report", END)
 
     return graph
 
@@ -138,7 +119,6 @@ def build_training_agent_graph() -> StateGraph:
 # GRAPH COMPILATION & INVOCATION
 # =============================================================================
 
-# Global checkpointer instance for persistence across invocations
 _CHECKPOINTER = MemorySaver()
 
 
@@ -181,7 +161,6 @@ def invoke_training_agent(
     agent = create_training_agent()
     initial_state = create_initial_state(goal, linked_datasets, user_model_preference)
 
-    # Generate thread_id if not provided
     if not thread_id:
         thread_id = f"training-{uuid.uuid4().hex[:8]}"
 
@@ -189,7 +168,6 @@ def invoke_training_agent(
 
     result = agent.invoke(initial_state, config=config)
 
-    # Add thread_id to result for resumption
     if isinstance(result, dict):
         result["_thread_id"] = thread_id
 
@@ -219,7 +197,6 @@ def resume_training_agent(
 
     result = agent.invoke(Command(resume=decision), config=config)
 
-    # Add thread_id to result for further resumption
     if isinstance(result, dict):
         result["_thread_id"] = thread_id
 

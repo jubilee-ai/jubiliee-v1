@@ -12,6 +12,7 @@ from typing import Any, Literal, Optional, TypedDict
 # Keys to include in state snapshots for HITL review
 STATE_SNAPSHOT_KEYS = [
     "selected_model",
+    "task_type",
     "model_explanation",
     "collected_dataset_ref",
     "cleaned_dataset_ref",
@@ -28,6 +29,9 @@ STATE_SNAPSHOT_KEYS = [
     "training_metrics",
     "report_path",
     "error",
+    "plan",
+    "plan_index",
+    "plan_strategy",
 ]
 
 # Step order for progress calculation and routing
@@ -80,6 +84,9 @@ class TrainingAgentState(TypedDict):
     selected_model: Optional[str]
     model_explanation: Optional[str]
     model_regen_count: int
+
+    # Derived from selected_model + goal: "classification" | "regression" | "unsupervised"
+    task_type: Optional[str]
 
     # Step 2: Data Collection
     collected_dataset_ref: Optional[str]
@@ -135,6 +142,13 @@ class TrainingAgentState(TypedDict):
     audit_trace: list[dict[str, Any]]
     explanations: list[str]
 
+    # Agentic planner
+    plan: Optional[list[dict[str, Any]]]
+    plan_index: int
+    plan_history: list[dict[str, Any]]
+    plan_strategy: Optional[str]
+    evaluator_decision: Optional[str]
+
     # Control flow
     current_step: str
     error: Optional[str]
@@ -162,6 +176,7 @@ def create_initial_state(
         "selected_model": None,
         "model_explanation": None,
         "model_regen_count": 0,
+        "task_type": None,
         "collected_dataset_ref": None,
         "data_source": None,
         "cleaned_dataset_ref": None,
@@ -193,6 +208,11 @@ def create_initial_state(
         "report_path": None,
         "audit_trace": [],
         "explanations": [],
-        "current_step": "select_model",
+        "plan": None,
+        "plan_index": 0,
+        "plan_history": [],
+        "plan_strategy": None,
+        "evaluator_decision": None,
+        "current_step": "planner",
         "error": None,
     }

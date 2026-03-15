@@ -1,6 +1,9 @@
 """
-Conditional edge functions for the ML Training Agent graph.
-These functions determine routing between nodes based on state.
+Conditional edge functions for the agentic ML Training Agent graph.
+
+The planner + evaluator architecture only needs two routing functions:
+  - ``route_to_step``: dispatcher → step node
+  - ``should_continue``: evaluator → dispatcher | planner | END
 """
 
 from typing import Literal
@@ -8,60 +11,25 @@ from typing import Literal
 from .state import TrainingAgentState
 
 
-def should_regen_model(state: TrainingAgentState) -> Literal["regen", "continue"]:
-    """Check if user wants to regenerate model selection (max 3 times)"""
-    # For automated runs, always continue with selected model
-    regen_count = state.get("model_regen_count", 0)
-    if regen_count >= 3:
-        print("[should_regen_model] Max regen count reached, continuing...")
-        return "continue"
-    return "continue"
+def route_to_step(state: TrainingAgentState) -> str:
+    """Route from the dispatcher to the next step node.
+
+    Returns ``state["current_step"]`` which was set by the dispatcher.
+    When the plan is exhausted the dispatcher sets this to ``"done"``.
+    """
+    return state.get("current_step", "done")
 
 
-def data_collection_result(state: TrainingAgentState) -> Literal["success", "retry"]:
-    """Route to cleaning only if data collection produced a dataset ref."""
-    if state.get("collected_dataset_ref"):
-        return "success"
-    print("[data_collection_result] No collected_dataset_ref — routing back to data_collection")
-    return "retry"
-
-
-def should_skip_label_definition(state: TrainingAgentState) -> Literal["skip", "define"]:
-    """Check if label/split definition is relevant or should be skipped"""
-    # Unsupervised flows do not require target/label definition.
-    if state.get("selected_model") == "unsupervised":
-        return "skip"
-    return "define"
-
-
-def feature_validation_result(state: TrainingAgentState) -> Literal["passed", "failed"]:
-    """Check if feature engineering validation passed or needs spec revision"""
-    if state.get("transformed_train_ref"):
-        return "passed"
-    return "failed"
-
-
-def training_decision(
+def should_continue(
     state: TrainingAgentState,
-) -> Literal["iterate", "complete", "redo_features"]:
-    """Check if training should iterate, complete, or redo feature engineering."""
+) -> Literal["continue", "replan", "done"]:
+    """Route from the evaluator to the next phase.
 
-    # Check if feature engineering redo was requested
-    if state.get("feature_redo_requested"):
-        redo_iteration = state.get("feature_redo_iteration", 0)
-        # Limit feature redo iterations to prevent infinite loops
-        if redo_iteration >= 2:
-            print(
-                "[training_decision] Max feature redo iterations (2) reached, completing..."
-            )
-            return "complete"
-        print("[training_decision] Feature engineering redo requested, routing back...")
-        return "redo_features"
-
-    training_metrics = state.get("training_metrics", {})
-    if training_metrics.get("success"):
-        return "complete"
-    iteration = state.get("training_iteration", 0)
-    if iteration >= 3:
-        return "complete"
-    return "complete"
+    - ``"continue"`` → back to dispatcher (next step in plan)
+    - ``"replan"``   → back to planner for a new plan
+    - ``"done"``     → END
+    """
+    decision = state.get("evaluator_decision", "done")
+    if decision in ("continue", "replan", "done"):
+        return decision
+    return "done"

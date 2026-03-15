@@ -183,6 +183,10 @@ class TrainingIteration(BaseModel):
     test_r2: Optional[float] = None
     test_rmse: Optional[float] = None
     test_mae: Optional[float] = None
+    silhouette_score: Optional[float] = None
+    davies_bouldin: Optional[float] = None
+    inertia: Optional[float] = None
+    reconstruction_loss: Optional[float] = None
     success: bool = Field(description="Whether this iteration succeeded")
     error: Optional[str] = None
 
@@ -202,6 +206,10 @@ class TrainingResult(BaseModel):
     test_r2: Optional[float] = None
     test_rmse: Optional[float] = None
     test_mae: Optional[float] = None
+    silhouette_score: Optional[float] = None
+    davies_bouldin: Optional[float] = None
+    inertia: Optional[float] = None
+    reconstruction_loss: Optional[float] = None
     iterations: list[TrainingIteration] = Field(default_factory=list)
     num_iterations: int
     summary: str
@@ -214,8 +222,10 @@ class TrainingResult(BaseModel):
 # =============================================================================
 
 
-def _infer_task_type(goal: str, estimator_hint: Optional[str] = None) -> str:
-    """Infer 'classification', 'regression', or 'unsupervised' from context."""
+def _infer_task_type(goal: str, estimator_hint: Optional[str] = None, selected_model: Optional[str] = None) -> str:
+    """Infer 'classification', 'regression', or 'unsupervised' from the goal/model."""
+    if selected_model == "unsupervised":
+        return "unsupervised"
     text = (goal + " " + (estimator_hint or "")).lower()
     if any(
         kw in text
@@ -372,6 +382,8 @@ def _should_continue_iterating(
         return True
 
     def _metric(it: TrainingIteration) -> float:
+        if task_type == "unsupervised":
+            return it.silhouette_score if it.silhouette_score is not None else -float("inf")
         if task_type == "regression":
             return it.val_r2 or it.train_r2 or -float("inf")
         return it.val_roc_auc or it.val_accuracy or -float("inf")
@@ -385,6 +397,15 @@ def _should_continue_iterating(
 
 
 def _format_best_metric(best_iteration: dict, task_type: str) -> str:
+    if task_type == "unsupervised":
+        sil = best_iteration.get("silhouette_score")
+        db = best_iteration.get("davies_bouldin")
+        parts = []
+        if sil is not None:
+            parts.append(f"Silhouette={sil:.4f}")
+        if db is not None:
+            parts.append(f"Davies-Bouldin={db:.4f}")
+        return ", ".join(parts) if parts else "N/A"
     if task_type == "regression":
         r2 = best_iteration.get("val_r2")
         return f"R²={r2:.4f}" if r2 is not None else "N/A"
@@ -399,6 +420,8 @@ def _format_best_metric(best_iteration: dict, task_type: str) -> str:
 
 
 def _primary_metric(it: TrainingIteration, task_type: str) -> float:
+    if task_type == "unsupervised":
+        return it.silhouette_score if it.silhouette_score is not None else -float("inf")
     if task_type == "regression":
         return it.val_r2 or it.train_r2 or -float("inf")
     return it.val_roc_auc or it.val_accuracy or -float("inf")
@@ -524,12 +547,18 @@ def _find_best_iteration(iterations: list[dict], task_type: str) -> Optional[dic
 
     For classification, ROC-AUC is the primary metric (more reliable than
     accuracy, especially on imbalanced data). Accuracy is the tiebreaker.
+    For unsupervised, silhouette_score is primary (higher is better).
     """
     best, best_score = None, (-float("inf"), -float("inf"))
     for it in iterations:
         if not it.get("success"):
             continue
-        if task_type == "regression":
+        if task_type == "unsupervised":
+            score = (
+                it.get("silhouette_score") or -float("inf"),
+                -(it.get("davies_bouldin") or float("inf")),
+            )
+        elif task_type == "regression":
             primary = it.get("val_r2") or it.get("train_r2") or -float("inf")
             score = (primary, 0.0)
         else:
@@ -652,7 +681,10 @@ def _log_training_results(training_result: TrainingResult, task_type: str):
         print(f"  [{status}] Iter {i}: {it.model_name}")
         print(f"     Estimator: {it.tool_used}")
         print(f"     Hyperparams: {hp_str[:60]}...")
-        if task_type == "regression":
+        if task_type == "unsupervised":
+            if it.silhouette_score is not None:
+                print(f"     Silhouette: {it.silhouette_score}, Davies-Bouldin: {it.davies_bouldin}")
+        elif task_type == "regression":
             if it.val_r2 is not None:
                 print(f"     Val R²: {it.val_r2}, Val RMSE: {it.val_rmse}")
         else:
@@ -662,7 +694,10 @@ def _log_training_results(training_result: TrainingResult, task_type: str):
             print(f"     Error: {it.error}")
     print("  " + "-" * 60)
     print(f"  Best Model: {training_result.best_model_name}")
-    if task_type == "regression":
+    if task_type == "unsupervised":
+        print(f"  Silhouette: {training_result.silhouette_score}")
+        print(f"  Davies-Bouldin: {training_result.davies_bouldin}")
+    elif task_type == "regression":
         print(f"  Val R²: {training_result.val_r2}")
         print(f"  Test R²: {training_result.test_r2}")
     else:
@@ -701,17 +736,13 @@ def run_training_agent(
     val_df = get_registered_dataset(val_ref) if val_ref else None
     test_df = get_registered_dataset(test_ref) if test_ref else None
 
-    required_sets = [(train_ref, train_df, "Training")]
-    if val_ref:
-        required_sets.append((val_ref, val_df, "Validation"))
-    if test_ref:
-        required_sets.append((test_ref, test_df, "Test"))
-
-    for ref, df, label in required_sets:
-        if df is None:
+    if train_df is None:
+        raise ValueError(f"Training dataset not found: {train_ref}")
+    for ref, df, label in [(val_ref, val_df, "Validation"), (test_ref, test_df, "Test")]:
+        if ref and df is None:
             raise ValueError(f"{label} dataset not found: {ref}")
 
-    task_type = "unsupervised" if selected_model == "unsupervised" else _infer_task_type(goal, estimator_hint)
+    task_type = _infer_task_type(goal, estimator_hint, selected_model=selected_model)
 
     available_skills = [d.name for d in SKILLS_DIR.iterdir() if (d / "train.py").exists()]
     skill_name = selected_model if selected_model in available_skills else "supervised"
@@ -722,19 +753,15 @@ def run_training_agent(
     feature_columns = [c for c in train_df.columns if c != target_column] if target_column else list(train_df.columns)
 
     print(f"[training_agent] Starting training...")
-    print(f"  Skill: {skill_name} | Target: {target_column} | Task: {task_type}")
-    print(
-        f"  Train: {len(train_df)} | "
-        f"Val: {len(val_df) if val_df is not None else 'N/A'} | "
-        f"Test: {len(test_df) if test_df is not None else 'N/A'} | "
-        f"Features: {len(feature_columns)}"
-    )
+    print(f"  Skill: {skill_name} | Target: {target_column or '(none)'} | Task: {task_type}")
+    print(f"  Train: {len(train_df)} | Val: {len(val_df) if val_df is not None else 0} | Test: {len(test_df) if test_df is not None else 0} | Features: {len(feature_columns)}")
     if estimator_hint:
         print(f"  Estimator hint: {estimator_hint}")
 
-    class_counts: dict[str, int] = {}
-    imbalance_note = "N/A for unsupervised training"
-    if task_type != "unsupervised":
+    if task_type == "unsupervised":
+        class_counts = {}
+        imbalance_note = "Unsupervised task — no target variable."
+    else:
         class_counts = train_df[target_column].value_counts().to_dict()
         total = sum(class_counts.values())
         minority_ratio = min(class_counts.values()) / total if total > 0 else 0
@@ -762,7 +789,7 @@ def run_training_agent(
 
     baseline_section = ""
     baseline_metrics = None
-    if skill_name == "neural_networks":
+    if skill_name == "neural_networks" and task_type != "unsupervised":
         baseline_metrics = _run_quick_baseline(train_df, val_df, target_column, task_type)
         if baseline_metrics.get("roc_auc") or baseline_metrics.get("r2"):
             baseline_section = (
@@ -778,6 +805,19 @@ def run_training_agent(
                 "focus on matching it first before trying to exceed it.\n"
             )
 
+    if task_type == "unsupervised":
+        target_line = "- Target column: N/A (unsupervised)"
+        class_section = ""
+        next_step = (
+            "Begin training now. Maximize unsupervised objective quality by exploring "
+            "estimators and hyperparameters. Use the dataset refs above. "
+            "Do not call evaluate_model because no target labels are required."
+        )
+    else:
+        target_line = f"- Target column: `{target_column}`"
+        class_section = f"\n**Class distribution:** {class_counts}\n{imbalance_note}\n"
+        next_step = ""
+
     context = f"""## Goal
 {goal}
 
@@ -791,20 +831,19 @@ Follow the skill documentation below — it covers model selection and training.
 {estimator_section}{baseline_section}
 ## Data
 - Task type: {task_type}
-- Target column: `{target_column if target_column else 'N/A (unsupervised)'}`
+{target_line}
 - Training: {len(train_df)} rows (ref: `{train_ref}`)
-- Validation: {len(val_df) if val_df is not None else 'N/A'} rows (ref: `{val_ref or 'N/A'}`)
-- Test: {len(test_df) if test_df is not None else 'N/A'} rows (ref: `{test_ref or 'N/A'}`)
+- Validation: {len(val_df) if val_df is not None else 0} rows (ref: `{val_ref or "N/A"}`)
+- Test: {len(test_df) if test_df is not None else 0} rows (ref: `{test_ref or "N/A"}`)
 - Features ({len(feature_columns)}): {features_preview}{ellipsis}
-
-**Class distribution:** {class_counts if class_counts else 'N/A (unsupervised)'}
-{imbalance_note}
-
+{class_section}
 ## Constraints
 - Max iterations: {max_iterations}
 
 ## Sample Data (first 3 rows)
 {train_df.head(3).to_dict(orient="records")}
+
+{next_step}
 """
 
     llm = init_chat_model(llm_model)
@@ -916,16 +955,17 @@ Follow the skill documentation below — it covers model selection and training.
         output = training_result.model_dump(exclude={"best_model_name", "feature_redo_requested", "iterations"})
 
         if best_iteration:
-            metric_keys = (
-                ("val_r2", "val_rmse", "val_mae", "train_r2")
-                if task_type == "regression"
-                else ("val_accuracy", "val_roc_auc")
-            )
+            if task_type == "unsupervised":
+                metric_keys = ("silhouette_score", "davies_bouldin", "inertia", "reconstruction_loss")
+            elif task_type == "regression":
+                metric_keys = ("val_r2", "val_rmse", "val_mae", "train_r2")
+            else:
+                metric_keys = ("val_accuracy", "val_roc_auc")
             for key in metric_keys:
                 if best_iteration.get(key) is not None:
                     output[key] = best_iteration[key]
 
-        if training_result.success and actual_best_name:
+        if training_result.success and actual_best_name and task_type != "unsupervised":
             test_metrics = _evaluate_model_on_test(
                 model_name=actual_best_name,
                 test_ref=test_ref,
@@ -958,8 +998,8 @@ Follow the skill documentation below — it covers model selection and training.
             "task_type": task_type,
             "target_column": target_column,
             "train_size": len(train_df),
-            "val_size": len(val_df) if val_df is not None else None,
-            "test_size": len(test_df) if test_df is not None else None,
+            "val_size": len(val_df) if val_df is not None else 0,
+            "test_size": len(test_df) if test_df is not None else 0,
             "iterations": iterations_dict,
             "best_iteration": best_iteration,
             "messages": final_messages,

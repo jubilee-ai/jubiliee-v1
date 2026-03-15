@@ -18,10 +18,12 @@ from sklearn.compose import ColumnTransformer
 from sklearn.impute import SimpleImputer
 from sklearn.metrics import (
     accuracy_score,
+    davies_bouldin_score,
     mean_absolute_error,
     mean_squared_error,
     r2_score,
     roc_auc_score,
+    silhouette_score,
 )
 from sklearn.pipeline import Pipeline as SklearnPipeline
 from sklearn.preprocessing import LabelEncoder, OneHotEncoder, StandardScaler
@@ -64,15 +66,15 @@ def _make_save_model(label_encoder_ref: list):
         description=None,
         hyperparameters=None,
         training_samples=None,
+        encoder=None,
         *,
         model_name: str = None,
     ):
-        # Accept both `name` and `model_name` for robustness
         resolved_name = name or model_name or "nn_model"
         if metrics is None:
             metrics = {}
 
-        if preprocessor is None:
+        if preprocessor is None and task_type != "unsupervised":
             print(
                 "[save_model] WARNING: preprocessor is None. "
                 "Pass the fitted preprocessor from preprocess() to save_model()."
@@ -84,6 +86,7 @@ def _make_save_model(label_encoder_ref: list):
             task_type=task_type,
             n_classes=n_classes,
             label_encoder=le,
+            encoder=encoder,
         )
 
         save_path = generate_model_path(resolved_name)
@@ -91,7 +94,7 @@ def _make_save_model(label_encoder_ref: list):
             cloudpickle.dump(wrapper, f)
 
         classes = []
-        if n_classes and task_type != "regression":
+        if n_classes and task_type not in ("regression", "unsupervised"):
             if le is not None:
                 classes = [str(c) for c in le.classes_]
             else:
@@ -140,6 +143,46 @@ def _make_compute_metrics():
     return compute_metrics
 
 
+def _make_compute_unsupervised_metrics():
+    def compute_unsupervised_metrics(
+        X, labels=None, reconstruction=None, original=None
+    ) -> dict:
+        """Compute unsupervised metrics for clustering and autoencoders.
+
+        Args:
+            X: Input data (numpy array or torch tensor).
+            labels: Cluster assignments (for clustering metrics).
+            reconstruction: Reconstructed output from autoencoder.
+            original: Original input for reconstruction loss comparison.
+
+        Returns dict with available metrics: silhouette_score, davies_bouldin,
+        reconstruction_loss.
+        """
+        X_np = np.asarray(X) if not isinstance(X, np.ndarray) else X
+        result = {}
+
+        if labels is not None:
+            labels_np = np.asarray(labels)
+            n_labels = len(set(labels_np))
+            if 2 <= n_labels < len(labels_np):
+                try:
+                    result["silhouette_score"] = float(silhouette_score(X_np, labels_np))
+                except ValueError:
+                    pass
+                try:
+                    result["davies_bouldin"] = float(davies_bouldin_score(X_np, labels_np))
+                except ValueError:
+                    pass
+
+        if reconstruction is not None and original is not None:
+            recon_np = np.asarray(reconstruction)
+            orig_np = np.asarray(original)
+            result["reconstruction_loss"] = float(np.mean((orig_np - recon_np) ** 2))
+
+        return result
+    return compute_unsupervised_metrics
+
+
 def _make_extract_params():
     _script = Path(__file__).parent.parent / "scripts" / "extract_params.py"
     spec = importlib.util.spec_from_file_location("extract_params", str(_script))
@@ -153,7 +196,7 @@ def _make_extract_params():
 
 def _make_encode_labels(label_encoder_ref: list):
     """Create encode_labels helper that stores the fitted LabelEncoder for save_model."""
-    def encode_labels(y):
+    def encode_labels(y=None):
         """Encode labels to 0-based contiguous integer codes.
 
         Returns (encoded_y, n_classes). The label mapping is automatically
@@ -161,11 +204,15 @@ def _make_encode_labels(label_encoder_ref: list):
         back to original labels at inference time.
 
         For continuous float targets (regression), passes through unchanged.
+        For unsupervised tasks, call with y=None to get (None, 0).
 
         Usage:
             y_encoded, n_classes = encode_labels(y)
             y_tensor = torch.tensor(y_encoded, dtype=torch.long)
         """
+        if y is None:
+            return None, 0
+
         y_arr = np.asarray(y)
         unique_vals = np.unique(y_arr[~pd.isna(y_arr)])
         n_classes = len(unique_vals)
@@ -345,6 +392,7 @@ save_model(model, name=model_name, metrics=metrics, preprocessor=preprocessor,
 _METRIC_KEYWORDS = {
     "metric", "r2", "rmse", "mae", "accuracy", "roc_auc", "f1",
     "auc", "precision", "recall", "loss",
+    "silhouette", "davies_bouldin", "inertia", "reconstruction",
 }
 _KEEP_KEYWORDS = {
     "error", "traceback", "exception", "warning",
@@ -414,6 +462,7 @@ def run(params: dict) -> str:
         "load_dataset": _make_load_dataset(),
         "save_model": _make_save_model(label_encoder_ref),
         "compute_metrics": _make_compute_metrics(),
+        "compute_unsupervised_metrics": _make_compute_unsupervised_metrics(),
         "extract_params": _make_extract_params(),
         "encode_labels": _make_encode_labels(label_encoder_ref),
         "preprocess": _make_preprocess(),
