@@ -1,11 +1,11 @@
 ---
 name: sklearn_generic
-description: Train a scikit-learn supervised learning estimator. Use this guide to select the right model for the task.
+description: Train supervised learning models (sklearn, XGBoost, LightGBM). Use this guide to select the right model for the task.
 ---
 
-# Sklearn Generic — Supervised Model Selection
+# Supervised Model Selection
 
-This skill trains scikit-learn **supervised learning** estimators (classifiers and regressors). Use this guide to choose the correct model for the user's data and problem.
+This skill trains **supervised learning** estimators — scikit-learn classifiers/regressors, plus **XGBoost** and **LightGBM** if installed. Use this guide to choose the correct model for the user's data and problem.
 
 ## How to Choose a Model
 
@@ -68,7 +68,9 @@ Start
 | | `ExtraTreesClassifier` | Faster alternative to Random Forest; more randomized splits reduce variance further |
 | | `BaggingClassifier` | Wraps any base estimator in a bagging ensemble to reduce variance |
 | **Ensemble — Boosting** | `GradientBoostingClassifier` | High accuracy on tabular data; sequential boosting with gradient descent |
-| | `HistGradientBoostingClassifier` | **Recommended default.** Fastest tree-based model; handles NaN natively; scales to large datasets |
+| | `HistGradientBoostingClassifier` | **Recommended sklearn default.** Fastest sklearn tree model; handles NaN natively; scales to large datasets |
+| | `XGBClassifier` | **Top Kaggle performer.** Gradient boosting with regularization, native missing value handling, wide hyperparameter space |
+| | `LGBMClassifier` | **Fastest gradient boosting.** Leaf-wise growth, native categorical support, excellent for large datasets |
 | | `AdaBoostClassifier` | Boosts weak learners (typically shallow trees); sensitive to noise |
 | **Neural Network** | `MLPClassifier` | Complex non-linear patterns; multi-layer perceptron; requires feature scaling |
 | **Discriminant Analysis** | `LinearDiscriminantAnalysis` | Linear boundaries; works well when features are normally distributed per class; also does dimensionality reduction |
@@ -127,7 +129,9 @@ Start
 | | `ExtraTreesRegressor` | Faster, more randomized alternative to Random Forest |
 | | `BaggingRegressor` | Wraps any base estimator in a bagging ensemble |
 | **Ensemble — Boosting** | `GradientBoostingRegressor` | High accuracy on tabular data; sequential boosting |
-| | `HistGradientBoostingRegressor` | **Recommended default.** Fastest tree-based model; handles NaN natively; scales to large datasets |
+| | `HistGradientBoostingRegressor` | **Recommended sklearn default.** Fastest sklearn tree model; handles NaN natively; scales to large datasets |
+| | `XGBRegressor` | **Top Kaggle performer.** Gradient boosting with regularization, wide hyperparameter space |
+| | `LGBMRegressor` | **Fastest gradient boosting.** Leaf-wise growth, native categorical support, excellent for large datasets |
 | | `AdaBoostRegressor` | Boosts weak learners; sensitive to outliers and noise |
 | **Neural Network** | `MLPRegressor` | Complex non-linear patterns; multi-layer perceptron; requires feature scaling |
 | **Gaussian Process** | `GaussianProcessRegressor` | Gives uncertainty estimates; works well on small datasets; does not scale beyond ~10K samples |
@@ -138,7 +142,8 @@ Start
 
 ## Model Selection Tips
 
-- **Start with `HistGradientBoostingClassifier` / `HistGradientBoostingRegressor`** unless there is a specific reason not to. They handle missing values, mixed feature types, and scale well.
+- **For Kaggle / max performance:** start with `XGBClassifier` / `LGBMClassifier` (or their regressor variants). They have the widest hyperparameter space and dominate tabular competitions.
+- **For speed + sklearn compatibility:** use `HistGradientBoostingClassifier` / `HistGradientBoostingRegressor`. They handle missing values, mixed feature types, and scale well.
 - **Linear models first for interpretability.** `LogisticRegression` (classification) and `Ridge` / `Lasso` (regression) are strong baselines that are easy to explain.
 - **Naive Bayes for text.** `MultinomialNB` with TF-IDF features is a fast, competitive text classifier.
 - **Check class balance.** For imbalanced targets, tree-based ensembles or linear models with `class_weight="balanced"` tend to work best.

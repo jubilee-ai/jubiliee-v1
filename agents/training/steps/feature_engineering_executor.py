@@ -234,6 +234,38 @@ def _execute_date_diff(df: pd.DataFrame, formula: dict, feature_name: str) -> pd
     return df
 
 
+def _execute_target_encode(df: pd.DataFrame, formula: dict, feature_name: str, *, _fit_data: dict | None = None) -> pd.DataFrame:
+    """Smoothed target-mean encoding. Must be fit on training data only."""
+    column = formula["column"]
+    if column not in df.columns:
+        raise ValueError(f"Column '{column}' not found for target encoding")
+
+    df = df.copy()
+    mapping = _fit_data.get("mapping") if _fit_data else None
+    global_mean = _fit_data.get("global_mean", 0) if _fit_data else 0
+    if mapping is not None:
+        df[feature_name] = df[column].map(mapping).fillna(global_mean)
+    else:
+        df[feature_name] = 0
+    return df
+
+
+def _execute_frequency_encode(df: pd.DataFrame, formula: dict, feature_name: str, *, _fit_data: dict | None = None) -> pd.DataFrame:
+    """Replace categorical values with their frequency proportion. Fit on train."""
+    column = formula["column"]
+    if column not in df.columns:
+        raise ValueError(f"Column '{column}' not found for frequency encoding")
+
+    df = df.copy()
+    mapping = _fit_data.get("mapping") if _fit_data else None
+    if mapping is not None:
+        df[feature_name] = df[column].map(mapping).fillna(0)
+    else:
+        freq = df[column].value_counts(normalize=True)
+        df[feature_name] = df[column].map(freq).fillna(0)
+    return df
+
+
 # Operation dispatcher
 OPERATION_EXECUTORS = {
     "passthrough": _execute_passthrough,
@@ -245,6 +277,8 @@ OPERATION_EXECUTORS = {
     "rolling": _execute_rolling,
     "date_extract": _execute_date_extract,
     "date_diff": _execute_date_diff,
+    "target_encode": _execute_target_encode,
+    "frequency_encode": _execute_frequency_encode,
 }
 
 
@@ -603,7 +637,41 @@ def execute_feature_spec_split(
                 )
                 columns_to_keep.add(feature_name)
                 features_created.append(feature_name)
-            
+
+            elif op == "target_encode":
+                column = formula.get("column", "")
+                smoothing = formula.get("smoothing", 10.0)
+                if column in train_df.columns and target_column in train_df.columns:
+                    global_mean = float(train_df[target_column].mean())
+                    counts = train_df.groupby(column)[target_column].agg(["mean", "count"])
+                    smoothed = (counts["count"] * counts["mean"] + smoothing * global_mean) / (counts["count"] + smoothing)
+                    mapping = smoothed.to_dict()
+                    fit_data = {"mapping": mapping, "global_mean": global_mean}
+                    train_df = _execute_target_encode(train_df, formula, feature_name, _fit_data=fit_data)
+                    if val_df is not None:
+                        val_df = _execute_target_encode(val_df, formula, feature_name, _fit_data=fit_data)
+                    if test_df is not None:
+                        test_df = _execute_target_encode(test_df, formula, feature_name, _fit_data=fit_data)
+                    columns_to_keep.add(feature_name)
+                    features_created.append(feature_name)
+                else:
+                    errors.append(f"target_encode '{feature_name}': column '{column}' or target not found")
+
+            elif op == "frequency_encode":
+                column = formula.get("column", "")
+                if column in train_df.columns:
+                    freq = train_df[column].value_counts(normalize=True).to_dict()
+                    fit_data = {"mapping": freq}
+                    train_df = _execute_frequency_encode(train_df, formula, feature_name, _fit_data=fit_data)
+                    if val_df is not None:
+                        val_df = _execute_frequency_encode(val_df, formula, feature_name, _fit_data=fit_data)
+                    if test_df is not None:
+                        test_df = _execute_frequency_encode(test_df, formula, feature_name, _fit_data=fit_data)
+                    columns_to_keep.add(feature_name)
+                    features_created.append(feature_name)
+                else:
+                    errors.append(f"frequency_encode '{feature_name}': column '{column}' not found")
+
             # Operations that don't need fitting (apply same to all)
             elif op in OPERATION_EXECUTORS:
                 executor = OPERATION_EXECUTORS[op]

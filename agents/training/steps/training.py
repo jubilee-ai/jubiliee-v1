@@ -15,7 +15,6 @@ from pathlib import Path
 from typing import Any, Optional
 
 import numpy as np
-
 from dotenv import load_dotenv
 from langchain.agents import create_agent
 from langchain.agents.structured_output import ToolStrategy
@@ -36,8 +35,8 @@ if str(_MODEL_TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(_MODEL_TOOLS_DIR))
 
 from model_storage import (delete_model, evaluate_model_tool, get_model_info,
-                           get_model_info_tool, list_models, load_model,
-                           list_trained_models_tool)
+                           get_model_info_tool, list_models,
+                           list_trained_models_tool, load_model)
 from utils import get_registered_dataset
 
 SKILLS_DIR = Path(__file__).parent.parent / "skills"
@@ -260,7 +259,8 @@ def _run_quick_baseline(
     This runs in <10s even on large datasets and gives the NN agent a
     concrete target to beat.
     """
-    from sklearn.ensemble import HistGradientBoostingClassifier, HistGradientBoostingRegressor
+    from sklearn.ensemble import (HistGradientBoostingClassifier,
+                                  HistGradientBoostingRegressor)
     from sklearn.metrics import accuracy_score, r2_score, roc_auc_score
     from sklearn.preprocessing import LabelEncoder
 
@@ -609,7 +609,8 @@ def _evaluate_model_on_test(
         X = test_df[[c for c in test_df.columns if c != target_column]]
 
         if task_type == "regression":
-            from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+            from sklearn.metrics import (mean_absolute_error,
+                                         mean_squared_error, r2_score)
             y_pred = model.predict(X)
             result["test_r2"] = float(r2_score(y_true, y_pred))
             result["test_rmse"] = float(np.sqrt(mean_squared_error(y_true, y_pred)))

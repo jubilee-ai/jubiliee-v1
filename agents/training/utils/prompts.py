@@ -131,9 +131,17 @@ Specify each feature using one of these operations:
 | one_hot | `{"op": "one_hot", "column": "region", "drop_first": true}` |
 | ordinal | `{"op": "ordinal", "column": "education", "order": ["hs", "bs", "ms", "phd"]}` |
 | group_agg | `{"op": "group_agg", "column": "amount", "agg": "mean", "group_by": ["zip"]}` |
+| target_encode | `{"op": "target_encode", "column": "city", "smoothing": 10.0}` |
+| frequency_encode | `{"op": "frequency_encode", "column": "category"}` |
 | rolling | `{"op": "rolling", "column": "amount", "agg": "sum", "window": 30, "order_by": "date", "partition_by": ["customer_id"]}` |
 | date_extract | `{"op": "date_extract", "column": "signup_date", "part": "month"}` |
 | date_diff | `{"op": "date_diff", "start_column": "start", "end_column": "end", "unit": "days"}` |
+
+**Encoding guidelines:**
+- `target_encode`: Best for medium-to-high cardinality categoricals (6-50+ values). Smoothed mean-target encoding, fit on train only (no leakage). Preferred over group_agg for target-based encodings.
+- `frequency_encode`: Encodes categories by how often they appear. Good for high-cardinality features where order doesn't matter.
+- `one_hot`: Best for low-cardinality categoricals (≤5-10 values).
+- `ordinal`: Only when a natural monotonic order exists.
 
 ## Temporal Constraints
 For time-sensitive features, set `as_of_constraint`:

@@ -35,10 +35,8 @@ from .steps.label_and_split import (apply_split, compute_split_indices,
                                     run_label_split_definition)
 from .steps.orchestrator import _infer_target_column
 from .steps.select_model import MODEL_FAMILIES
-from .steps.select_model import MODEL_FAMILIES
 from .steps.select_model import select_model as _select_model_impl
 from .steps.training import run_training_agent as _run_training
-
 
 # =============================================================================
 # STRUCTURED OUTPUT SCHEMAS
@@ -67,36 +65,45 @@ class TrainingPlan(BaseModel):
 
 
 SYSTEM_PROMPT = """\
-You are an ML pipeline agent. Execute the pipeline steps to train the best model.
+You are an expert ML engineer. Your job is to train the best possible model for the user's goal.
 
-## CRITICAL RULES
-1. Call EXACTLY ONE tool at a time. NEVER call multiple tools simultaneously.
-2. Wait for each tool to return before calling the next.
-3. Do NOT skip steps. Do NOT repeat a step that already succeeded.
-4. After each tool returns, briefly note the result, then call the next tool.
+You have tools for every stage of the ML pipeline. Call ONE tool at a time, observe the result, \
+then decide what to do next. You are not following a checklist — you are making decisions.
 
-## First Pass — Execute in THIS EXACT ORDER
-1. data_collection — Retrieve the dataset(s) and load it
-2. select_model — Choose the model family (supervised, unsupervised, or neural_networks) based on the goal
-3. cleaning — Clean and standardize the data
-4. label_split_definition — Define target column and train/val/test splits
-5. feature_selection_specification — Analyze data and specify features
-6. feature_engineering_executor — Execute feature transformations
-7. training_approval — Propose training configuration
-8. training — Train the model and evaluate metrics
-9. generate_report — Save the final report
+## Available Tools
 
-## After Training — Optimization (Optional)
-After training completes, evaluate the metrics. If they are unsatisfactory:
-- Weak features → go back to feature_selection_specification
-- Wrong model family → go back to select_model
-- Poor hyperparameters → go back to training_approval
-- Unsuitable dataset (near-zero R² or accuracy near random) → go back to data_collection
-After changing any step, re-run all downstream steps in order.
-Do not loop more than 4 total training iterations.
+**Data & Preparation**
+- `data_collection` — Load the dataset(s)
+- `cleaning` — Clean and standardize raw data
+- `select_model` — Choose the model family (supervised, unsupervised, neural_networks)
+- `label_split_definition` — Define the target column and create train/val/test splits
 
-## After generate_report
-Summarize the final results.
+**Feature Engineering**
+- `feature_selection_specification` — Analyze data and design features (one LLM call with full statistics)
+- `feature_engineering_executor` — Execute the feature spec to produce transformed datasets
+
+**Training & Evaluation**
+- `training_approval` — Propose a training plan (hyperparameters, strategy)
+- `training` — Train models, tune hyperparameters, evaluate on val/test
+
+**Post-Training**
+- `generate_report` — Save the final report
+
+## How to Think
+
+1. **Start** by loading data, selecting a model family, cleaning, and defining labels/splits.
+2. **Engineer features** — this is where most predictive signal comes from. Think about interactions, encodings, and transformations.
+3. **Train and evaluate** — try multiple estimators, tune aggressively.
+4. **After training**, look at the results:
+   - If metrics are poor, go back and fix the root cause (features, model choice, data quality).
+   - If metrics are good, call `generate_report` and finish.
+5. Don't loop more than 4 total training iterations.
+
+## Key Principles
+- Each tool is idempotent — re-calling it will redo that step and invalidate downstream results.
+- You can go back to any earlier step if you have a reason (bad features, wrong model family, etc.).
+- After re-doing a step, you must also re-do the steps that depend on it.
+- When you're satisfied with the final model, generate the report and summarize.
 """
 
 
@@ -113,6 +120,7 @@ def _infer_task_type(goal: str, selected_model: str) -> str:
     if any(w in model_lower for w in ["glm", "regression"]) and "logistic" not in model_lower:
         return "regression"
     return "classification"
+
 
 
 def create_simple_training_agent(
@@ -204,10 +212,10 @@ def create_simple_training_agent(
             _completed_steps.discard(later_step)
 
     def tool_select_model() -> str:
-        """Select the best ML model family for the training goal. Can be re-called to switch families."""
+        """Choose the ML model family (supervised, unsupervised, or neural_networks). Re-call to switch."""
         nonlocal state
         if "select_model" in _completed_steps and not state.get("_redo_feedback_select_model"):
-            return f"SKIP: Model family already selected: {state.get('selected_model')}. Proceed to the next step."
+            return f"Already selected: {state.get('selected_model')}. Call again only if you want to change it."
         if state.get("selected_model") is not None:
             _invalidate_downstream("select_model")
 
@@ -243,12 +251,12 @@ def create_simple_training_agent(
         )
 
     def tool_data_collection() -> str:
-        """Collect or load the dataset. Can be re-called to reload or change data sources."""
+        """Load the dataset(s). Re-call to reload or switch data sources."""
         nonlocal state
         if "data_collection" in _completed_steps and not state.get("_redo_feedback_data_collection"):
             ref = state.get("collected_dataset_ref")
             if ref:
-                return f"SKIP: Dataset already loaded: {ref}. Proceed to the next step."
+                return f"Dataset already loaded: {ref}. Call again only to reload."
         _invalidate_downstream("data_collection")
 
         redo_fb = state.pop("_redo_feedback_data_collection", None)
@@ -289,14 +297,14 @@ def create_simple_training_agent(
         )
 
     def tool_cleaning() -> str:
-        """Clean and standardize the collected dataset. Can be re-called to apply different cleaning."""
+        """Clean and standardize the dataset (handle nulls, types, outliers). Re-call to redo."""
         nonlocal state
         if "cleaning" in _completed_steps and not state.get("_redo_feedback_cleaning"):
-            return f"SKIP: Data already cleaned: {state.get('cleaned_dataset_ref')}. Proceed to the next step."
+            return f"Data already cleaned: {state.get('cleaned_dataset_ref')}. Call again only to redo cleaning."
 
         dataset_ref = state.get("collected_dataset_ref")
         if not dataset_ref:
-            return "SKIP: Cannot run — data_collection must run first."
+            return "No dataset loaded yet — call data_collection first."
         _invalidate_downstream("cleaning")
         redo_fb = state.pop("_redo_feedback_cleaning", None)
         try:
@@ -346,20 +354,20 @@ def create_simple_training_agent(
         )
 
     def tool_label_split_definition() -> str:
-        """Define the target column, split strategy, and create train/val/test splits. Can be re-called."""
+        """Define the target column and create train/val/test splits. Re-call to change."""
         nonlocal state
         if "label_split_definition" in _completed_steps and not state.get("_redo_feedback_label_split"):
             ld = state.get("label_definition") or {}
-            return f"SKIP: Label/split already defined. Target: {ld.get('target_column')}. Proceed to the next step."
+            return f"Label/split defined. Target: {ld.get('target_column')}. Call again only to change it."
         dataset_ref = state.get("cleaned_dataset_ref")
         if not dataset_ref:
-            return "SKIP: Cannot run — cleaning must run first."
+            return "No cleaned dataset yet — call cleaning first."
         _invalidate_downstream("label_split_definition")
 
         if state.get("selected_model") == "unsupervised":
             df = get_registered_dataset(dataset_ref)
             if df is None:
-                return f"SKIP: Dataset not found: {dataset_ref}"
+                return f"Dataset not found: {dataset_ref}"
             train_ref = f"{dataset_ref}_train"
             register_dataset(train_ref, df)
             state.update({
@@ -453,11 +461,11 @@ def create_simple_training_agent(
         )
 
     def tool_feature_selection_specification() -> str:
-        """Analyze data and specify which features to engineer. Can be re-called to redesign features."""
+        """Analyze training data and design features (runs all statistics, then one LLM call). Re-call to redesign."""
         nonlocal state
         if "feature_selection_specification" in _completed_steps and not state.get("feature_redo_requested") and not state.get("_redo_feedback_feature_selection"):
             fs = (state.get("feature_spec") or {}).get("features", [])
-            return f"SKIP: Features already specified ({len(fs)} features). Proceed to the next step."
+            return f"Features already specified ({len(fs)} features). Call again to redesign."
         label_def = state.get("label_definition") or {}
         if state.get("selected_model") == "unsupervised":
             state.update({
@@ -472,7 +480,7 @@ def create_simple_training_agent(
         train_ref = state.get("train_dataset_ref")
         target_column = label_def.get("target_column", "")
         if not train_ref or not target_column:
-            return "SKIP: Cannot run — label_split_definition must run first."
+            return "No labeled splits yet — call label_split_definition first."
         _invalidate_downstream("feature_selection_specification")
 
         redo_fb = state.pop("_redo_feedback_feature_selection", None)
@@ -533,15 +541,15 @@ def create_simple_training_agent(
         return f"Features specified: {len(features)}\nNames: {', '.join(names)}"
 
     def tool_feature_engineering_executor() -> str:
-        """Execute the feature specification to produce transformed train/val/test datasets. Can be re-called."""
+        """Execute the feature spec to produce transformed train/val/test datasets. Re-call after changing features."""
         nonlocal state
         if "feature_engineering_executor" in _completed_steps and state.get("feature_validation_passed"):
-            return f"SKIP: Features already engineered. Proceed to the next step."
+            return f"Features already engineered. Call again only after changing the feature spec."
         label_def = state.get("label_definition") or {}
         if state.get("selected_model") == "unsupervised":
             train_ref = state.get("train_dataset_ref")
             if not train_ref:
-                return "SKIP: Cannot run — label_split_definition must run first."
+                return "No labeled splits yet — call label_split_definition first."
             state.update({
                 "transformed_train_ref": train_ref,
                 "transformed_val_ref": None,
@@ -555,7 +563,7 @@ def create_simple_training_agent(
         feature_spec = state.get("feature_spec")
         target_column = label_def.get("target_column", "")
         if not train_ref or not feature_spec or not target_column:
-            return "SKIP: Cannot run — feature_selection_specification must run first."
+            return "No feature spec yet — call feature_selection_specification first."
         _invalidate_downstream("feature_engineering_executor")
 
         result = execute_feature_spec_split(
@@ -608,11 +616,11 @@ def create_simple_training_agent(
         return summary
 
     def tool_training_approval() -> str:
-        """Propose a training configuration (hyperparameters, strategy). Re-call after changing model or features."""
+        """Propose a training plan (model type, hyperparameters, strategy). Re-call to revise."""
         nonlocal state
         if "training_approval" in _completed_steps and not state.get("_redo_feedback_training_approval"):
             tp = state.get("training_plan") or {}
-            return f"SKIP: Training plan already approved ({tp.get('model_type')}). Proceed to the next step."
+            return f"Training plan already approved ({tp.get('model_type')}). Call again to revise."
         _invalidate_downstream("training_approval")
         train_ref = state.get("transformed_train_ref")
         val_ref = state.get("transformed_val_ref")
@@ -625,7 +633,7 @@ def create_simple_training_agent(
         train_df = get_registered_dataset(train_ref)
         val_df = get_registered_dataset(val_ref) if val_ref else None
         if train_df is None:
-            return "SKIP: Cannot run — feature_engineering_executor must run first."
+            return "No transformed datasets yet — call feature_engineering_executor first."
 
         n_rows = len(train_df)
         if target_column:
@@ -729,8 +737,13 @@ def create_simple_training_agent(
         )
 
     def tool_training() -> str:
-        """Train the model and evaluate on validation/test sets. Can be re-called with different config or features."""
+        """Train models, tune hyperparameters, and evaluate. Tries multiple estimators and keeps the best. Re-callable."""
         nonlocal state
+        if "training" in _completed_steps:
+            metrics = state.get("training_metrics", {})
+            if metrics.get("success"):
+                n = metrics.get("num_iterations", 0)
+                return f"Training already completed ({n} iterations). Call generate_report to finish."
         _invalidate_downstream("training")
         label_def = state.get("label_definition") or {}
         target_column = label_def.get("target_column", "")
@@ -738,9 +751,9 @@ def create_simple_training_agent(
         task_type = _infer_task_type(state.get("goal", ""), selected_model)
         train_ref = state.get("transformed_train_ref")
         if not train_ref:
-            return "SKIP: Cannot run — feature_engineering_executor must complete first."
+            return "No transformed datasets yet — call feature_engineering_executor first."
         if not target_column and task_type != "unsupervised":
-            return "SKIP: Cannot run — label_split_definition must define a target column first."
+            return "No target column defined — call label_split_definition first."
 
         model_name = f"{selected_model}_{int(time.time())}"
         training_plan = state.get("training_plan") or {}
@@ -754,43 +767,13 @@ def create_simple_training_agent(
             goal=state.get("goal", ""),
             model_name=model_name,
             max_iterations=plan_max_iters,
+
         )
 
         feature_redo_requested = result.get("feature_redo_requested", False)
         best_model_type = result.get("model_type", selected_model)
         task_type = _infer_task_type(state.get("goal", ""), selected_model)
-
-        # --- Programmatic quality gates ---
         iteration_num = state.get("training_iteration", 0) + 1
-        if result.get("success") and not feature_redo_requested:
-            if task_type == "regression":
-                val_r2 = result.get("val_r2")
-                if val_r2 is not None and val_r2 < 0.05 and iteration_num <= 2:
-                    feature_redo_requested = True
-                    extra = result.get("feature_redo_recommendation") or ""
-                    result["feature_redo_recommendation"] = (
-                        extra + "\n[AUTO] Val R² < 0.05 — features may lack predictive signal. "
-                        "Try adding interactions, polynomial terms, or different encodings."
-                    )
-                    result["feature_redo_reason"] = f"Auto-triggered: val_r2={val_r2:.4f}"
-            else:
-                val_roc = result.get("val_roc_auc")
-                val_acc = result.get("val_accuracy")
-                if val_roc is not None and val_roc < 0.55 and iteration_num <= 2:
-                    feature_redo_requested = True
-                    extra = result.get("feature_redo_recommendation") or ""
-                    result["feature_redo_recommendation"] = (
-                        extra + "\n[AUTO] Val ROC-AUC < 0.55 — near-random performance. "
-                        "Features may be uninformative or target is noisy."
-                    )
-                    result["feature_redo_reason"] = f"Auto-triggered: val_roc_auc={val_roc:.4f}"
-                elif val_acc is not None and val_acc < 0.55 and val_roc is None and iteration_num <= 2:
-                    feature_redo_requested = True
-                    extra = result.get("feature_redo_recommendation") or ""
-                    result["feature_redo_recommendation"] = (
-                        extra + "\n[AUTO] Val Accuracy < 0.55 — near-random."
-                    )
-                    result["feature_redo_reason"] = f"Auto-triggered: val_accuracy={val_acc:.4f}"
 
         state.update({
             "model_weights_path": result.get("model_name"),
@@ -855,6 +838,14 @@ def create_simple_training_agent(
             lines.append(f"\nFeature redo recommended: {result.get('feature_redo_reason')}")
             lines.append("Consider going back to feature_selection_specification.")
 
+        if not feature_redo_requested and result.get("success"):
+            n_successful = len([it for it in result.get("iterations", []) if it.get("success")])
+            if n_successful >= 2:
+                lines.append(
+                    f"\n{n_successful} models trained successfully. "
+                    f"Consider calling generate_report to finish."
+                )
+
         status = "succeeded" if result.get("success") else "FAILED"
         summary = f"Training **{status}** — {', '.join(metric_parts)}" if metric_parts else f"Training {status}"
         decision = _hitl_gate("training", summary)
@@ -874,11 +865,13 @@ def create_simple_training_agent(
         _completed_steps.add("training")
         return "\n".join(lines)
 
+    # def tool_ensemble() -> str:
+    #     """Optimize the final model. Retrains each model on all data, then blends diverse models. Call after training."""
     def tool_generate_report() -> str:
-        """Generate and save the final training report. Call when satisfied with training results."""
+        """Save the final training report. Call when you're done and satisfied with the results."""
         nonlocal state
         if "generate_report" in _completed_steps:
-            return f"SKIP: Report already generated: {state.get('report_path')}."
+            return f"Report already generated: {state.get('report_path')}."
         metrics = state.get("training_metrics", {})
         label_def = state.get("label_definition") or {}
 

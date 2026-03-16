@@ -1,17 +1,18 @@
 """
-Simple Feature Engineering: Run all analysis tools, then one LLM call.
+Feature Engineering: Run all analysis tools, then one LLM call.
 
-Instead of an agent loop that decides which tools to call, this version:
-1. Runs ALL analysis tools upfront (in parallel conceptually, sequentially in practice)
+Architecture:
+1. Runs ALL analysis tools upfront on training data only
 2. Compiles all results into a single context
-3. Makes ONE LLM call to select and specify features
+3. Makes ONE LLM call to select and specify features via structured output
 
-Same input/output format as feature_engineering.py, but simpler and more deterministic.
+Contains the full Formula DSL (operation types, schemas), validation logic,
+and the one-shot analysis → LLM pipeline.
 """
 
 import json
+import math
 import sys
-import traceback
 from pathlib import Path
 from typing import Any, Literal, Optional, Union
 
@@ -24,8 +25,6 @@ from ..utils.prompts import get_feature_engineering_prompt
 
 load_dotenv(Path(__file__).parent.parent.parent.parent / ".env")
 
-# Add data-tools to path
-# Path: steps -> training -> agents -> root -> tools/data-tools
 _DATA_TOOLS_DIR = Path(__file__).parent.parent.parent.parent / "tools" / "data-tools"
 if str(_DATA_TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(_DATA_TOOLS_DIR))
@@ -35,15 +34,274 @@ from analysis import (analyze_concentration, analyze_distribution,
                       run_eda_report, run_feature_diagnostics)
 from transformations.tool_utils import resolve_dataset
 
-from .feature_engineering import (AsOfConstraint,
-                                  FeatureDefinition,
-                                  FeatureSpec, FormulaOp,
-                                  _extract_columns_from_formula,
-                                  validate_feature_spec)
 
 # =============================================================================
-# IMPORT SHARED TYPES FROM MAIN MODULE
+# FORMULA DSL — structured operations for feature engineering
 # =============================================================================
+
+OperationType = Literal[
+    "passthrough",      # Use column as-is
+    "expression",       # Computed expression (pandas eval or fallback eval)
+    "bin",              # Discretize numeric into buckets
+    "one_hot",          # One-hot encode categorical
+    "ordinal",          # Ordinal encode with specified order
+    "group_agg",        # Group-by aggregation
+    "rolling",          # Rolling window aggregation
+    "date_extract",     # Extract datetime parts (year, month, day, etc.)
+    "date_diff",        # Difference between two date columns
+    "target_encode",    # Smoothed target-mean encoding (fit on train only)
+    "frequency_encode", # Replace categories with their frequency proportion
+]
+
+AggFunction = Literal["mean", "sum", "min", "max", "count", "std", "median", "nunique", "first", "last"]
+DatePart = Literal["year", "month", "day", "dayofweek", "hour", "quarter", "weekofyear"]
+BinStrategy = Literal["uniform", "quantile"]
+
+
+class PassthroughOp(BaseModel):
+    """Use a column as-is without transformation."""
+    op: Literal["passthrough"] = "passthrough"
+    column: str = Field(description="Source column name")
+
+
+class ExpressionOp(BaseModel):
+    """Compute a new column from an expression. Supports: +, -, *, /, **, comparisons, and functions (abs, sqrt, log, round, min, max)."""
+    op: Literal["expression"] = "expression"
+    expression: str = Field(
+        description="Expression using column names. Examples: 'loan_amount / annual_income', 'age * 12', 'sqrt(income)'"
+    )
+    source_columns: list[str] = Field(description="Columns used in the expression")
+
+
+class BinOp(BaseModel):
+    """Discretize a numeric column into bins/buckets."""
+    op: Literal["bin"] = "bin"
+    column: str = Field(description="Numeric column to bin")
+    bins: Union[int, list[float]] = Field(
+        description="Number of bins (int) OR list of bin edges. Example: 5 or [0, 25, 50, 75, 100]"
+    )
+    strategy: BinStrategy = Field(default="quantile", description="'uniform' (equal-width) or 'quantile' (equal-frequency)")
+    labels: Optional[list[str]] = Field(default=None, description="Optional labels for bins")
+
+
+class OneHotOp(BaseModel):
+    """One-hot encode a categorical column into multiple binary columns."""
+    op: Literal["one_hot"] = "one_hot"
+    column: str = Field(description="Categorical column to encode")
+    drop_first: bool = Field(default=True, description="Drop first category to avoid multicollinearity")
+
+
+class OrdinalOp(BaseModel):
+    """Ordinal encode a categorical column with specified order."""
+    op: Literal["ordinal"] = "ordinal"
+    column: str = Field(description="Categorical column to encode")
+    order: list[str] = Field(description="Categories in order from lowest to highest. Example: ['low', 'medium', 'high']")
+
+
+class GroupAggOp(BaseModel):
+    """Create an aggregated feature by computing a statistic within groups."""
+    op: Literal["group_agg"] = "group_agg"
+    column: str = Field(description="Column to aggregate")
+    agg: AggFunction = Field(description="Aggregation function: mean, sum, min, max, count, std, median, nunique")
+    group_by: list[str] = Field(description="Column(s) to group by")
+
+
+class RollingOp(BaseModel):
+    """Compute a rolling window aggregation over a time-ordered column."""
+    op: Literal["rolling"] = "rolling"
+    column: str = Field(description="Column to aggregate")
+    agg: Literal["mean", "sum", "min", "max", "std"] = Field(description="Rolling aggregation function")
+    window: int = Field(description="Window size (number of rows)")
+    partition_by: Optional[list[str]] = Field(default=None, description="Optional column(s) to partition by before rolling")
+    order_by: str = Field(description="Column to order by (usually a date/time column)")
+
+
+class DateExtractOp(BaseModel):
+    """Extract a part from a datetime column (year, month, day, etc.)."""
+    op: Literal["date_extract"] = "date_extract"
+    column: str = Field(description="Datetime column")
+    part: DatePart = Field(description="Part to extract: year, month, day, dayofweek, hour, quarter, weekofyear")
+
+
+class DateDiffOp(BaseModel):
+    """Compute the difference between two date columns."""
+    op: Literal["date_diff"] = "date_diff"
+    start_column: str = Field(description="Start date column")
+    end_column: str = Field(description="End date column")
+    unit: Literal["days", "months", "years"] = Field(default="days", description="Unit for the difference")
+
+
+class TargetEncodeOp(BaseModel):
+    """Smoothed target-mean encoding for categorical columns. Fit on train only to prevent leakage."""
+    op: Literal["target_encode"] = "target_encode"
+    column: str = Field(description="Categorical column to encode")
+    smoothing: float = Field(default=10.0, description="Smoothing factor — higher values shrink category means toward global mean")
+
+
+class FrequencyEncodeOp(BaseModel):
+    """Replace categorical values with their frequency (proportion) in the dataset."""
+    op: Literal["frequency_encode"] = "frequency_encode"
+    column: str = Field(description="Categorical column to encode")
+
+
+FormulaOp = Union[
+    PassthroughOp,
+    ExpressionOp,
+    BinOp,
+    OneHotOp,
+    OrdinalOp,
+    GroupAggOp,
+    RollingOp,
+    DateExtractOp,
+    DateDiffOp,
+    TargetEncodeOp,
+    FrequencyEncodeOp,
+]
+
+
+# =============================================================================
+# STRUCTURED OUTPUT SCHEMAS
+# =============================================================================
+
+class AsOfConstraint(BaseModel):
+    """Temporal constraint to prevent data leakage."""
+    source_date_column: str = Field(
+        description="The date/timestamp column that must be checked (e.g., 'transaction_date')"
+    )
+    operator: Literal["<", "<="] = Field(
+        default="<",
+        description="Comparison operator: '<' (strictly before) or '<=' (on or before)"
+    )
+
+
+class FeatureDefinition(BaseModel):
+    """Definition of a single feature for the ML model."""
+    name: str = Field(description="Feature name (e.g., 'credit_score', 'income_to_loan_ratio', 'region_encoded')")
+    formula: FormulaOp = Field(description="The operation to compute this feature. Must be one of the structured operation types.")
+    grain: str = Field(description="Grain level this feature is computed at (e.g., 'loan_id', 'customer_id')")
+    as_of_constraint: Optional[AsOfConstraint] = Field(
+        default=None,
+        description="Temporal constraint to prevent leakage. Set if this feature uses time-sensitive data. Null if feature is static/non-temporal."
+    )
+
+
+class FeatureSpec(BaseModel):
+    """Complete feature specification for the ML model."""
+    features: list[FeatureDefinition] = Field(
+        description="List of features to use in the model",
+        min_length=1
+    )
+    reasoning: str = Field(
+        description="Explanation of why these features were selected and how they relate to the prediction goal"
+    )
+    excluded_columns: list[str] = Field(
+        default_factory=list,
+        description="Columns that were intentionally excluded (forbidden, leaky, or redundant) with reasons"
+    )
+
+
+# =============================================================================
+# VALIDATION
+# =============================================================================
+
+_VALID_OPS = {
+    "passthrough", "expression", "bin", "one_hot", "ordinal",
+    "group_agg", "rolling", "date_extract", "date_diff",
+    "target_encode", "frequency_encode",
+}
+
+
+def _extract_columns_from_formula(formula: dict) -> set[str]:
+    """Extract all column references from a formula operation."""
+    cols = set()
+    op = formula.get("op")
+
+    if op in ("passthrough", "bin", "one_hot", "ordinal", "target_encode", "frequency_encode"):
+        cols.add(formula.get("column", ""))
+    elif op == "expression":
+        cols.update(formula.get("source_columns", []))
+    elif op == "group_agg":
+        cols.add(formula.get("column", ""))
+        cols.update(formula.get("group_by", []))
+    elif op == "rolling":
+        cols.add(formula.get("column", ""))
+        cols.add(formula.get("order_by", ""))
+        cols.update(formula.get("partition_by") or [])
+    elif op == "date_extract":
+        cols.add(formula.get("column", ""))
+    elif op == "date_diff":
+        cols.add(formula.get("start_column", ""))
+        cols.add(formula.get("end_column", ""))
+
+    cols.discard("")
+    return cols
+
+
+def validate_feature_spec(
+    feature_spec: dict,
+    available_columns: set[str],
+    forbidden_columns: set[str] = None,
+    target_column: str = None,
+) -> dict[str, Any]:
+    """Validate that a feature specification is executable against a dataset."""
+    errors = []
+    warnings = []
+    features_valid = {}
+    forbidden_columns = forbidden_columns or set()
+
+    features = feature_spec.get("features", [])
+
+    for feat in features:
+        feat_name = feat.get("name", "unknown")
+        feat_errors = []
+        feat_warnings = []
+
+        formula = feat.get("formula", {})
+        op = formula.get("op")
+
+        if op not in _VALID_OPS:
+            feat_errors.append(f"Invalid operation: '{op}'")
+
+        cols = _extract_columns_from_formula(formula)
+
+        missing = cols - available_columns
+        if missing:
+            feat_errors.append(f"Missing columns: {missing}")
+
+        used_forbidden = cols & forbidden_columns
+        if used_forbidden:
+            feat_errors.append(f"Uses forbidden columns: {used_forbidden}")
+
+        if target_column and target_column in cols and op != "target_encode":
+            feat_errors.append(f"Uses target column '{target_column}' as input (leakage)")
+
+        as_of = feat.get("as_of_constraint")
+        if as_of and isinstance(as_of, dict):
+            source_col = as_of.get("source_date_column")
+            if source_col and source_col not in available_columns:
+                feat_warnings.append(f"as_of_constraint references missing column: '{source_col}'")
+
+        is_valid = len(feat_errors) == 0
+        features_valid[feat_name] = {
+            "valid": is_valid,
+            "errors": feat_errors,
+            "warnings": feat_warnings,
+            "columns_used": list(cols),
+        }
+
+        for err in feat_errors:
+            errors.append(f"Feature '{feat_name}': {err}")
+        for warn in feat_warnings:
+            warnings.append(f"Feature '{feat_name}': {warn}")
+
+    return {
+        "valid": len(errors) == 0,
+        "errors": errors,
+        "warnings": warnings,
+        "features_valid": features_valid,
+        "total_features": len(features),
+        "valid_features": sum(1 for f in features_valid.values() if f["valid"]),
+    }
 
 
 # =============================================================================
@@ -51,44 +309,34 @@ from .feature_engineering import (AsOfConstraint,
 # =============================================================================
 
 def _extract_key_stats(analysis_results: dict[str, Any], target_column: str) -> dict[str, Any]:
-    """
-    Extract key statistics from raw analysis results for display.
-    Returns a structured dict optimized for frontend display.
-    
-    Handles the actual data formats returned by the analysis tools:
-    - EDA Report: numeric_summary is a LIST of dicts, not a dict
-    - Correlation Matrix: has 'matrix' key with nested correlations
-    - Distribution Analysis: has 'distributions' key with nested data
-    - Concentration Analysis: has gini_coefficient, lorenz_curve, etc.
-    """
+    """Extract key statistics from raw analysis results for frontend display."""
     key_stats = {
         "dataset_overview": {},
         "target_analysis": {},
         "feature_correlations": [],
-        "mutual_information": [],  # Non-linear feature-target association
-        "correlation_matrix": {},  # Full matrix for heatmap
+        "mutual_information": [],
+        "correlation_matrix": {},
         "high_correlation_pairs": [],
         "distribution_stats": [],
-        "numeric_summaries": [],  # Detailed numeric column stats
+        "numeric_summaries": [],
         "leakage_warnings": [],
-        "feature_health": [],  # From feature diagnostics
+        "feature_health": [],
         "categorical_summaries": [],
-        "cardinality_analysis": [],  # Categorical encoding guidance
-        "group_summaries": [],  # Detailed group summaries with default rates
+        "cardinality_analysis": [],
+        "group_summaries": [],
         "concentration_analysis": [],
-        "schema": [],  # Column schema
+        "schema": [],
         "summary_text": "",
     }
-    
-    # 1. Extract EDA Report stats
+
+    # 1. EDA Report stats
     eda = analysis_results.get("eda_report")
     if isinstance(eda, dict):
         shape = eda.get("shape", {})
         schema = eda.get("schema", [])
         numeric_summary = eda.get("numeric_summary", [])
         categorical_summary = eda.get("categorical_summary", [])
-        
-        # Schema is a list of column info
+
         if isinstance(schema, list):
             key_stats["schema"] = [
                 {
@@ -99,12 +347,11 @@ def _extract_key_stats(analysis_results: dict[str, Any], target_column: str) -> 
                 }
                 for s in schema if isinstance(s, dict)
             ]
-        
-        # Numeric summary is a LIST of dicts: [{column: "Age", mean: 43.51, ...}, ...]
+
         num_numeric = 0
         num_categorical = 0
         target_stats = None
-        
+
         if isinstance(numeric_summary, list):
             num_numeric = len(numeric_summary)
             key_stats["numeric_summaries"] = []
@@ -142,72 +389,60 @@ def _extract_key_stats(analysis_results: dict[str, Any], target_column: str) -> 
                     key_stats["numeric_summaries"].append(stat)
                     if col == target_column:
                         target_stats = stat
-        
-        if isinstance(categorical_summary, list):
+
+        if isinstance(categorical_summary, (list, dict)):
             num_categorical = len(categorical_summary)
-        elif isinstance(categorical_summary, dict):
-            num_categorical = len(categorical_summary)
-        
+
         key_stats["dataset_overview"] = {
             "rows": shape.get("rows") if isinstance(shape, dict) else None,
             "columns": shape.get("columns") if isinstance(shape, dict) else None,
             "numeric_columns": num_numeric,
             "categorical_columns": num_categorical,
         }
-        
-        # Target column analysis from EDA (fallback)
+
         if target_stats:
-            key_stats["target_analysis"] = {
-                "type": "numeric",
-                **target_stats
-            }
-    
-    # 1b. Override target analysis with dedicated result (has class balance info)
+            key_stats["target_analysis"] = {"type": "numeric", **target_stats}
+
+    # 1b. Override target analysis with dedicated result
     target_info = analysis_results.get("target_analysis")
     if isinstance(target_info, dict) and "column" in target_info:
         key_stats["target_analysis"] = target_info
-    
-    # 2. Extract correlation info from matrix
+
+    # 2. Correlation info
     corr = analysis_results.get("correlation_matrix")
     if isinstance(corr, dict):
         matrix = corr.get("matrix", {})
         columns = corr.get("columns", [])
-        
-        # Store full matrix for heatmap
+
         if matrix and columns:
-            key_stats["correlation_matrix"] = {
-                "columns": columns,
-                "matrix": matrix,
-            }
-        
-        # Get correlations with target from the matrix
+            key_stats["correlation_matrix"] = {"columns": columns, "matrix": matrix}
+
         if isinstance(matrix, dict) and target_column in matrix:
             target_corrs = matrix[target_column]
             if isinstance(target_corrs, dict):
                 sorted_corrs = sorted(
                     [(col, val) for col, val in target_corrs.items() if col != target_column and isinstance(val, (int, float))],
                     key=lambda x: abs(x[1]),
-                    reverse=True
+                    reverse=True,
                 )
                 key_stats["feature_correlations"] = [
                     {"feature": col, "correlation": round(val, 4)}
                     for col, val in sorted_corrs[:15]
                 ]
-        
-        # Get high correlation pairs (if available)
+
         high_corr = corr.get("high_correlations", [])
         if high_corr and isinstance(high_corr, list):
-            pairs = []
-            for pair in high_corr[:10]:
-                if isinstance(pair, dict):
-                    pairs.append({
-                        "feature1": pair.get("col1") or pair.get("feature1"),
-                        "feature2": pair.get("col2") or pair.get("feature2"),
-                        "correlation": round(pair.get("correlation", 0), 4) if isinstance(pair.get("correlation"), (int, float)) else 0
-                    })
-            key_stats["high_correlation_pairs"] = pairs
-    
-    # 3. Extract feature diagnostics
+            key_stats["high_correlation_pairs"] = [
+                {
+                    "feature1": pair.get("col1") or pair.get("feature1"),
+                    "feature2": pair.get("col2") or pair.get("feature2"),
+                    "correlation": round(pair.get("correlation", 0), 4) if isinstance(pair.get("correlation"), (int, float)) else 0,
+                }
+                for pair in high_corr[:10]
+                if isinstance(pair, dict)
+            ]
+
+    # 3. Feature diagnostics
     diagnostics = analysis_results.get("feature_diagnostics")
     if isinstance(diagnostics, dict):
         feature_health = diagnostics.get("feature_health", [])
@@ -222,14 +457,14 @@ def _extract_key_stats(analysis_results: dict[str, Any], target_column: str) -> 
                 }
                 for f in feature_health if isinstance(f, dict)
             ]
-        
-        # Extract leakage warnings
-        leakage_features = [f.get("column") for f in feature_health 
-                           if isinstance(f, dict) and f.get("leakage_risk") not in [None, "none", "low"]]
-        if leakage_features:
-            key_stats["leakage_warnings"] = leakage_features
-        
-        # Summary info
+
+            leakage_features = [
+                f.get("column") for f in feature_health
+                if isinstance(f, dict) and f.get("leakage_risk") not in [None, "none", "low"]
+            ]
+            if leakage_features:
+                key_stats["leakage_warnings"] = leakage_features
+
         summary = diagnostics.get("summary", {})
         if isinstance(summary, dict):
             key_stats["diagnostics_summary"] = {
@@ -238,25 +473,21 @@ def _extract_key_stats(analysis_results: dict[str, Any], target_column: str) -> 
                 "transform": summary.get("transform", 0),
                 "keep_as_is": summary.get("keep_as_is", 0),
             }
-    
-    # 4. Extract distribution stats - note the 'distributions' nested key
+
+    # 4. Distribution stats
     dist = analysis_results.get("distribution_analysis")
     if isinstance(dist, dict):
-        distributions = dist.get("distributions", dist)  # May be nested under 'distributions'
-        columns_analyzed = dist.get("columns_analyzed", [])
-        
+        distributions = dist.get("distributions", dist)
         if isinstance(distributions, dict):
             dist_stats = []
             for col, stats in distributions.items():
                 if isinstance(stats, dict):
                     hist = stats.get("histogram", [])
-                    histogram_data = []
-                    if isinstance(hist, list):
-                        histogram_data = [
-                            {"range": h.get("range"), "count": h.get("count"), "pct": h.get("pct")}
-                            for h in hist if isinstance(h, dict)
-                        ]
-                    
+                    histogram_data = [
+                        {"range": h.get("range"), "count": h.get("count"), "pct": h.get("pct")}
+                        for h in hist if isinstance(h, dict)
+                    ] if isinstance(hist, list) else []
+
                     dist_stats.append({
                         "column": col,
                         "n": stats.get("n"),
@@ -274,24 +505,23 @@ def _extract_key_stats(analysis_results: dict[str, Any], target_column: str) -> 
                         "percentiles": stats.get("percentiles", {}),
                     })
             key_stats["distribution_stats"] = dist_stats
-    
-    # 5. Extract group summaries - detailed with default rates per group
+
+    # 5. Group summaries
     group = analysis_results.get("group_summary")
     if isinstance(group, dict):
         group_summaries = []
         for col, summary in group.items():
             if isinstance(summary, dict):
                 groups = summary.get("groups", [])
-                group_data = []
-                if isinstance(groups, list):
-                    for g in groups:
-                        if isinstance(g, dict):
-                            group_data.append({
-                                "value": g.get(col),
-                                "count": g.get(f"{target_column}_count"),
-                                "mean": round(g.get(f"{target_column}_mean", 0), 3) if g.get(f"{target_column}_mean") is not None else None,
-                            })
-                
+                group_data = [
+                    {
+                        "value": g.get(col),
+                        "count": g.get(f"{target_column}_count"),
+                        "mean": round(g.get(f"{target_column}_mean", 0), 3) if g.get(f"{target_column}_mean") is not None else None,
+                    }
+                    for g in groups if isinstance(g, dict)
+                ] if isinstance(groups, list) else []
+
                 group_summaries.append({
                     "column": col,
                     "n_groups": summary.get("n_groups", len(group_data)),
@@ -300,31 +530,23 @@ def _extract_key_stats(analysis_results: dict[str, Any], target_column: str) -> 
                     "overall_mean": summary.get("overall", {}).get(target_column, {}).get("mean") if isinstance(summary.get("overall"), dict) else None,
                 })
         key_stats["group_summaries"] = group_summaries
-        
-        # Simplified categorical summaries for backward compat
         key_stats["categorical_summaries"] = [
-            {
-                "column": s["column"],
-                "groups": [g["value"] for g in s["groups"][:10]],
-                "group_count": s["n_groups"],
-            }
+            {"column": s["column"], "groups": [g["value"] for g in s["groups"][:10]], "group_count": s["n_groups"]}
             for s in group_summaries
         ]
-    
-    # 6. Extract concentration analysis with full details
+
+    # 6. Concentration analysis
     conc = analysis_results.get("concentration_analysis")
     if isinstance(conc, dict):
         conc_stats = []
         for col, stats in conc.items():
             if isinstance(stats, dict):
                 lorenz = stats.get("lorenz_curve", [])
-                lorenz_data = []
-                if isinstance(lorenz, list):
-                    lorenz_data = [
-                        {"pct_entities": l.get("pct_of_entities"), "pct_value": l.get("pct_of_value")}
-                        for l in lorenz if isinstance(l, dict)
-                    ]
-                
+                lorenz_data = [
+                    {"pct_entities": l.get("pct_of_entities"), "pct_value": l.get("pct_of_value")}
+                    for l in lorenz if isinstance(l, dict)
+                ] if isinstance(lorenz, list) else []
+
                 top_n = stats.get("top_n_contribution", {})
                 conc_stats.append({
                     "column": col,
@@ -339,23 +561,22 @@ def _extract_key_stats(analysis_results: dict[str, Any], target_column: str) -> 
                     "lorenz_curve": lorenz_data,
                 })
         key_stats["concentration_analysis"] = conc_stats
-    
-    # 7. Extract mutual information scores
+
+    # 7. Mutual information scores
     mi = analysis_results.get("mutual_information")
     if isinstance(mi, list):
         key_stats["mutual_information"] = mi
-    
-    # 8. Extract cardinality analysis
+
+    # 8. Cardinality analysis
     card = analysis_results.get("cardinality_analysis")
     if isinstance(card, list):
         key_stats["cardinality_analysis"] = card
-    
-    # 9. Generate summary text
+
+    # 9. Summary text
     summary_parts = []
     if key_stats["dataset_overview"].get("rows"):
         summary_parts.append(f"Dataset has {key_stats['dataset_overview']['rows']:,} rows and {key_stats['dataset_overview']['columns']} columns")
-    
-    # Target class balance summary
+
     ta = key_stats.get("target_analysis", {})
     if ta.get("task_type") == "classification" and ta.get("minority_class_count"):
         minority_pct = ta["minority_class_count"] / ta.get("n_rows", 1)
@@ -364,7 +585,7 @@ def _extract_key_stats(analysis_results: dict[str, Any], target_column: str) -> 
             f"minority={ta['minority_class_count']:,} ({minority_pct:.1%}), "
             f"imbalance ratio={ta.get('imbalance_ratio', '?')}"
         )
-    
+
     if key_stats.get("numeric_summaries"):
         summary_parts.append(f"{len(key_stats['numeric_summaries'])} numeric features analyzed")
     if key_stats.get("feature_correlations"):
@@ -374,16 +595,16 @@ def _extract_key_stats(analysis_results: dict[str, Any], target_column: str) -> 
         top_mi = mi[0]
         summary_parts.append(f"Top mutual information: {top_mi['feature']} (MI={top_mi['mutual_information']})")
     if key_stats.get("leakage_warnings"):
-        summary_parts.append(f"⚠️ {len(key_stats['leakage_warnings'])} features flagged for potential leakage")
+        summary_parts.append(f"{len(key_stats['leakage_warnings'])} features flagged for potential leakage")
     if key_stats.get("high_correlation_pairs"):
         summary_parts.append(f"{len(key_stats['high_correlation_pairs'])} highly correlated pairs found")
     if isinstance(card, list):
         high_card = [c for c in card if c.get("n_unique", 0) > 50]
         if high_card:
             summary_parts.append(f"{len(high_card)} high-cardinality categoricals (>50 values)")
-    
+
     key_stats["summary_text"] = ". ".join(summary_parts) if summary_parts else "Analysis complete"
-    
+
     return key_stats
 
 
@@ -428,12 +649,10 @@ def _compute_target_analysis(df, target_column: str, task_type: str) -> dict[str
 
 
 def _compute_mutual_information(df, feature_cols: list[str], target_column: str, task_type: str) -> list[dict]:
-    """
-    Compute mutual information between each feature and the target.
-    Works for both numeric and categorical features, captures non-linear associations.
-    """
+    """Compute mutual information between each feature and the target."""
     from sklearn.feature_selection import mutual_info_classif, mutual_info_regression
     from sklearn.preprocessing import LabelEncoder
+    import pandas as pd
 
     target = df[target_column].copy()
     if target.isna().any():
@@ -444,7 +663,6 @@ def _compute_mutual_information(df, feature_cols: list[str], target_column: str,
     mi_func = mutual_info_classif if task_type == "classification" else mutual_info_regression
 
     if target.dtype == "object" or target.dtype.name == "category":
-        import pandas as pd
         le_target = LabelEncoder()
         target = pd.Series(le_target.fit_transform(target.astype(str)), index=target.index)
 
@@ -502,11 +720,11 @@ def _compute_cardinality_analysis(df, cat_cols: list[str]) -> list[dict]:
         if n_unique <= 5:
             suggested_encoding = "one_hot"
         elif n_unique <= 15:
-            suggested_encoding = "one_hot_or_ordinal"
+            suggested_encoding = "one_hot_or_target_encode"
         elif n_unique <= 50:
-            suggested_encoding = "ordinal_or_group_agg"
+            suggested_encoding = "target_encode_or_frequency_encode"
         else:
-            suggested_encoding = "group_agg"
+            suggested_encoding = "target_encode_or_frequency_encode"
 
         results.append({
             "column": col,
@@ -523,44 +741,35 @@ def _compute_cardinality_analysis(df, cat_cols: list[str]) -> list[dict]:
 
 
 def _run_all_analysis(dataset_ref: str, target_column: str, task_type: str = "classification") -> dict[str, Any]:
-    """
-    Run all analysis tools on the dataset and collect results.
-    
-    Returns a dict with results from each tool (or error message if failed).
-    """
+    """Run all analysis tools on the dataset and collect results."""
     results = {}
     df = resolve_dataset(dataset_ref)
-    
-    # Get column lists
+
     numeric_cols = df.select_dtypes(include=["number"]).columns.tolist()
     cat_cols = df.select_dtypes(include=["object", "category"]).columns.tolist()
     all_feature_cols = [c for c in df.columns if c != target_column]
     numeric_feature_cols = [c for c in numeric_cols if c != target_column]
-    
-    # Adaptive limits based on dataset size — analyze more columns for smaller datasets
+
     n_cols = len(all_feature_cols)
     max_numeric = min(n_cols, 30)
     max_cat = min(len(cat_cols), 15)
     max_diag = min(n_cols, 25)
     max_conc = min(len(numeric_feature_cols), 5)
-    
+
     print(f"[feature_analysis] Analyzing {len(numeric_cols)} numeric, {len(cat_cols)} categorical columns")
-    
-    # 0. TARGET ANALYSIS — class balance, imbalance ratio, EPV context
+
     try:
         print(f"[feature_analysis] Analyzing target column '{target_column}'...")
         results["target_analysis"] = _compute_target_analysis(df, target_column, task_type)
     except Exception as e:
         results["target_analysis"] = f"Error: {e}"
-    
-    # 1. EDA Report - always run
+
     try:
         print(f"[feature_analysis] Running EDA report...")
         results["eda_report"] = run_eda_report(dataset_ref)
     except Exception as e:
         results["eda_report"] = f"Error: {e}"
-    
-    # 2. Correlation Matrix (adaptive limit)
+
     try:
         print(f"[feature_analysis] Computing correlation matrix ({min(len(numeric_cols), max_numeric)} columns)...")
         results["correlation_matrix"] = compute_correlation_matrix(
@@ -570,8 +779,7 @@ def _run_all_analysis(dataset_ref: str, target_column: str, task_type: str = "cl
         )
     except Exception as e:
         results["correlation_matrix"] = f"Error: {e}"
-    
-    # 3. Feature Diagnostics - leakage, redundancy, skew (adaptive limit)
+
     try:
         diag_cols = all_feature_cols[:max_diag]
         if diag_cols:
@@ -586,10 +794,9 @@ def _run_all_analysis(dataset_ref: str, target_column: str, task_type: str = "cl
             results["feature_diagnostics"] = "No features to analyze"
     except Exception as e:
         results["feature_diagnostics"] = f"Error: {e}"
-    
-    # 4. Distribution Analysis - for numeric feature columns
+
     try:
-        cols_to_analyze = [c for c in numeric_feature_cols[:max_numeric]]
+        cols_to_analyze = numeric_feature_cols[:max_numeric]
         if cols_to_analyze:
             print(f"[feature_analysis] Analyzing distributions for {len(cols_to_analyze)} columns...")
             results["distribution_analysis"] = analyze_distribution(
@@ -600,8 +807,7 @@ def _run_all_analysis(dataset_ref: str, target_column: str, task_type: str = "cl
             results["distribution_analysis"] = "No numeric columns to analyze"
     except Exception as e:
         results["distribution_analysis"] = f"Error: {e}"
-    
-    # 5. Group Summary - for categorical columns (adaptive limit)
+
     try:
         if cat_cols:
             group_cats = cat_cols[:max_cat]
@@ -623,8 +829,7 @@ def _run_all_analysis(dataset_ref: str, target_column: str, task_type: str = "cl
             results["group_summary"] = "No categorical columns to analyze"
     except Exception as e:
         results["group_summary"] = f"Error: {e}"
-    
-    # 6. Concentration Analysis
+
     try:
         conc_cols = numeric_feature_cols[:max_conc]
         if conc_cols:
@@ -632,18 +837,14 @@ def _run_all_analysis(dataset_ref: str, target_column: str, task_type: str = "cl
         concentration_results = {}
         for col in conc_cols:
             try:
-                conc = analyze_concentration(
-                    dataset_ref=dataset_ref,
-                    value_col=col,
-                )
+                conc = analyze_concentration(dataset_ref=dataset_ref, value_col=col)
                 concentration_results[col] = conc
             except Exception as e:
                 concentration_results[col] = f"Error: {e}"
         results["concentration_analysis"] = concentration_results if concentration_results else "No columns to analyze"
     except Exception as e:
         results["concentration_analysis"] = f"Error: {e}"
-    
-    # 7. MUTUAL INFORMATION — non-linear feature-target association
+
     try:
         mi_cols = all_feature_cols[:max_numeric]
         if mi_cols:
@@ -653,8 +854,7 @@ def _run_all_analysis(dataset_ref: str, target_column: str, task_type: str = "cl
             results["mutual_information"] = "No features to analyze"
     except Exception as e:
         results["mutual_information"] = f"Error: {e}"
-    
-    # 8. CARDINALITY ANALYSIS — encoding strategy input
+
     try:
         if cat_cols:
             print(f"[feature_analysis] Analyzing cardinality for {len(cat_cols)} categorical columns...")
@@ -663,15 +863,17 @@ def _run_all_analysis(dataset_ref: str, target_column: str, task_type: str = "cl
             results["cardinality_analysis"] = "No categorical columns to analyze"
     except Exception as e:
         results["cardinality_analysis"] = f"Error: {e}"
-    
+
     print(f"[feature_analysis] Analysis complete")
-    
     return results
 
 
+# =============================================================================
+# FORMATTING
+# =============================================================================
+
 def _sanitize_for_json(obj: Any) -> Any:
     """Replace NaN/Inf floats with None so json.dumps produces valid JSON."""
-    import math
     if isinstance(obj, float) and (math.isnan(obj) or math.isinf(obj)):
         return None
     if isinstance(obj, dict):
@@ -682,11 +884,7 @@ def _sanitize_for_json(obj: Any) -> Any:
 
 
 def _format_analysis_results(results: dict[str, Any]) -> str:
-    """Format analysis results into a readable string for the LLM.
-    
-    Uses per-section limits that prioritize high-value analyses (target, MI,
-    correlations, diagnostics) over less critical ones (concentration, distribution).
-    """
+    """Format analysis results into a readable string for the LLM."""
     SECTION_LIMITS = {
         "target_analysis": 2000,
         "mutual_information": 4000,
@@ -698,7 +896,7 @@ def _format_analysis_results(results: dict[str, Any]) -> str:
     DEFAULT_LIMIT = 4000
 
     sections = []
-    
+
     for tool_name, result in results.items():
         limit = SECTION_LIMITS.get(tool_name, DEFAULT_LIMIT)
         sections.append(f"## {tool_name.replace('_', ' ').title()}")
@@ -714,7 +912,7 @@ def _format_analysis_results(results: dict[str, Any]) -> str:
         else:
             sections.append(str(result)[:2000])
         sections.append("")
-    
+
     return "\n".join(sections)
 
 
@@ -730,7 +928,7 @@ def run_feature_engineering_simple(
     goal: str,
     target_column: str,
     grain: str,
-    recomendation: Optional[str] = None, # This is if we need to go back to the feature engineering to regenerate the features from training
+    recomendation: Optional[str] = None,
     val_ref: Optional[str] = None,
     test_ref: Optional[str] = None,
     task_type: TaskType = "classification",
@@ -742,53 +940,24 @@ def run_feature_engineering_simple(
 ) -> dict[str, Any]:
     """
     Run feature engineering with all analysis upfront, then one LLM call.
-    
-    IMPORTANT: Analysis is run ONLY on training data to prevent data leakage.
-    The feature spec generated is based solely on training data statistics.
-    
-    This function generates the feature_spec. Use execute_feature_spec_split()
-    to apply the spec to train/val/test sets (fitting on train, transforming all).
-    
-    Args:
-        train_ref: Reference to the TRAINING dataset (analysis runs on this only)
-        goal: Description of the ML goal
-        target_column: The target column for prediction
-        grain: What one row represents (e.g., policy_id)
-        val_ref: Optional reference to validation dataset (for info only, not analyzed)
-        test_ref: Optional reference to test dataset (for info only, not analyzed)
-        task_type: Either "classification" or "regression"
-        forbidden_columns: Columns not available at prediction time
-        as_of_cutoff: Column representing the observation timestamp
-        prediction_horizon: How far into the future we're predicting
-        selected_model: ML model type (e.g., "logistic_regression", "xgboost") —
-            used to tailor feature engineering strategy to the model's strengths
-        model: Model to use for the LLM call
-    
-    Returns:
-        Dict with:
-        - feature_spec: The feature specification
-        - validation: Validation results
-        - analysis_results: Raw analysis tool outputs (for debugging)
-        - dataset_refs: {"train": train_ref, "val": val_ref, "test": test_ref}
+
+    Analysis is run ONLY on training data to prevent data leakage.
+    Generates a feature_spec. Use execute_feature_spec_split() to apply it.
     """
     forbidden_columns = forbidden_columns or []
-    
-    # Step 1: Run all analysis tools ON TRAINING DATA ONLY
+
     print(f"Running analysis tools on training data ({train_ref})...")
     analysis_results = _run_all_analysis(train_ref, target_column, task_type)
-    
-    # Step 1.5: Extract key statistics for frontend display
+
     print(f"Extracting key statistics for display...")
     key_stats = _extract_key_stats(analysis_results, target_column)
-    
-    # Step 2: Format results into context
+
     analysis_context = _format_analysis_results(analysis_results)
-    
-    # Step 3: Build the prompt
+
     context_parts = [
         f"## Goal\n{goal}",
         f"## Task Type\n**{task_type.upper()}**" + (
-            " (predict a class/category)" if task_type == "classification" 
+            " (predict a class/category)" if task_type == "classification"
             else " (predict a continuous value)"
         ),
         f"## Selected Model\n**{selected_model or 'unknown'}**",
@@ -796,8 +965,7 @@ def run_feature_engineering_simple(
         f"## Target Column\n`{target_column}`",
         f"## Grain\n{grain} (what one row represents)",
     ]
-    
-    # Include info about split structure
+
     split_info = [f"- Training: `{train_ref}`"]
     if val_ref:
         split_info.append(f"- Validation: `{val_ref}`")
@@ -805,20 +973,19 @@ def run_feature_engineering_simple(
         split_info.append(f"- Test: `{test_ref}`")
     context_parts.append(f"## Data Split\n" + "\n".join(split_info))
     context_parts.append("*Note: Analysis above is from training data only to prevent leakage.*")
-    
+
     if forbidden_columns:
         cols_str = ", ".join([f"`{c}`" for c in forbidden_columns])
         context_parts.append(f"## Forbidden Columns (DO NOT USE)\n{cols_str}")
-    
+
     if as_of_cutoff:
         context_parts.append(f"## As-of Cutoff Column\n`{as_of_cutoff}`")
-    
+
     if prediction_horizon:
         context_parts.append(f"## Prediction Horizon\n{prediction_horizon}")
-    
+
     context_parts.append(f"## Analysis Results (Training Data)\n{analysis_context}")
-    
-    # Include recommendation from training agent if this is a redo iteration
+
     if recomendation:
         context_parts.append(f"""
 ## IMPORTANT: Feature Engineering Redo Request
@@ -835,51 +1002,48 @@ The previous feature set did not produce satisfactory model performance.
 - Focus on addressing the specific issues mentioned
 - Generate an IMPROVED feature specification that addresses the feedback
 """)
-    
+
     context_parts.append("\n## Instructions\nBased on the analysis above, select features and specify how to build them using the formula DSL.")
-    
+
     user_message = "\n\n".join(context_parts)
-    
-    # Step 4: Make ONE LLM call with structured output
+
     system_prompt = get_feature_engineering_prompt(selected_model)
     print(f"Making LLM call for feature selection (model-specific guidance: {selected_model or 'generic'})...")
     llm = init_chat_model(model)
     llm_with_structure = llm.with_structured_output(FeatureSpec)
-    
+
     messages = [
         SystemMessage(content=system_prompt),
         HumanMessage(content=user_message),
     ]
-    
+
     feature_spec = llm_with_structure.invoke(messages)
-    
-    # Convert to dict
+
     if hasattr(feature_spec, "model_dump"):
         feature_spec_dict = feature_spec.model_dump()
     else:
         feature_spec_dict = feature_spec
-    
-    # Step 5: Validate against training data columns
+
     validation = None
     if feature_spec_dict:
         try:
             df = resolve_dataset(train_ref)
             available_columns = set(df.columns)
-        except:
+        except Exception:
             available_columns = set()
-        
+
         validation = validate_feature_spec(
             feature_spec=feature_spec_dict,
             available_columns=available_columns,
             forbidden_columns=set(forbidden_columns),
             target_column=target_column,
         )
-    
+
     return {
         "feature_spec": feature_spec_dict,
         "validation": validation,
         "analysis_results": analysis_results,
-        "key_stats": key_stats,  # Extracted statistics for frontend display
+        "key_stats": key_stats,
         "dataset_refs": {
             "train": train_ref,
             "val": val_ref,
@@ -894,4 +1058,22 @@ The previous feature set did not produce satisfactory model performance.
 
 __all__ = [
     "run_feature_engineering_simple",
+    "validate_feature_spec",
+    "FeatureSpec",
+    "FeatureDefinition",
+    "FeatureDefinition",
+    "AsOfConstraint",
+    "FormulaOp",
+    "PassthroughOp",
+    "ExpressionOp",
+    "BinOp",
+    "OneHotOp",
+    "OrdinalOp",
+    "GroupAggOp",
+    "RollingOp",
+    "DateExtractOp",
+    "DateDiffOp",
+    "TargetEncodeOp",
+    "FrequencyEncodeOp",
+    "_extract_columns_from_formula",
 ]
