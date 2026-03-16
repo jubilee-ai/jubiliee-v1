@@ -275,7 +275,7 @@ def _select_scoring(is_clf: bool, y: pd.Series) -> str:
 
 # ── Main entry point ─────────────────────────────────────────────────────
 
-_SUBSAMPLE_SEARCH = 150_000
+_SUBSAMPLE_SEARCH = 50_000
 _MAX_TOTAL_FITS = 200
 
 _SLOW_ESTIMATORS = {
@@ -380,7 +380,7 @@ def run(params: dict) -> str:
 
     # ── Auto-tune or direct fit ──────────────────────────────────────────
     auto_tune = params.get("auto_tune", True)
-    n_search_iter = params.get("n_search_iter", 50)
+    n_search_iter = params.get("n_search_iter", 30)
     cv_folds = max(2, min(params.get("cv_folds", 5), len(y)))
     best_params: dict = {}
     cv_score: float | None = None
@@ -466,6 +466,7 @@ def run(params: dict) -> str:
     # ── Calibrate classifier probabilities ────────────────────────────────
     if is_clf and hasattr(pipeline, "predict_proba") and n_rows >= 500:
         from sklearn.calibration import CalibratedClassifierCV
+        from sklearn.frozen import FrozenEstimator
         from sklearn.model_selection import train_test_split as _cal_split
 
         try:
@@ -474,7 +475,7 @@ def run(params: dict) -> str:
                 X, y, test_size=cal_size, stratify=y, random_state=42,
             )
             pipeline.fit(X_main, y_main)
-            calibrated = CalibratedClassifierCV(pipeline, cv="prefit", method="isotonic")
+            calibrated = CalibratedClassifierCV(FrozenEstimator(pipeline), method="isotonic")
             calibrated.fit(X_cal, y_cal)
             pipeline = calibrated
             print(f"[sklearn_generic] Calibrated probabilities (isotonic, {len(X_cal)} cal samples)")

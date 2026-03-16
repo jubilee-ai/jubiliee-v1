@@ -39,7 +39,59 @@
         "as_of_constraint": null
       },
       {
-        "name": "gender_female",
+        "name": "Partner_flag",
+        "formula": {
+          "op": "ordinal",
+          "column": "Partner",
+          "order": [
+            "No",
+            "Yes"
+          ]
+        },
+        "grain": "customer",
+        "as_of_constraint": null
+      },
+      {
+        "name": "Dependents_flag",
+        "formula": {
+          "op": "ordinal",
+          "column": "Dependents",
+          "order": [
+            "No",
+            "Yes"
+          ]
+        },
+        "grain": "customer",
+        "as_of_constraint": null
+      },
+      {
+        "name": "PhoneService_flag",
+        "formula": {
+          "op": "ordinal",
+          "column": "PhoneService",
+          "order": [
+            "No",
+            "Yes"
+          ]
+        },
+        "grain": "customer",
+        "as_of_constraint": null
+      },
+      {
+        "name": "PaperlessBilling_flag",
+        "formula": {
+          "op": "ordinal",
+          "column": "PaperlessBilling",
+          "order": [
+            "No",
+            "Yes"
+          ]
+        },
+        "grain": "customer",
+        "as_of_constraint": null
+      },
+      {
+        "name": "gender_ohe",
         "formula": {
           "op": "one_hot",
           "column": "gender",
@@ -49,114 +101,10 @@
         "as_of_constraint": null
       },
       {
-        "name": "Partner_yes",
+        "name": "PaymentMethod_ohe",
         "formula": {
           "op": "one_hot",
-          "column": "Partner",
-          "drop_first": true
-        },
-        "grain": "customer",
-        "as_of_constraint": null
-      },
-      {
-        "name": "Dependents_yes",
-        "formula": {
-          "op": "one_hot",
-          "column": "Dependents",
-          "drop_first": true
-        },
-        "grain": "customer",
-        "as_of_constraint": null
-      },
-      {
-        "name": "PhoneService_yes",
-        "formula": {
-          "op": "one_hot",
-          "column": "PhoneService",
-          "drop_first": true
-        },
-        "grain": "customer",
-        "as_of_constraint": null
-      },
-      {
-        "name": "MultipleLines_encoded",
-        "formula": {
-          "op": "one_hot",
-          "column": "MultipleLines",
-          "drop_first": true
-        },
-        "grain": "customer",
-        "as_of_constraint": null
-      },
-      {
-        "name": "InternetService_ordinal",
-        "formula": {
-          "op": "ordinal",
-          "column": "InternetService",
-          "order": [
-            "No",
-            "DSL",
-            "Fiber optic"
-          ]
-        },
-        "grain": "customer",
-        "as_of_constraint": null
-      },
-      {
-        "name": "OnlineSecurity_encoded",
-        "formula": {
-          "op": "one_hot",
-          "column": "OnlineSecurity",
-          "drop_first": true
-        },
-        "grain": "customer",
-        "as_of_constraint": null
-      },
-      {
-        "name": "OnlineBackup_encoded",
-        "formula": {
-          "op": "one_hot",
-          "column": "OnlineBackup",
-          "drop_first": true
-        },
-        "grain": "customer",
-        "as_of_constraint": null
-      },
-      {
-        "name": "DeviceProtection_encoded",
-        "formula": {
-          "op": "one_hot",
-          "column": "DeviceProtection",
-          "drop_first": true
-        },
-        "grain": "customer",
-        "as_of_constraint": null
-      },
-      {
-        "name": "TechSupport_encoded",
-        "formula": {
-          "op": "one_hot",
-          "column": "TechSupport",
-          "drop_first": true
-        },
-        "grain": "customer",
-        "as_of_constraint": null
-      },
-      {
-        "name": "StreamingTV_encoded",
-        "formula": {
-          "op": "one_hot",
-          "column": "StreamingTV",
-          "drop_first": true
-        },
-        "grain": "customer",
-        "as_of_constraint": null
-      },
-      {
-        "name": "StreamingMovies_encoded",
-        "formula": {
-          "op": "one_hot",
-          "column": "StreamingMovies",
+          "column": "PaymentMethod",
           "drop_first": true
         },
         "grain": "customer",
@@ -177,21 +125,113 @@
         "as_of_constraint": null
       },
       {
-        "name": "PaperlessBilling_yes",
+        "name": "InternetService_ordinal",
         "formula": {
-          "op": "one_hot",
-          "column": "PaperlessBilling",
-          "drop_first": true
+          "op": "ordinal",
+          "column": "InternetService",
+          "order": [
+            "No",
+            "DSL",
+            "Fiber optic"
+          ]
         },
         "grain": "customer",
         "as_of_constraint": null
       },
       {
-        "name": "PaymentMethod_encoded",
+        "name": "MultipleLines_ordinal",
         "formula": {
-          "op": "one_hot",
-          "column": "PaymentMethod",
-          "drop_first": true
+          "op": "ordinal",
+          "column": "MultipleLines",
+          "order": [
+            "No phone service",
+            "No",
+            "Yes"
+          ]
+        },
+        "grain": "customer",
+        "as_of_constraint": null
+      },
+      {
+        "name": "OnlineSecurity_ordinal",
+        "formula": {
+          "op": "ordinal",
+          "column": "OnlineSecurity",
+          "order": [
+            "No internet service",
+            "No",
+            "Yes"
+          ]
+        },
+        "grain": "customer",
+        "as_of_constraint": null
+      },
+      {
+        "name": "OnlineBackup_ordinal",
+        "formula": {
+          "op": "ordinal",
+          "column": "OnlineBackup",
+          "order": [
+            "No internet service",
+            "No",
+            "Yes"
+          ]
+        },
+        "grain": "customer",
+        "as_of_constraint": null
+      },
+      {
+        "name": "DeviceProtection_ordinal",
+        "formula": {
+          "op": "ordinal",
+          "column": "DeviceProtection",
+          "order": [
+            "No internet service",
+            "No",
+            "Yes"
+          ]
+        },
+        "grain": "customer",
+        "as_of_constraint": null
+      },
+      {
+        "name": "TechSupport_ordinal",
+        "formula": {
+          "op": "ordinal",
+          "column": "TechSupport",
+          "order": [
+            "No internet service",
+            "No",
+            "Yes"
+          ]
+        },
+        "grain": "customer",
+        "as_of_constraint": null
+      },
+      {
+        "name": "StreamingTV_ordinal",
+        "formula": {
+          "op": "ordinal",
+          "column": "StreamingTV",
+          "order": [
+            "No internet service",
+            "No",
+            "Yes"
+          ]
+        },
+        "grain": "customer",
+        "as_of_constraint": null
+      },
+      {
+        "name": "StreamingMovies_ordinal",
+        "formula": {
+          "op": "ordinal",
+          "column": "StreamingMovies",
+          "order": [
+            "No internet service",
+            "No",
+            "Yes"
+          ]
         },
         "grain": "customer",
         "as_of_constraint": null
@@ -208,16 +248,18 @@
             36.0,
             48.0,
             60.0,
-            72.0
+            72.0,
+            100.0
           ],
           "strategy": "uniform",
           "labels": [
-            "0-12",
-            "13-24",
-            "25-36",
-            "37-48",
-            "49-60",
-            "61-72"
+            "0_12",
+            "13_24",
+            "25_36",
+            "37_48",
+            "49_60",
+            "61_72",
+            "73_plus"
           ]
         },
         "grain": "customer",
@@ -263,6 +305,19 @@
         "as_of_constraint": null
       },
       {
+        "name": "tenure_x_ContractOrdinal",
+        "formula": {
+          "op": "expression",
+          "expression": "tenure * Contract",
+          "source_columns": [
+            "tenure",
+            "Contract"
+          ]
+        },
+        "grain": "customer",
+        "as_of_constraint": null
+      },
+      {
         "name": "NumServices",
         "formula": {
           "op": "expression",
@@ -283,7 +338,7 @@
         "name": "HasNoInternetService",
         "formula": {
           "op": "expression",
-          "expression": "(InternetService == 'No')",
+          "expression": "InternetService == 'No'",
           "source_columns": [
             "InternetService"
           ]
@@ -295,7 +350,7 @@
         "name": "IsMonthToMonth",
         "formula": {
           "op": "expression",
-          "expression": "(Contract == 'Month-to-month')",
+          "expression": "Contract == 'Month-to-month'",
           "source_columns": [
             "Contract"
           ]
@@ -307,7 +362,7 @@
         "name": "IsElectronicCheck",
         "formula": {
           "op": "expression",
-          "expression": "(PaymentMethod == 'Electronic check')",
+          "expression": "PaymentMethod == 'Electronic check'",
           "source_columns": [
             "PaymentMethod"
           ]
@@ -331,7 +386,7 @@
         "name": "HighSpender",
         "formula": {
           "op": "expression",
-          "expression": "(MonthlyCharges > 70)",
+          "expression": "MonthlyCharges > 70",
           "source_columns": [
             "MonthlyCharges"
           ]
@@ -343,7 +398,7 @@
         "name": "NewCustomer",
         "formula": {
           "op": "expression",
-          "expression": "(tenure <= 6)",
+          "expression": "tenure <= 6",
           "source_columns": [
             "tenure"
           ]
@@ -352,14 +407,18 @@
         "as_of_constraint": null
       }
     ],
-    "reasoning": "Goal is an extremely strong churn classifier (AUC>0.99) on a large, static telco dataset; there is no temporal leakage risk, so all features have as_of_constraint=null and we can be aggressive with rich interactions.\n\nIncluded base numeric features:\n- SeniorCitizen, tenure, MonthlyCharges, TotalCharges are all strongly or moderately associated with churn (by correlation and mutual information) and not redundant at |corr|>0.95. They are passed through directly so the tree-based HistGradientBoostingClassifier can learn non-linear splits.\n\nIncluded base categorical features:\n- gender, Partner, Dependents, PhoneService, MultipleLines, InternetService, OnlineSecurity, OnlineBackup, DeviceProtection, TechSupport, StreamingTV, StreamingMovies, Contract, PaperlessBilling, PaymentMethod are all informative (non-trivial mutual information) and low-cardinality.\n- For binary Yes/No columns, we follow the guidance and encode as 0/1 by one-hot with drop_first=true, so the kept column corresponds to the \"Yes\" level (effectively Yes=1, No=0).\n- MultipleLines, OnlineSecurity, OnlineBackup, DeviceProtection, TechSupport, StreamingTV, StreamingMovies have a third level like \"No phone service\" or \"No internet service\"; tree models handle the one-hot expansions well, and per the instructions we conceptually treat the \"no service\" categories as equivalent to 0 (absence of the feature) in engineered features.\n- Contract and InternetService have a natural ordering with strong churn signal, so we follow the explicit requirement and ordinal-encode them (Month-to-month=0 < One year=1 < Two year=2; No=0 < DSL=1 < Fiber optic=2). This exposes monotone-like relationships and makes interactions like tenure\u00d7Contract meaningful.\n- PaymentMethod and gender are one-hot encoded as required; drop_first=true avoids redundant dummies but keeps the information content.\n\nHigh-impact engineered features (explicitly requested and all included):\n- tenure_group: domain-informed tenure buckets (0-12, 13-24, ..., 61-72 months) capturing lifecycle stages; implemented via explicit bin edges to match the spec.\n- AvgMonthlyCharge = TotalCharges / (tenure + 1): average revenue per month, very informative about long-term value vs current price; we add +1 in the denominator exactly as requested to avoid division by zero and match prior work.\n- ChargeRatio = MonthlyCharges / (TotalCharges + 1): compares current bill to historical spend, surfacing recent up-sell/down-sell events that often precede churn.\n- tenure * MonthlyCharges interaction: models combined effect of commitment duration and current spend (long-tenure high-payers are typically sticky; new high-payers may be at higher churn risk).\n- tenure * Contract interaction: uses the ordinal-encoded Contract to capture how tenure effect differs between month-to-month vs 1\u20132 year contracts.\n- NumServices: counts the number of active value-added services (OnlineSecurity, OnlineBackup, DeviceProtection, TechSupport, StreamingTV, StreamingMovies) by summing Yes indicators. This is a classic, very strong retention feature.\n- HasNoInternetService: explicit flag for customers with InternetService=='No', who have near-zero churn in this dataset; exposing it directly helps the model carve out this stable subpopulation.\n- IsMonthToMonth: strongest individual churn predictor in this domain; explicitly flagging Contract=='Month-to-month' makes it easy for the model to interact this with other features without relying solely on the ordinal code.\n- IsElectronicCheck: PaymentMethod=='Electronic check' is known to be associated with higher churn; an explicit binary flag focuses the model on this effect in addition to the general PaymentMethod one-hots.\n- tenure_squared: allows the tree ensemble to better approximate the strongly non-linear retention curve with fewer splits by giving it an explicit quadratic term.\n- HighSpender: MonthlyCharges>70 binary flag for high-ARPU customers, roughly above-median; exposes different churn dynamics for premium vs budget segments.\n- NewCustomer: tenure<=6 captures the critical early-life churn window where behavior is very different from established customers.\n\nEncoding of Yes/No and \"no service\" values:\n- All Yes/No categoricals use one_hot with drop_first=true so the resulting feature column corresponds to Yes=1 (present) vs No=0 (absent), exactly matching the instruction.\n- For features that conceptually should treat \"No phone service\" / \"No internet service\" as 0 (e.g., NumServices), we implement the expression using explicit comparisons to 'Yes' only, so both 'No' and 'No internet service' contribute 0.\n\nModel/data considerations:\n- Dataset is large (~594k rows), so using 30+ engineered features is safe and even beneficial for a high-capacity model like HistGradientBoostingClassifier; we exceed the 15-feature minimum comfortably while staying far below a level that would threaten overfitting given the row/feature ratio.\n- There are no leakage risks flagged; features are all contemporaneous with churn label at observation time, and there is no temporal ordering requirement, so as_of_constraint is null for all features.\n- No feature pairs exceed |correlation|>0.95, so we keep both TotalCharges and tenure; they each carry complementary information and are also used to build key interaction/ratio features (AvgMonthlyCharge, ChargeRatio).\n\nThis feature set is intentionally rich and domain-informed, following all high-impact transformations specified and leveraging the most predictive raw fields (Contract, TotalCharges, PaymentMethod, InternetService, TechSupport, OnlineSecurity, tenure, MonthlyCharges). It is designed to give a strong gradient boosting classifier sufficient signal and flexibility to push AUC-ROC as high as possible on this classic telco churn problem.",
+    "reasoning": "I selected a broad, tree-friendly feature set because this is a large dataset (~416k train rows) and the strongest signals in the analysis are spread across both numeric and categorical variables. I prioritized all raw features with meaningful mutual information, especially Contract (MI 0.1444), TotalCharges (0.1376), PaymentMethod (0.1207), OnlineSecurity (0.1145), InternetService (0.1109), TechSupport (0.1101), tenure (0.1054), and MonthlyCharges (0.0949). Group summaries also show large churn-rate separation for Contract, InternetService, Partner, Dependents, and related service variables, so they should be retained. No columns were flagged as leakage. Correlation analysis shows no near-duplicate pairs above the required |r| > 0.95 threshold, so both tenure and TotalCharges are kept despite moderate correlation (0.77), since trees can benefit from both and both have strong MI. I used ordinal encoding for most low-cardinality service/status categoricals because tree ensembles split efficiently on ordered integers and this avoids unnecessary feature explosion. I used one-hot for PaymentMethod and gender because the analysis suggested one-hot for these low-cardinality nominal fields; PaymentMethod has strong MI and meaningful category differences, while gender is weak (MI 0.0078) but still potentially useful in a large dataset. I also included the requested domain features that are likely to improve nonlinear separation: tenure buckets, average monthly spend proxy, charge ratio, tenure-spend interaction, service-count, no-internet flag, month-to-month flag, electronic-check flag, squared tenure, high-spender flag, and new-customer flag. These are domain-meaningful churn features rather than arbitrary transforms. I did not follow the diagnostic suggestion to log-transform SeniorCitizen because it is binary and tree-based models do not benefit from log scaling of a 0/1 indicator. All features are static at the customer row grain, so no temporal as-of constraint is needed. Note: the interaction feature tenure_x_ContractOrdinal is intended to capture tenure by contract strength; operationally, Contract should be ordinal-encoded first and then multiplied by tenure.",
     "excluded_columns": [
-      "id (forbidden identifier; excluded by specification and carries no stable predictive signal)"
+      "id: forbidden column and MI is negligible (0.0009), so it must not be used.",
+      "Churn: target column, not a feature. Encode target Yes=1 and No=0 before training.",
+      "No additional columns excluded for redundancy: no pair exceeded the near-duplicate threshold |correlation| > 0.95.",
+      "No columns excluded for leakage: feature diagnostics flagged no high leakage risk.",
+      "SeniorCitizen log1p transform excluded: suggested by diagnostics due to skew, but inappropriate because SeniorCitizen is already binary and tree models do not need this transform."
     ]
   },
   "label_definition": {
     "target_column": "Churn",
-    "prediction_horizon": "at observation time",
+    "prediction_horizon": null,
     "grain": "one customer",
     "as_of_cutoff": null,
     "split_strategy": "random",
@@ -373,17 +432,17 @@
     "success": true,
     "model_name": "hgb_v1",
     "model_type": "HistGradientBoostingClassifier",
-    "val_accuracy": 0.8236,
-    "val_roc_auc": 0.9174,
-    "test_accuracy": 0.8158,
-    "test_roc_auc": 0.9162,
+    "val_accuracy": 0.8625,
+    "val_roc_auc": 0.9163,
+    "test_accuracy": null,
+    "test_roc_auc": null,
     "train_r2": null,
     "val_r2": null,
     "val_rmse": null,
     "val_mae": null,
-    "test_r2": 0.21056579007945797,
-    "test_rmse": 0.3713484846767158,
-    "test_mae": 0.13789969707169303,
+    "test_r2": -0.06458970217500482,
+    "test_rmse": 0.43123580762406477,
+    "test_mae": 0.1859643217771794,
     "silhouette_score": null,
     "davies_bouldin": null,
     "inertia": null,
@@ -392,17 +451,18 @@
       {
         "model_name": "hgb_v1",
         "hyperparams": {
-          "min_samples_leaf": 20,
-          "max_iter": 800,
-          "max_depth": 3,
+          "class_weight": "balanced",
+          "l2_regularization": 0.013774775007214832,
+          "learning_rate": 0.01539809178514956,
           "max_bins": 255,
-          "learning_rate": 0.06,
-          "l2_regularization": 0.0,
-          "class_weight": null
+          "max_depth": 3,
+          "max_features": 0.6914634373768949,
+          "max_iter": 742,
+          "min_samples_leaf": 5
         },
-        "train_accuracy": 0.8616,
-        "val_accuracy": 0.8236,
-        "val_roc_auc": 0.9174,
+        "train_accuracy": 0.8138,
+        "val_accuracy": 0.8152,
+        "val_roc_auc": 0.9152,
         "train_r2": null,
         "val_r2": null,
         "val_rmse": null,
@@ -416,26 +476,27 @@
         "reconstruction_loss": null,
         "success": true,
         "error": null,
-        "tool": "supervised::HistGradientBoostingClassifier",
+        "tool": "train_with_skill:supervised/HistGradientBoostingClassifier",
         "metrics": {
-          "train_accuracy": 0.8616,
-          "val_accuracy": 0.8236,
-          "roc_auc": 0.9174
+          "train_accuracy": 0.8138,
+          "val_accuracy": 0.8152,
+          "roc_auc": 0.9152
         }
       },
       {
         "model_name": "rf_v1",
         "hyperparams": {
-          "n_estimators": 900,
-          "min_samples_split": 10,
-          "min_samples_leaf": 20,
-          "max_features": "log2",
-          "max_depth": 20,
-          "class_weight": "balanced"
+          "class_weight": "balanced",
+          "n_jobs": -1,
+          "max_depth": 9,
+          "max_features": 0.2,
+          "min_samples_leaf": 3,
+          "min_samples_split": 3,
+          "n_estimators": 781
         },
-        "train_accuracy": 0.8326,
-        "val_accuracy": 0.817,
-        "val_roc_auc": 0.9155,
+        "train_accuracy": 0.8145,
+        "val_accuracy": 0.8145,
+        "val_roc_auc": 0.9133,
         "train_r2": null,
         "val_r2": null,
         "val_rmse": null,
@@ -449,25 +510,60 @@
         "reconstruction_loss": null,
         "success": true,
         "error": null,
-        "tool": "supervised::RandomForestClassifier",
+        "tool": "train_with_skill:supervised/RandomForestClassifier",
         "metrics": {
-          "train_accuracy": 0.8326,
-          "val_accuracy": 0.817,
-          "roc_auc": 0.9155
+          "train_accuracy": 0.8145,
+          "val_accuracy": 0.8145,
+          "roc_auc": 0.9133
         }
       },
       {
         "model_name": "lr_v1",
         "hyperparams": {
-          "solver": "liblinear",
-          "penalty": "l2",
-          "max_iter": 500,
           "class_weight": "balanced",
-          "C": 1.0
+          "max_iter": 2000,
+          "C": 0.06724850206557247,
+          "solver": "lbfgs"
         },
-        "train_accuracy": 0.812,
+        "train_accuracy": 0.8575,
         "val_accuracy": null,
-        "val_roc_auc": 0.9113,
+        "val_roc_auc": null,
+        "train_r2": null,
+        "val_r2": null,
+        "val_rmse": null,
+        "val_mae": null,
+        "test_r2": null,
+        "test_rmse": null,
+        "test_mae": null,
+        "silhouette_score": null,
+        "davies_bouldin": null,
+        "inertia": null,
+        "reconstruction_loss": null,
+        "success": true,
+        "error": "Validation evaluation returned regression metrics instead of classification metrics; training CV ROC-AUC was 0.9123, so val ROC-AUC not recorded reliably.",
+        "tool": "train_with_skill:supervised/LogisticRegression",
+        "metrics": {
+          "train_accuracy": 0.8575,
+          "val_accuracy": null,
+          "roc_auc": null
+        }
+      },
+      {
+        "model_name": "hgb_v2",
+        "hyperparams": {
+          "class_weight": "balanced",
+          "interaction_cst": "pairwise",
+          "max_depth": 5,
+          "max_iter": 900,
+          "learning_rate": 0.03,
+          "l2_regularization": 0.003977782830811193,
+          "max_bins": 63,
+          "max_features": 0.5232252063599989,
+          "min_samples_leaf": 11
+        },
+        "train_accuracy": 0.86,
+        "val_accuracy": 0.8608,
+        "val_roc_auc": 0.9157,
         "train_r2": null,
         "val_r2": null,
         "val_rmse": null,
@@ -481,29 +577,244 @@
         "reconstruction_loss": null,
         "success": true,
         "error": null,
-        "tool": "supervised::LogisticRegression",
+        "tool": "train_with_skill:supervised/HistGradientBoostingClassifier",
         "metrics": {
-          "train_accuracy": 0.812,
-          "val_accuracy": null,
-          "roc_auc": 0.9113
+          "train_accuracy": 0.86,
+          "val_accuracy": 0.8608,
+          "roc_auc": 0.9157
+        }
+      },
+      {
+        "model_name": "et_v1",
+        "hyperparams": {
+          "class_weight": "balanced",
+          "n_jobs": -1,
+          "max_depth": 14,
+          "max_features": "log2",
+          "min_samples_leaf": 5,
+          "min_samples_split": 2,
+          "n_estimators": 559
+        },
+        "train_accuracy": 0.8605,
+        "val_accuracy": 0.859,
+        "val_roc_auc": 0.9135,
+        "train_r2": null,
+        "val_r2": null,
+        "val_rmse": null,
+        "val_mae": null,
+        "test_r2": null,
+        "test_rmse": null,
+        "test_mae": null,
+        "silhouette_score": null,
+        "davies_bouldin": null,
+        "inertia": null,
+        "reconstruction_loss": null,
+        "success": true,
+        "error": null,
+        "tool": "train_with_skill:supervised/ExtraTreesClassifier",
+        "metrics": {
+          "train_accuracy": 0.8605,
+          "val_accuracy": 0.859,
+          "roc_auc": 0.9135
+        }
+      },
+      {
+        "model_name": "hgb_v3",
+        "hyperparams": {
+          "class_weight": "balanced",
+          "max_depth": 5,
+          "max_iter": 900,
+          "learning_rate": 0.03,
+          "interaction_cst": "no_interactions",
+          "l2_regularization": 5.7119862174003515,
+          "max_bins": 63,
+          "max_features": 0.5704621124873813,
+          "min_samples_leaf": 19
+        },
+        "train_accuracy": 0.8572,
+        "val_accuracy": 0.8596,
+        "val_roc_auc": 0.9142,
+        "train_r2": null,
+        "val_r2": null,
+        "val_rmse": null,
+        "val_mae": null,
+        "test_r2": null,
+        "test_rmse": null,
+        "test_mae": null,
+        "silhouette_score": null,
+        "davies_bouldin": null,
+        "inertia": null,
+        "reconstruction_loss": null,
+        "success": true,
+        "error": null,
+        "tool": "train_with_skill:supervised/HistGradientBoostingClassifier",
+        "metrics": {
+          "train_accuracy": 0.8572,
+          "val_accuracy": 0.8596,
+          "roc_auc": 0.9142
+        }
+      },
+      {
+        "model_name": "hgb_v4",
+        "hyperparams": {
+          "class_weight": "balanced",
+          "interaction_cst": "pairwise",
+          "max_depth": 5,
+          "max_iter": 900,
+          "learning_rate": 0.03,
+          "max_bins": 255,
+          "l2_regularization": 2.318690670290199,
+          "max_features": 0.6293899908000085,
+          "min_samples_leaf": 44
+        },
+        "train_accuracy": 0.8611,
+        "val_accuracy": 0.8624,
+        "val_roc_auc": 0.9164,
+        "train_r2": null,
+        "val_r2": null,
+        "val_rmse": null,
+        "val_mae": null,
+        "test_r2": null,
+        "test_rmse": null,
+        "test_mae": null,
+        "silhouette_score": null,
+        "davies_bouldin": null,
+        "inertia": null,
+        "reconstruction_loss": null,
+        "success": true,
+        "error": null,
+        "tool": "train_with_skill:supervised/HistGradientBoostingClassifier",
+        "metrics": {
+          "train_accuracy": 0.8611,
+          "val_accuracy": 0.8624,
+          "roc_auc": 0.9164
+        }
+      },
+      {
+        "model_name": "hgb_v5",
+        "hyperparams": {
+          "class_weight": "balanced",
+          "interaction_cst": "pairwise",
+          "max_depth": 5,
+          "max_iter": 900,
+          "learning_rate": 0.03,
+          "max_bins": 255,
+          "max_features": 1.0,
+          "l2_regularization": 0.6715811311069951,
+          "min_samples_leaf": 42
+        },
+        "train_accuracy": 0.8615,
+        "val_accuracy": 0.8624,
+        "val_roc_auc": 0.9165,
+        "train_r2": null,
+        "val_r2": null,
+        "val_rmse": null,
+        "val_mae": null,
+        "test_r2": null,
+        "test_rmse": null,
+        "test_mae": null,
+        "silhouette_score": null,
+        "davies_bouldin": null,
+        "inertia": null,
+        "reconstruction_loss": null,
+        "success": true,
+        "error": null,
+        "tool": "train_with_skill:supervised/HistGradientBoostingClassifier",
+        "metrics": {
+          "train_accuracy": 0.8615,
+          "val_accuracy": 0.8624,
+          "roc_auc": 0.9165
+        }
+      },
+      {
+        "model_name": "hgb_v6",
+        "hyperparams": {
+          "class_weight": "balanced",
+          "interaction_cst": "pairwise",
+          "max_depth": 5,
+          "max_iter": 900,
+          "learning_rate": 0.03,
+          "max_bins": 255,
+          "max_features": 1.0,
+          "l2_regularization": 0.0,
+          "min_samples_leaf": 42
+        },
+        "train_accuracy": 0.861,
+        "val_accuracy": 0.8621,
+        "val_roc_auc": 0.9165,
+        "train_r2": null,
+        "val_r2": null,
+        "val_rmse": null,
+        "val_mae": null,
+        "test_r2": null,
+        "test_rmse": null,
+        "test_mae": null,
+        "silhouette_score": null,
+        "davies_bouldin": null,
+        "inertia": null,
+        "reconstruction_loss": null,
+        "success": true,
+        "error": null,
+        "tool": "train_with_skill:supervised/HistGradientBoostingClassifier",
+        "metrics": {
+          "train_accuracy": 0.861,
+          "val_accuracy": 0.8621,
+          "roc_auc": 0.9165
+        }
+      },
+      {
+        "model_name": "hgb_v7",
+        "hyperparams": {
+          "class_weight": "balanced",
+          "interaction_cst": "pairwise",
+          "max_depth": 5,
+          "max_iter": 900,
+          "learning_rate": 0.03,
+          "max_bins": 255,
+          "max_features": 1.0,
+          "min_samples_leaf": 20,
+          "l2_regularization": 4.518560951024111
+        },
+        "train_accuracy": 0.861,
+        "val_accuracy": 0.8625,
+        "val_roc_auc": 0.9163,
+        "train_r2": null,
+        "val_r2": null,
+        "val_rmse": null,
+        "val_mae": null,
+        "test_r2": null,
+        "test_rmse": null,
+        "test_mae": null,
+        "silhouette_score": null,
+        "davies_bouldin": null,
+        "inertia": null,
+        "reconstruction_loss": null,
+        "success": true,
+        "error": null,
+        "tool": "train_with_skill:supervised/HistGradientBoostingClassifier",
+        "metrics": {
+          "train_accuracy": 0.861,
+          "val_accuracy": 0.8625,
+          "roc_auc": 0.9163
         }
       }
     ],
-    "num_iterations": 3,
+    "num_iterations": 10,
     "best_iteration": {
       "model_name": "hgb_v1",
       "hyperparams": {
-        "min_samples_leaf": 20,
-        "max_iter": 800,
-        "max_depth": 3,
+        "class_weight": "balanced",
+        "l2_regularization": 0.013774775007214832,
+        "learning_rate": 0.01539809178514956,
         "max_bins": 255,
-        "learning_rate": 0.06,
-        "l2_regularization": 0.0,
-        "class_weight": null
+        "max_depth": 3,
+        "max_features": 0.6914634373768949,
+        "max_iter": 742,
+        "min_samples_leaf": 5
       },
-      "train_accuracy": 0.8616,
-      "val_accuracy": 0.8236,
-      "val_roc_auc": 0.9174,
+      "train_accuracy": 0.8138,
+      "val_accuracy": 0.8152,
+      "val_roc_auc": 0.9152,
       "train_r2": null,
       "val_r2": null,
       "val_rmse": null,
@@ -517,15 +828,15 @@
       "reconstruction_loss": null,
       "success": true,
       "error": null,
-      "tool": "supervised::HistGradientBoostingClassifier",
+      "tool": "train_with_skill:supervised/HistGradientBoostingClassifier",
       "metrics": {
-        "train_accuracy": 0.8616,
-        "val_accuracy": 0.8236,
-        "roc_auc": 0.9174
+        "train_accuracy": 0.8138,
+        "val_accuracy": 0.8152,
+        "roc_auc": 0.9152
       }
     },
-    "summary": "Trained three classifiers (HistGradientBoostingClassifier, RandomForestClassifier, LogisticRegression) to predict churn using engineered features. The best model was HistGradientBoostingClassifier (hgb_v1) with validation ROC-AUC 0.9174 and test ROC-AUC 0.9162 after threshold optimization for balanced accuracy. RandomForestClassifier was slightly worse (val ROC-AUC 0.9155). LogisticRegression underperformed tree-based models but still achieved competitive ROC-AUC on training (0.9113). Class imbalance was addressed via class_weight balancing where beneficial. Final test performance indicates a strong yet not perfect model, with high recall for the positive (churn) class after tuning the decision threshold.",
-    "recommendations": "Deploy hgb_v1 as the production churn model. Use the optimized threshold (~0.22\u20130.24) when prioritizing balanced accuracy and high recall for churners. Continue monitoring performance and recalibrate the model periodically as customer behavior drifts. For further gains, consider advanced ensemble techniques (stacking/boosting variants) or deep learning models, and potentially refine feature engineering beyond the current interactions.",
+    "summary": "Ran the final one-change experiment by reverting to hgb_v5 and lowering min_samples_leaf to 20. Validation ROC-AUC decreased slightly from 0.9165 to 0.9163, so this change did not help. The best model remains hgb_v5.",
+    "recommendations": "Stop tuning. hgb_v5 is the strongest validation model found. If further improvement is needed beyond 0.9165 ROC-AUC, the next gains are more likely to come from improved feature engineering, fixing malformed interaction features, or external ensembling/stacking rather than additional single-parameter HGB tweaks.",
     "feature_redo_requested": false,
     "feature_importances": {}
   }

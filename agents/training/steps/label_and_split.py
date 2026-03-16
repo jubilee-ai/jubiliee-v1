@@ -135,7 +135,7 @@ def _call_llm(
     model_explanation: Optional[str],
     schema_context: str,
     provided_values: dict,
-    model: str = "gpt-5.1",
+    model: str = "gpt-5.4",
 ) -> dict:
     """
     Call LLM to infer missing label/split definitions.
@@ -269,7 +269,7 @@ def run_label_split_definition(
     split_strategy: Optional[SplitStrategy] = None,
     forbidden_columns: Optional[list[str]] = None,
     # LLM config
-    model: str = "gpt-5.1",
+    model: str = "gpt-5.4",
 ) -> dict:
     """
     Define label and split configuration for supervised learning.
