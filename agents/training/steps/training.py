@@ -86,7 +86,8 @@ class TrainWithSkillInput(BaseModel):
     params: Optional[dict] = Field(
         default=None,
         description="Training parameters as a JSON object. Must include "
-        "'estimator', 'model_name', 'train_dataset_ref', and 'target_column'.",
+        "'estimator', 'model_name', and 'train_dataset_ref'. "
+        "'target_column' is required for supervised skills only.",
     )
 
 
@@ -182,6 +183,10 @@ class TrainingIteration(BaseModel):
     test_r2: Optional[float] = None
     test_rmse: Optional[float] = None
     test_mae: Optional[float] = None
+    silhouette_score: Optional[float] = None
+    davies_bouldin: Optional[float] = None
+    inertia: Optional[float] = None
+    reconstruction_loss: Optional[float] = None
     success: bool = Field(description="Whether this iteration succeeded")
     error: Optional[str] = None
 
@@ -201,6 +206,10 @@ class TrainingResult(BaseModel):
     test_r2: Optional[float] = None
     test_rmse: Optional[float] = None
     test_mae: Optional[float] = None
+    silhouette_score: Optional[float] = None
+    davies_bouldin: Optional[float] = None
+    inertia: Optional[float] = None
+    reconstruction_loss: Optional[float] = None
     iterations: list[TrainingIteration] = Field(default_factory=list)
     num_iterations: int
     summary: str
@@ -213,14 +222,96 @@ class TrainingResult(BaseModel):
 # =============================================================================
 
 
-def _infer_task_type(goal: str, estimator_hint: Optional[str] = None) -> str:
-    """Infer 'classification' or 'regression' from the goal text and estimator name."""
+def _infer_task_type(goal: str, estimator_hint: Optional[str] = None, selected_model: Optional[str] = None) -> str:
+    """Infer 'classification', 'regression', or 'unsupervised' from the goal/model."""
+    if selected_model == "unsupervised":
+        return "unsupervised"
     text = (goal + " " + (estimator_hint or "")).lower()
+    if any(
+        kw in text
+        for kw in (
+            "unsupervised",
+            "cluster",
+            "clustering",
+            "segmentation",
+            "anomaly",
+            "outlier",
+            "dimensionality reduction",
+            "pca",
+        )
+    ):
+        return "unsupervised"
     if "regress" in text or any(
         kw in text for kw in ("forecast", "predict value", "continuous", "amount", "price", "cost")
     ):
         return "regression"
     return "classification"
+
+
+def _run_quick_baseline(
+    train_df,
+    val_df,
+    target_column: str,
+    task_type: str,
+) -> dict[str, float | None]:
+    """Run a quick tree-based baseline to establish a performance floor.
+
+    Returns dict with baseline metrics (accuracy, roc_auc or r2, rmse).
+    This runs in <10s even on large datasets and gives the NN agent a
+    concrete target to beat.
+    """
+    from sklearn.ensemble import HistGradientBoostingClassifier, HistGradientBoostingRegressor
+    from sklearn.metrics import accuracy_score, r2_score, roc_auc_score
+    from sklearn.preprocessing import LabelEncoder
+
+    result: dict[str, float | None] = {"model": "HistGradientBoosting"}
+    try:
+        feature_cols = [c for c in train_df.columns if c != target_column]
+        X_train = train_df[feature_cols]
+        y_train = train_df[target_column]
+        X_val = val_df[feature_cols]
+        y_val = val_df[target_column]
+
+        cat_cols = X_train.select_dtypes(include=["object", "category"]).columns.tolist()
+        if cat_cols:
+            from sklearn.preprocessing import OrdinalEncoder
+            oe = OrdinalEncoder(handle_unknown="use_encoded_value", unknown_value=-1)
+            X_train = X_train.copy()
+            X_val = X_val.copy()
+            X_train[cat_cols] = oe.fit_transform(X_train[cat_cols])
+            X_val[cat_cols] = oe.transform(X_val[cat_cols])
+
+        le = None
+        if y_train.dtype == object or y_train.dtype.name == "category":
+            le = LabelEncoder()
+            y_train = le.fit_transform(y_train)
+            y_val = le.transform(y_val)
+
+        if task_type == "regression":
+            model = HistGradientBoostingRegressor(max_iter=200, max_depth=6, random_state=42)
+            model.fit(X_train, y_train)
+            y_pred = model.predict(X_val)
+            result["r2"] = round(float(r2_score(y_val, y_pred)), 4)
+        else:
+            model = HistGradientBoostingClassifier(max_iter=200, max_depth=6, random_state=42)
+            model.fit(X_train, y_train)
+            y_pred = model.predict(X_val)
+            y_proba = model.predict_proba(X_val)
+            result["accuracy"] = round(float(accuracy_score(y_val, y_pred)), 4)
+            try:
+                if y_proba.shape[1] == 2:
+                    result["roc_auc"] = round(float(roc_auc_score(y_val, y_proba[:, 1])), 4)
+                else:
+                    result["roc_auc"] = round(float(
+                        roc_auc_score(y_val, y_proba, multi_class="ovr", average="weighted")
+                    ), 4)
+            except (ValueError, TypeError):
+                pass
+
+        print(f"[training_agent] Quick baseline ({result['model']}): {result}")
+    except Exception as e:
+        print(f"[training_agent] Quick baseline failed (non-fatal): {e}")
+    return result
 
 
 def _cleanup_intermediate_models(
@@ -268,19 +359,212 @@ def _extract_training_result(result: dict) -> TrainingResult:
     raise ValueError("Failed to extract TrainingResult from agent response")
 
 
+def _should_continue_iterating(
+    iterations: list[TrainingIteration],
+    max_iterations: int,
+    task_type: str,
+) -> bool:
+    """Decide whether the agent should be re-invoked for more experiments.
+
+    Returns True when there are iterations remaining AND at least one of:
+    - Fewer than 3 successful experiments have been run
+    - The most recent iteration improved the best metric
+    """
+    n_used = len(iterations)
+    if n_used >= max_iterations:
+        return False
+
+    successful = [it for it in iterations if it.success]
+    if len(successful) < 3:
+        return True
+
+    if len(successful) < 2:
+        return True
+
+    def _metric(it: TrainingIteration) -> float:
+        if task_type == "unsupervised":
+            return it.silhouette_score if it.silhouette_score is not None else -float("inf")
+        if task_type == "regression":
+            return it.val_r2 or it.train_r2 or -float("inf")
+        return it.val_roc_auc or it.val_accuracy or -float("inf")
+
+    best_before_last = max(_metric(it) for it in successful[:-1])
+    last_metric = _metric(successful[-1])
+    if last_metric > best_before_last:
+        return True
+
+    return False
+
+
+def _format_best_metric(best_iteration: dict, task_type: str) -> str:
+    if task_type == "unsupervised":
+        sil = best_iteration.get("silhouette_score")
+        db = best_iteration.get("davies_bouldin")
+        parts = []
+        if sil is not None:
+            parts.append(f"Silhouette={sil:.4f}")
+        if db is not None:
+            parts.append(f"Davies-Bouldin={db:.4f}")
+        return ", ".join(parts) if parts else "N/A"
+    if task_type == "regression":
+        r2 = best_iteration.get("val_r2")
+        return f"R²={r2:.4f}" if r2 is not None else "N/A"
+    roc = best_iteration.get("val_roc_auc")
+    acc = best_iteration.get("val_accuracy")
+    parts = []
+    if roc is not None:
+        parts.append(f"ROC-AUC={roc:.4f}")
+    if acc is not None:
+        parts.append(f"Accuracy={acc:.4f}")
+    return ", ".join(parts) if parts else "N/A"
+
+
+def _primary_metric(it: TrainingIteration, task_type: str) -> float:
+    if task_type == "unsupervised":
+        return it.silhouette_score if it.silhouette_score is not None else -float("inf")
+    if task_type == "regression":
+        return it.val_r2 or it.train_r2 or -float("inf")
+    return it.val_roc_auc or it.val_accuracy or -float("inf")
+
+
+def _diagnose_trend(
+    iterations: list[TrainingIteration],
+    task_type: str,
+) -> dict[str, Any]:
+    """Analyze the experiment history and diagnose the current situation."""
+    successful = [it for it in iterations if it.success]
+    if not successful:
+        return {"trend": "no_data", "diagnosis": "No successful experiments yet."}
+
+    metrics = [_primary_metric(it, task_type) for it in successful]
+    best_metric = max(metrics)
+    best_idx = metrics.index(best_metric)
+    last_metric = metrics[-1]
+
+    if len(metrics) >= 2:
+        recent_deltas = [metrics[i] - metrics[i - 1] for i in range(1, len(metrics))]
+        improving = recent_deltas[-1] > 0.001
+        plateauing = all(abs(d) < 0.005 for d in recent_deltas[-2:]) if len(recent_deltas) >= 2 else False
+    else:
+        improving = False
+        plateauing = False
+
+    last_was_best = (best_idx == len(metrics) - 1)
+    gap_to_best = best_metric - last_metric if not last_was_best else 0.0
+
+    if plateauing:
+        trend = "plateau"
+        diagnosis = (
+            f"Metrics have plateaued — last {min(3, len(recent_deltas))} changes "
+            f"moved the metric by < 0.5%. Consider a more radical change: "
+            f"different architecture family, different optimizer, or different LR schedule."
+        )
+    elif improving:
+        trend = "improving"
+        diagnosis = (
+            f"Last change improved the metric. Continue in this direction — "
+            f"make a similar-magnitude change to the same aspect, or try refining "
+            f"the improvement further."
+        )
+    elif last_was_best:
+        trend = "at_best"
+        diagnosis = "Current config is the best so far. Try a single targeted change."
+    else:
+        trend = "regressed"
+        diagnosis = (
+            f"Last experiment regressed ({last_metric:.4f} vs best {best_metric:.4f}). "
+            f"Revert to the best config and try a different change."
+        )
+
+    return {
+        "trend": trend,
+        "diagnosis": diagnosis,
+        "best_metric": best_metric,
+        "last_metric": last_metric,
+        "best_model": successful[best_idx].model_name,
+        "n_successful": len(successful),
+        "improving": improving,
+        "plateauing": plateauing,
+        "gap_to_best": gap_to_best,
+    }
+
+
+def _build_continuation_message(
+    iterations: list[TrainingIteration],
+    max_iterations: int,
+    task_type: str,
+    baseline_metrics: dict | None = None,
+) -> str:
+    """Build a dynamic continuation prompt based on experiment history."""
+    remaining = max_iterations - len(iterations)
+    diag = _diagnose_trend(iterations, task_type)
+
+    lines = [
+        f"You have **{remaining} iterations** remaining.",
+        f"",
+        f"## Experiment History",
+    ]
+    for it in iterations:
+        m = _primary_metric(it, task_type)
+        status = "OK" if it.success else "FAIL"
+        lines.append(f"- [{status}] `{it.model_name}`: {m:.4f}")
+    lines.append("")
+
+    if baseline_metrics:
+        baseline_val = baseline_metrics.get("roc_auc") or baseline_metrics.get("r2")
+        if baseline_val is not None and diag.get("best_metric") is not None:
+            gap = baseline_val - diag["best_metric"]
+            if gap > 0:
+                lines.append(
+                    f"## Baseline Gap\n"
+                    f"Tree-based baseline: {baseline_val:.4f}. "
+                    f"Your best: {diag['best_metric']:.4f}. "
+                    f"**Gap: {gap:.4f}** — focus on closing this.\n"
+                )
+            else:
+                lines.append(
+                    f"## Baseline Beaten\n"
+                    f"Your best ({diag['best_metric']:.4f}) exceeds the tree baseline "
+                    f"({baseline_val:.4f}). Keep pushing for further gains.\n"
+                )
+
+    lines.append(f"## Diagnosis\n{diag['diagnosis']}\n")
+
+    lines.append(
+        "## Next Steps\n"
+        "Consult the **Hyperparameter Strategy Matrix** and **Architecture Decision Guide** "
+        "in the SKILL.md to choose your next experiment based on the diagnosis above. "
+        "Change exactly ONE thing. Run the experiment, evaluate, and report results.\n"
+        "Only include NEW iterations from this round in your output — "
+        "prior iterations are already recorded."
+    )
+
+    return "\n".join(lines)
+
+
 def _find_best_iteration(iterations: list[dict], task_type: str) -> Optional[dict]:
-    """Pick the best successful iteration by validation metrics."""
+    """Pick the best successful iteration by validation metrics.
+
+    For classification, ROC-AUC is the primary metric (more reliable than
+    accuracy, especially on imbalanced data). Accuracy is the tiebreaker.
+    For unsupervised, silhouette_score is primary (higher is better).
+    """
     best, best_score = None, (-float("inf"), -float("inf"))
     for it in iterations:
         if not it.get("success"):
             continue
-        if task_type == "regression":
+        if task_type == "unsupervised":
+            score = (
+                it.get("silhouette_score") or -float("inf"),
+                -(it.get("davies_bouldin") or float("inf")),
+            )
+        elif task_type == "regression":
             primary = it.get("val_r2") or it.get("train_r2") or -float("inf")
             score = (primary, 0.0)
         else:
             score = (
-                it.get("val_accuracy") or -float("inf"),
                 it.get("val_roc_auc") or -float("inf"),
+                it.get("val_accuracy") or -float("inf"),
             )
         if score > best_score:
             best_score = score
@@ -313,6 +597,8 @@ def _evaluate_model_on_test(
     from sklearn.metrics import accuracy_score, roc_auc_score
 
     result: dict[str, float | None] = {}
+    if task_type == "unsupervised":
+        return result
     try:
         model = load_model(model_name)
         test_df = get_registered_dataset(test_ref)
@@ -330,14 +616,18 @@ def _evaluate_model_on_test(
             result["test_mae"] = float(mean_absolute_error(y_true, y_pred))
         else:
             y_pred = model.predict(X)
-            result["test_accuracy"] = float(accuracy_score(y_true, y_pred))
+            y_true_arr = np.asarray(y_true)
+            y_pred_arr = np.asarray(y_pred)
+            if y_true_arr.dtype != y_pred_arr.dtype:
+                y_pred_arr = y_pred_arr.astype(y_true_arr.dtype)
+            result["test_accuracy"] = float(accuracy_score(y_true_arr, y_pred_arr))
             if hasattr(model, "predict_proba"):
                 y_proba = model.predict_proba(X)
                 if y_proba.shape[1] == 2:
-                    result["test_roc_auc"] = float(roc_auc_score(y_true, y_proba[:, 1]))
+                    result["test_roc_auc"] = float(roc_auc_score(y_true_arr, y_proba[:, 1]))
                 else:
                     result["test_roc_auc"] = float(
-                        roc_auc_score(y_true, y_proba, multi_class="ovr", average="weighted")
+                        roc_auc_score(y_true_arr, y_proba, multi_class="ovr", average="weighted")
                     )
         print(f"[training_agent] Programmatic test evaluation: {result}")
     except Exception as exc:
@@ -391,7 +681,10 @@ def _log_training_results(training_result: TrainingResult, task_type: str):
         print(f"  [{status}] Iter {i}: {it.model_name}")
         print(f"     Estimator: {it.tool_used}")
         print(f"     Hyperparams: {hp_str[:60]}...")
-        if task_type == "regression":
+        if task_type == "unsupervised":
+            if it.silhouette_score is not None:
+                print(f"     Silhouette: {it.silhouette_score}, Davies-Bouldin: {it.davies_bouldin}")
+        elif task_type == "regression":
             if it.val_r2 is not None:
                 print(f"     Val R²: {it.val_r2}, Val RMSE: {it.val_rmse}")
         else:
@@ -401,7 +694,10 @@ def _log_training_results(training_result: TrainingResult, task_type: str):
             print(f"     Error: {it.error}")
     print("  " + "-" * 60)
     print(f"  Best Model: {training_result.best_model_name}")
-    if task_type == "regression":
+    if task_type == "unsupervised":
+        print(f"  Silhouette: {training_result.silhouette_score}")
+        print(f"  Davies-Bouldin: {training_result.davies_bouldin}")
+    elif task_type == "regression":
         print(f"  Val R²: {training_result.val_r2}")
         print(f"  Test R²: {training_result.test_r2}")
     else:
@@ -421,8 +717,8 @@ def _log_training_results(training_result: TrainingResult, task_type: str):
 
 def run_training_agent(
     train_ref: str,
-    val_ref: str,
-    test_ref: str,
+    val_ref: Optional[str],
+    test_ref: Optional[str],
     target_column: str,
     selected_model: str,
     goal: str,
@@ -437,18 +733,16 @@ def run_training_agent(
     right estimator, trains via train_with_skill, evaluates, and iterates.
     """
     train_df = get_registered_dataset(train_ref)
-    val_df = get_registered_dataset(val_ref)
-    test_df = get_registered_dataset(test_ref)
+    val_df = get_registered_dataset(val_ref) if val_ref else None
+    test_df = get_registered_dataset(test_ref) if test_ref else None
 
-    for ref, df, label in [
-        (train_ref, train_df, "Training"),
-        (val_ref, val_df, "Validation"),
-        (test_ref, test_df, "Test"),
-    ]:
-        if df is None:
+    if train_df is None:
+        raise ValueError(f"Training dataset not found: {train_ref}")
+    for ref, df, label in [(val_ref, val_df, "Validation"), (test_ref, test_df, "Test")]:
+        if ref and df is None:
             raise ValueError(f"{label} dataset not found: {ref}")
 
-    task_type = _infer_task_type(goal, estimator_hint)
+    task_type = _infer_task_type(goal, estimator_hint, selected_model=selected_model)
 
     available_skills = [d.name for d in SKILLS_DIR.iterdir() if (d / "train.py").exists()]
     skill_name = selected_model if selected_model in available_skills else "supervised"
@@ -456,23 +750,26 @@ def run_training_agent(
     if not model_name:
         model_name = f"{estimator_hint or skill_name}_{int(time.time())}"
 
-    feature_columns = [c for c in train_df.columns if c != target_column]
+    feature_columns = [c for c in train_df.columns if c != target_column] if target_column else list(train_df.columns)
 
     print(f"[training_agent] Starting training...")
-    print(f"  Skill: {skill_name} | Target: {target_column} | Task: {task_type}")
-    print(f"  Train: {len(train_df)} | Val: {len(val_df)} | Test: {len(test_df)} | Features: {len(feature_columns)}")
+    print(f"  Skill: {skill_name} | Target: {target_column or '(none)'} | Task: {task_type}")
+    print(f"  Train: {len(train_df)} | Val: {len(val_df) if val_df is not None else 0} | Test: {len(test_df) if test_df is not None else 0} | Features: {len(feature_columns)}")
     if estimator_hint:
         print(f"  Estimator hint: {estimator_hint}")
 
-    class_counts = train_df[target_column].value_counts().to_dict()
-    total = sum(class_counts.values())
-    minority_ratio = min(class_counts.values()) / total if total > 0 else 0
-
-    imbalance_note = (
-        f"IMBALANCED — minority class is {minority_ratio:.1%}. "
-        "Consider class_weight='balanced'."
-        if minority_ratio < 0.3 else "Balanced classes"
-    )
+    if task_type == "unsupervised":
+        class_counts = {}
+        imbalance_note = "Unsupervised task — no target variable."
+    else:
+        class_counts = train_df[target_column].value_counts().to_dict()
+        total = sum(class_counts.values())
+        minority_ratio = min(class_counts.values()) / total if total > 0 else 0
+        imbalance_note = (
+            f"IMBALANCED — minority class is {minority_ratio:.1%}. "
+            "Consider class_weight='balanced'."
+            if minority_ratio < 0.3 else "Balanced classes"
+        )
 
     try:
         skill_docs = _load_skill_prompt(skill_name)
@@ -490,6 +787,37 @@ def run_training_agent(
     features_preview = feature_columns[:10]
     ellipsis = "..." if len(feature_columns) > 10 else ""
 
+    baseline_section = ""
+    baseline_metrics = None
+    if skill_name == "neural_networks" and task_type != "unsupervised":
+        baseline_metrics = _run_quick_baseline(train_df, val_df, target_column, task_type)
+        if baseline_metrics.get("roc_auc") or baseline_metrics.get("r2"):
+            baseline_section = (
+                f"\n## Performance Baseline (HistGradientBoosting — auto-computed)\n"
+                f"A quick tree-based model achieved these metrics on the same data:\n"
+            )
+            for k, v in baseline_metrics.items():
+                if k != "model" and v is not None:
+                    baseline_section += f"- {k}: {v}\n"
+            baseline_section += (
+                "\n**Your neural network must beat these numbers.** "
+                "If it can't match the baseline after several iterations, "
+                "focus on matching it first before trying to exceed it.\n"
+            )
+
+    if task_type == "unsupervised":
+        target_line = "- Target column: N/A (unsupervised)"
+        class_section = ""
+        next_step = (
+            "Begin training now. Maximize unsupervised objective quality by exploring "
+            "estimators and hyperparameters. Use the dataset refs above. "
+            "Do not call evaluate_model because no target labels are required."
+        )
+    else:
+        target_line = f"- Target column: `{target_column}`"
+        class_section = f"\n**Class distribution:** {class_counts}\n{imbalance_note}\n"
+        next_step = ""
+
     context = f"""## Goal
 {goal}
 
@@ -500,23 +828,22 @@ Follow the skill documentation below — it covers model selection and training.
 <skill_documentation>
 {skill_docs}
 </skill_documentation>
-{estimator_section}
+{estimator_section}{baseline_section}
 ## Data
 - Task type: {task_type}
-- Target column: `{target_column}`
+{target_line}
 - Training: {len(train_df)} rows (ref: `{train_ref}`)
-- Validation: {len(val_df)} rows (ref: `{val_ref}`)
-- Test: {len(test_df)} rows (ref: `{test_ref}`)
+- Validation: {len(val_df) if val_df is not None else 0} rows (ref: `{val_ref or "N/A"}`)
+- Test: {len(test_df) if test_df is not None else 0} rows (ref: `{test_ref or "N/A"}`)
 - Features ({len(feature_columns)}): {features_preview}{ellipsis}
-
-**Class distribution:** {class_counts}
-{imbalance_note}
-
+{class_section}
 ## Constraints
 - Max iterations: {max_iterations}
 
 ## Sample Data (first 3 rows)
 {train_df.head(3).to_dict(orient="records")}
+
+{next_step}
 """
 
     llm = init_chat_model(llm_model)
@@ -527,19 +854,84 @@ Follow the skill documentation below — it covers model selection and training.
         response_format=ToolStrategy(schema=TrainingResult),
     )
 
-    messages = [
-        {"role": "user", "content": context},
-        {"role": "user", "content": (
+    if task_type == "unsupervised":
+        start_instruction = (
+            "Begin training now. Maximize unsupervised objective quality by exploring "
+            "estimators and hyperparameters. Use the dataset refs above. "
+            "Do not call evaluate_model because no target labels are required."
+        )
+    elif skill_name == "neural_networks":
+        start_instruction = (
+            "Begin training now. You are using the neural_networks skill — "
+            "write PyTorch training code following the SKILL.md templates and data pipeline exactly. "
+            "Pass your code via train_with_skill(skill_name='neural_networks', params={...}). "
+            "The params dict MUST include 'code', 'train_dataset_ref', 'target_column', and 'model_name'. "
+            "If a run fails with an EXECUTION ERROR, read the traceback, fix the code, and try again. "
+            "Do NOT give up after one failure — you have multiple iterations. "
+            "You MUST use at least 3 iterations: baseline, then at least 2 experiments "
+            "(architecture, hyperparameter, or regularization changes). "
+            "Maximize validation performance. Run final test evaluation on your best model before finishing."
+        )
+    else:
+        start_instruction = (
             "Begin training now. Maximize validation performance by exploring "
             "different estimators and hyperparameters. Use the dataset refs above. "
             "Run final test evaluation on your best model before finishing."
-        )},
+        )
+
+    messages = [
+        {"role": "user", "content": context},
+        {"role": "user", "content": start_instruction},
     ]
+
+    all_iterations: list[TrainingIteration] = []
+    continuation_round = 0
+    max_continuation_rounds = 2
+    _baseline = baseline_metrics
 
     try:
         result = agent.invoke({"messages": messages})
         final_messages = result.get("messages", [])
         training_result = _extract_training_result(result)
+        all_iterations.extend(training_result.iterations)
+
+        while (
+            continuation_round < max_continuation_rounds
+            and training_result.success
+            and not training_result.feature_redo_requested
+            and _should_continue_iterating(all_iterations, max_iterations, task_type)
+        ):
+            continuation_round += 1
+            continuation_msg = _build_continuation_message(
+                all_iterations, max_iterations, task_type, _baseline,
+            )
+
+            diag = _diagnose_trend(all_iterations, task_type)
+            best_str = _format_best_metric(
+                _find_best_iteration(
+                    [_iteration_to_dict(it) for it in all_iterations], task_type
+                ) or {},
+                task_type,
+            )
+            print(f"\n[training_agent] Continuing training (round {continuation_round}, "
+                  f"{max_iterations - len(all_iterations)} remaining, "
+                  f"best: {best_str}, trend: {diag['trend']})")
+
+            cont_messages = final_messages + [
+                {"role": "user", "content": continuation_msg},
+            ]
+
+            result = agent.invoke({"messages": cont_messages})
+            final_messages = result.get("messages", [])
+            training_result = _extract_training_result(result)
+            existing_names = {it.model_name for it in all_iterations}
+            for it in training_result.iterations:
+                if it.model_name not in existing_names:
+                    all_iterations.append(it)
+                    existing_names.add(it.model_name)
+
+        training_result.iterations = all_iterations
+        training_result.num_iterations = len(all_iterations)
 
         feature_redo_request = _get_and_clear_feature_redo_request()
         feature_redo_requested = feature_redo_request is not None or training_result.feature_redo_requested
@@ -563,16 +955,17 @@ Follow the skill documentation below — it covers model selection and training.
         output = training_result.model_dump(exclude={"best_model_name", "feature_redo_requested", "iterations"})
 
         if best_iteration:
-            metric_keys = (
-                ("val_r2", "val_rmse", "val_mae", "train_r2")
-                if task_type == "regression"
-                else ("val_accuracy", "val_roc_auc")
-            )
+            if task_type == "unsupervised":
+                metric_keys = ("silhouette_score", "davies_bouldin", "inertia", "reconstruction_loss")
+            elif task_type == "regression":
+                metric_keys = ("val_r2", "val_rmse", "val_mae", "train_r2")
+            else:
+                metric_keys = ("val_accuracy", "val_roc_auc")
             for key in metric_keys:
                 if best_iteration.get(key) is not None:
                     output[key] = best_iteration[key]
 
-        if training_result.success and actual_best_name:
+        if training_result.success and actual_best_name and task_type != "unsupervised":
             test_metrics = _evaluate_model_on_test(
                 model_name=actual_best_name,
                 test_ref=test_ref,
@@ -605,8 +998,8 @@ Follow the skill documentation below — it covers model selection and training.
             "task_type": task_type,
             "target_column": target_column,
             "train_size": len(train_df),
-            "val_size": len(val_df),
-            "test_size": len(test_df),
+            "val_size": len(val_df) if val_df is not None else 0,
+            "test_size": len(test_df) if test_df is not None else 0,
             "iterations": iterations_dict,
             "best_iteration": best_iteration,
             "messages": final_messages,

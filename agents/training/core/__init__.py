@@ -3,9 +3,12 @@ Core graph infrastructure for the ML Training Agent.
 
 This module contains:
 - state.py: State definitions and constants
-- graph.py: Graph construction and compilation
+- graph.py: Graph construction and compilation (planner + executor + evaluator)
 - edges.py: Conditional routing functions
 - hitl.py: Human-in-the-loop utilities
+- planner.py: LLM-based plan generation
+- evaluator.py: LLM-based step evaluation and plan amendment
+- dispatcher.py: Pure routing from plan to step nodes
 """
 
 from .state import (
@@ -25,16 +28,9 @@ from .hitl import (
 )
 
 from .edges import (
-    feature_validation_result,
-    should_regen_model,
-    should_skip_label_definition,
-    training_decision,
+    route_to_step,
+    should_continue,
 )
-
-# Note: graph module is imported lazily to avoid circular imports
-# with steps.orchestrator. Use:
-#   from agents.training.core.graph import create_training_agent
-# Or import from agents.training.agent
 
 __all__ = [
     # State
@@ -50,8 +46,6 @@ __all__ = [
     "parse_decision",
     "extract_state_snapshot",
     # Edges
-    "should_regen_model",
-    "should_skip_label_definition",
-    "feature_validation_result",
-    "training_decision",
+    "route_to_step",
+    "should_continue",
 ]

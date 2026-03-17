@@ -295,6 +295,164 @@ check("classification acc<0.55, no ROC → redo",
 check("classification acc<0.55 but ROC present → ROC wins",
       not simulate_gate("classification", val_roc_auc=0.70, val_accuracy=0.45))
 
+# ─── task_type refactor ─────────────────────────────────────────────
+
+print("\n--- task_type refactor ---")
+
+check("_infer_task_type returns 'unsupervised' for unsupervised model",
+      _infer_task_type("cluster my customers", "unsupervised") == "unsupervised")
+check("_infer_task_type returns 'classification' for supervised",
+      _infer_task_type("predict churn", "supervised") == "classification")
+check("_infer_task_type returns 'regression' for price prediction",
+      _infer_task_type("predict price", "supervised") == "regression")
+
+from agents.training.steps.select_model import _derive_task_type
+check("_derive_task_type unsupervised → unsupervised",
+      _derive_task_type("unsupervised", "segment customers") == "unsupervised")
+check("_derive_task_type supervised + price → regression",
+      _derive_task_type("supervised", "predict price") == "regression")
+check("_derive_task_type supervised + churn → classification",
+      _derive_task_type("supervised", "predict churn") == "classification")
+check("_derive_task_type neural_networks + forecast → regression",
+      _derive_task_type("neural_networks", "forecast revenue") == "regression")
+
+state_with_tt = create_initial_state("cluster customers", user_model_preference="unsupervised")
+check("create_initial_state has task_type key",
+      "task_type" in state_with_tt)
+check("create_initial_state task_type is None initially",
+      state_with_tt["task_type"] is None)
+
+
+# ─── compute_unsupervised_metrics ──────────────────────────────────
+
+print("\n--- compute_unsupervised_metrics ---")
+
+sys.path.insert(0, str(ROOT / "tools" / "models-tools" / "training"))
+from agents.training.skills.neural_networks.train import _make_compute_unsupervised_metrics
+
+compute_unsup = _make_compute_unsupervised_metrics()
+
+X_cluster = np.array([[0, 0], [0, 1], [1, 0], [10, 10], [10, 11], [11, 10]])
+labels_cluster = np.array([0, 0, 0, 1, 1, 1])
+m = compute_unsup(X_cluster, labels=labels_cluster)
+check("silhouette_score present for clustering",
+      "silhouette_score" in m)
+check("silhouette_score > 0 for well-separated clusters",
+      m["silhouette_score"] > 0.5)
+check("davies_bouldin present for clustering",
+      "davies_bouldin" in m)
+
+X_recon = np.array([[1.0, 2.0], [3.0, 4.0]])
+X_original = np.array([[1.1, 2.1], [3.1, 4.1]])
+m2 = compute_unsup(X_cluster, reconstruction=X_recon, original=X_original)
+check("reconstruction_loss present for autoencoder",
+      "reconstruction_loss" in m2)
+check("reconstruction_loss is small for similar inputs",
+      m2["reconstruction_loss"] < 0.05)
+
+m3 = compute_unsup(X_cluster)
+check("no metrics when no labels or reconstruction",
+      len(m3) == 0)
+
+
+# ─── encode_labels no-op ──────────────────────────────────────────
+
+print("\n--- encode_labels no-op ---")
+
+from agents.training.skills.neural_networks.train import _make_encode_labels
+
+le_ref = []
+encode_labels = _make_encode_labels(le_ref)
+
+y_none, n_classes_none = encode_labels(None)
+check("encode_labels(None) returns (None, 0)",
+      y_none is None and n_classes_none == 0)
+
+y_normal, n_cls = encode_labels(np.array(["cat", "dog", "cat", "bird"]))
+check("encode_labels with data returns encoded array",
+      y_normal is not None and n_cls == 3)
+
+
+# ─── PyTorchPredictor transform ──────────────────────────────────
+
+print("\n--- PyTorchPredictor transform ---")
+
+try:
+    import torch
+    import torch.nn as nn
+    from pytorch_predictor import PyTorchPredictor
+
+    encoder = nn.Linear(4, 2)
+    decoder = nn.Linear(2, 4)
+    full_model = nn.Sequential(encoder, decoder)
+
+    pred = PyTorchPredictor(
+        model=full_model,
+        preprocessor=None,
+        task_type="unsupervised",
+        encoder=encoder,
+    )
+
+    X_test = np.random.randn(5, 4).astype(np.float32)
+    embeddings = pred.transform(X_test)
+    check("transform returns correct shape (5, 2)",
+          embeddings.shape == (5, 2))
+
+    reconstructed = pred.reconstruct(X_test)
+    check("reconstruct returns correct shape (5, 4)",
+          reconstructed.shape == (5, 4))
+
+    predictions = pred.predict(X_test)
+    check("predict returns numpy array for unsupervised",
+          isinstance(predictions, np.ndarray))
+    check("predict output shape matches model output",
+          predictions.shape == (5, 4))
+
+    pred_no_enc = PyTorchPredictor(
+        model=full_model,
+        preprocessor=None,
+        task_type="unsupervised",
+    )
+    emb2 = pred_no_enc.transform(X_test)
+    check("transform without encoder uses full model",
+          emb2.shape == (5, 4))
+
+except ImportError:
+    print("  (skipping PyTorchPredictor tests — torch not installed)")
+
+
+# ─── TrainingIteration unsupervised fields ──────────────────────────
+
+print("\n--- TrainingIteration unsupervised fields ---")
+
+from agents.training.steps.training import TrainingIteration, _primary_metric, _find_best_iteration
+
+it_unsup = TrainingIteration(
+    model_name="kmeans_v1", tool_used="unsupervised/KMeans",
+    success=True, silhouette_score=0.65, davies_bouldin=0.8,
+)
+check("TrainingIteration has silhouette_score",
+      it_unsup.silhouette_score == 0.65)
+check("_primary_metric unsupervised uses silhouette",
+      _primary_metric(it_unsup, "unsupervised") == 0.65)
+
+it_no_sil = TrainingIteration(
+    model_name="ae_v1", tool_used="neural_networks/Autoencoder",
+    success=True, reconstruction_loss=0.01,
+)
+check("_primary_metric unsupervised with no silhouette → -inf",
+      _primary_metric(it_no_sil, "unsupervised") == -float("inf"))
+
+iters_unsup = [
+    {"model_name": "km1", "success": True, "silhouette_score": 0.5, "davies_bouldin": 1.2},
+    {"model_name": "km2", "success": True, "silhouette_score": 0.7, "davies_bouldin": 0.8},
+    {"model_name": "km3", "success": False},
+]
+best = _find_best_iteration(iters_unsup, "unsupervised")
+check("_find_best_iteration picks highest silhouette",
+      best is not None and best["model_name"] == "km2")
+
+
 # ─── Done ─────────────────────────────────────────────────────────
 print(f"\n{'='*70}")
 print(f"TOTAL: {passed} passed, {failed} failed")

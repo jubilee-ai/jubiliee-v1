@@ -95,20 +95,41 @@ def _signal_strength(df: pd.DataFrame, target_col: str) -> float:
     return float(corrs.mean()) if len(corrs) > 0 else 0.0
 
 
+def _goal_relevance(df: pd.DataFrame, goal: str) -> float:
+    """Score how well a dataset's columns match the goal keywords. Returns 0..1."""
+    if not goal:
+        return 0.0
+    goal_words = set(re.sub(r"[^a-z0-9 ]", " ", goal.lower()).split())
+    # Remove stop words that would match anything
+    goal_words -= {
+        "a", "an", "the", "to", "of", "in", "on", "for", "and", "or", "is",
+        "it", "by", "as", "at", "be", "if", "do", "from", "with", "that",
+        "this", "will", "can", "like", "such", "based", "using", "train",
+        "model", "predict", "build", "use", "data", "dataset", "learning",
+        "whether", "score", "neural", "network", "deep",
+    }
+    if not goal_words:
+        return 0.0
+    col_words = set()
+    for col in df.columns:
+        col_words.update(re.sub(r"[^a-z0-9 ]", " ", col.lower()).split())
+    matches = goal_words & col_words
+    return len(matches) / len(goal_words)
+
+
 def _score_dataset(ref: str, goal: str = "") -> float:
     """Quality score for comparing datasets. Higher = better.
 
-    Factors in size, completeness, feature diversity, and feature–target signal.
+    Factors in size, completeness, feature diversity, feature–target signal,
+    and goal relevance (how well column names match goal keywords).
     """
     df = get_registered_dataset(ref)
     if df is None:
         return -1.0
 
     n_rows = len(df)
-    n_cols = len(df.columns)
     null_frac = df.isnull().sum().sum() / max(df.size, 1)
 
-    # Penalise constant and string-ID columns (not numeric high-cardinality)
     useful_cols = 0
     for c in df.columns:
         nuniq = df[c].nunique()
@@ -120,12 +141,16 @@ def _score_dataset(ref: str, goal: str = "") -> float:
 
     base = n_rows * useful_cols * (1 - null_frac)
 
-    # Bonus for feature–target signal
     target_col = _infer_target_column(df, goal) if goal else None
     signal = _signal_strength(df, target_col) if target_col else 0.0
     signal_bonus = 1 + signal * 2  # range [1, ~3]
 
-    return base * signal_bonus
+    # Relevance: strongly penalise datasets whose columns don't match the goal
+    relevance = _goal_relevance(df, goal) if goal else 0.5
+    relevance_multiplier = 0.1 + 0.9 * relevance  # range [0.1, 1.0]
+
+    score = base * signal_bonus * relevance_multiplier
+    return score
 
 
 def _try_local(goal: str, selected_model: str | None,
@@ -177,8 +202,18 @@ def _try_curator(goal: str) -> tuple[str | None, str, dict]:
             sys.path.insert(0, str(_CURATOR_DIR.parent))
         from dataset_curator import DatasetCuratorResult, curate_dataset
 
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+
+        if loop and loop.is_running():
+            import nest_asyncio
+            nest_asyncio.apply()
+
         result = asyncio.run(curate_dataset(goal))
     except Exception as exc:
+        print(f"[data_collection] Curator error: {type(exc).__name__}: {exc}")
         return None, "", {"step": "data_collection", "action": "curator_failed",
                           "error": str(exc)}
 
