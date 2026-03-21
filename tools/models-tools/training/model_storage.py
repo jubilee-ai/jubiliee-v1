@@ -2,13 +2,15 @@
 Model Storage and Registry for Trained Models
 
 Provides utilities for saving, loading, listing, and managing trained models.
-All models are stored in the trained_models/ directory with a JSON registry
-that tracks metadata for each model.
+Models are registered in Postgres (models + model_versions tables) and weights
+are stored in Cloudflare R2 via the ArtifactStore. Falls back to local
+filesystem + JSON registry when Postgres is unavailable.
 """
 
 import json
 import os
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Literal, Optional
 
 import joblib
@@ -16,7 +18,7 @@ import pandas as pd
 from langchain.tools import tool
 from pydantic import BaseModel, ConfigDict, Field
 
-# Default storage location
+# Local staging / cache directory (also used as fallback when DB is down)
 TRAINED_MODELS_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
     "trained_models"
@@ -25,12 +27,51 @@ REGISTRY_FILE = os.path.join(TRAINED_MODELS_DIR, "registry.json")
 
 
 def _ensure_storage_dir():
-    """Ensure the trained_models directory exists."""
     os.makedirs(TRAINED_MODELS_DIR, exist_ok=True)
 
 
+def _sanitize(name: str) -> str:
+    return "".join(c if c.isalnum() or c in "-_" else "_" for c in name)
+
+
+def _db_available() -> bool:
+    try:
+        from backend.shared.database import get_db_session
+        return True
+    except Exception:
+        return False
+
+
+# ── Postgres-backed helpers ──────────────────────────────────────────────────
+
+def _version_to_dict(
+    model: "Model", version: "ModelVersion",  # noqa: F821 – forward refs
+) -> dict:
+    """Convert DB rows to the legacy dict shape that LangChain tools expect."""
+    props = model.properties or {}
+    v_props = version.properties or {}
+    local_path = os.path.join(TRAINED_MODELS_DIR, f"{_sanitize(model.name)}.joblib")
+    return {
+        "model_name": model.name,
+        "model_path": local_path,
+        "model_type": props.get("model_type", ""),
+        "description": props.get("description", ""),
+        "metrics": version.metrics or {},
+        "feature_names": props.get("feature_names", []),
+        "target_column": props.get("target_column", ""),
+        "hyperparameters": v_props.get("hyperparameters", {}),
+        "training_samples": v_props.get("training_samples", 0),
+        "classes": v_props.get("classes", []),
+        "created_at": model.created_at.isoformat() if model.created_at else "",
+        "updated_at": model.updated_at.isoformat() if model.updated_at else "",
+        "version": version.version,
+        "storage_key": version.storage_key,
+    }
+
+
+# ── JSON file fallback (local dev without Postgres) ─────────────────────────
+
 def _load_registry() -> dict:
-    """Load the model registry from disk."""
     _ensure_storage_dir()
     if os.path.exists(REGISTRY_FILE):
         with open(REGISTRY_FILE, "r") as f:
@@ -39,18 +80,17 @@ def _load_registry() -> dict:
 
 
 def _save_registry(registry: dict):
-    """Save the model registry to disk."""
     _ensure_storage_dir()
     with open(REGISTRY_FILE, "w") as f:
         json.dump(registry, f, indent=2)
 
 
+# ── Public API (used by training skills + LangChain tools) ──────────────────
+
 def generate_model_path(model_name: str) -> str:
-    """Generate a file path for a model in the trained_models directory."""
+    """Local staging path where the training skill writes the .joblib file."""
     _ensure_storage_dir()
-    # Sanitize model name for filesystem
-    safe_name = "".join(c if c.isalnum() or c in "-_" else "_" for c in model_name)
-    return os.path.join(TRAINED_MODELS_DIR, f"{safe_name}.joblib")
+    return os.path.join(TRAINED_MODELS_DIR, f"{_sanitize(model_name)}.joblib")
 
 
 def register_model(
@@ -64,14 +104,92 @@ def register_model(
     hyperparameters: dict,
     training_samples: int,
     classes: list[str],
+    training_run_id: Optional[str] = None,
 ) -> dict:
-    """
-    Register a trained model in the registry.
-    
-    Returns the registry entry for the model.
-    """
+    """Register a trained model, upload weights to R2, and persist to Postgres."""
+    if not _db_available():
+        return _register_model_fallback(
+            model_name, model_path, model_type, description, metrics,
+            feature_names, target_column, hyperparameters, training_samples, classes,
+        )
+
+    from backend.shared.artifact_store import get_artifact_store
+    from backend.shared.database import get_db_session
+    from backend.shared.models import Model, ModelVersion
+
+    store = get_artifact_store()
+
+    with get_db_session() as session:
+        # UPSERT model identity
+        model = session.query(Model).filter(Model.name == model_name).first()
+        if model is None:
+            model = Model(
+                name=model_name,
+                properties={
+                    "model_type": model_type,
+                    "description": description,
+                    "feature_names": feature_names,
+                    "target_column": target_column,
+                },
+            )
+            session.add(model)
+            session.flush()  # get model.id
+        else:
+            props = model.properties or {}
+            props.update({
+                "model_type": model_type,
+                "description": description,
+                "feature_names": feature_names,
+                "target_column": target_column,
+            })
+            model.properties = props
+
+        # Compute next version number
+        latest = (
+            session.query(ModelVersion)
+            .filter(ModelVersion.model_id == model.id)
+            .order_by(ModelVersion.version.desc())
+            .first()
+        )
+        next_version = (latest.version + 1) if latest else 1
+
+        # Upload to R2
+        storage_key = f"models/{_sanitize(model_name)}/v{next_version}/artifact.joblib"
+        if os.path.exists(model_path):
+            store.upload(Path(model_path), storage_key)
+
+        # Mark all prior versions as not current
+        session.query(ModelVersion).filter(
+            ModelVersion.model_id == model.id,
+            ModelVersion.is_current.is_(True),
+        ).update({"is_current": False})
+
+        # Create new version
+        mv = ModelVersion(
+            model_id=model.id,
+            version=next_version,
+            training_run_id=training_run_id,
+            storage_key=storage_key,
+            metrics=metrics,
+            is_current=True,
+            properties={
+                "hyperparameters": hyperparameters,
+                "training_samples": training_samples,
+                "classes": classes,
+            },
+        )
+        session.add(mv)
+        session.flush()
+
+        return _version_to_dict(model, mv)
+
+
+def _register_model_fallback(
+    model_name, model_path, model_type, description, metrics,
+    feature_names, target_column, hyperparameters, training_samples, classes,
+) -> dict:
+    """JSON-file fallback for local dev without Postgres."""
     registry = _load_registry()
-    
     entry = {
         "model_name": model_name,
         "model_path": model_path,
@@ -86,63 +204,142 @@ def register_model(
         "created_at": datetime.now(timezone.utc).isoformat(),
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
-    
-    # If model already exists, preserve created_at
     if model_name in registry["models"]:
         entry["created_at"] = registry["models"][model_name]["created_at"]
-    
     registry["models"][model_name] = entry
     _save_registry(registry)
-    
     return entry
 
 
 def get_model_info(model_name: str) -> Optional[dict]:
-    """Get registry info for a model by name."""
-    registry = _load_registry()
-    return registry["models"].get(model_name)
+    """Get registry info for a model by name (current version)."""
+    if not _db_available():
+        registry = _load_registry()
+        return registry["models"].get(model_name)
+
+    from backend.shared.database import get_db_session
+    from backend.shared.models import Model, ModelVersion
+
+    with get_db_session() as session:
+        model = session.query(Model).filter(Model.name == model_name).first()
+        if model is None:
+            return None
+        version = (
+            session.query(ModelVersion)
+            .filter(ModelVersion.model_id == model.id, ModelVersion.is_current.is_(True))
+            .first()
+        )
+        if version is None:
+            version = (
+                session.query(ModelVersion)
+                .filter(ModelVersion.model_id == model.id)
+                .order_by(ModelVersion.version.desc())
+                .first()
+            )
+        if version is None:
+            return None
+        return _version_to_dict(model, version)
 
 
 def list_models() -> list[dict]:
-    """List all registered models."""
-    registry = _load_registry()
-    return list(registry["models"].values())
+    """List all registered models (current versions only)."""
+    if not _db_available():
+        registry = _load_registry()
+        return list(registry["models"].values())
+
+    from backend.shared.database import get_db_session
+    from backend.shared.models import Model, ModelVersion
+
+    results = []
+    with get_db_session() as session:
+        models = session.query(Model).all()
+        for model in models:
+            version = (
+                session.query(ModelVersion)
+                .filter(
+                    ModelVersion.model_id == model.id,
+                    ModelVersion.is_current.is_(True),
+                )
+                .first()
+            )
+            if version is None:
+                continue
+            results.append(_version_to_dict(model, version))
+    return results
 
 
 def load_model(model_name: str) -> Any:
-    """Load a trained model by name."""
+    """Load a trained model by name. Downloads from R2 if not cached locally."""
     info = get_model_info(model_name)
     if info is None:
         raise ValueError(f"Model '{model_name}' not found in registry")
 
-    model_path = info["model_path"]
-    if not os.path.exists(model_path):
-        raise FileNotFoundError(f"Model file not found: {model_path}")
+    local_path = info["model_path"]
+
+    # If file doesn't exist locally, try downloading from R2
+    if not os.path.exists(local_path) and info.get("storage_key"):
+        from backend.shared.artifact_store import get_artifact_store
+        store = get_artifact_store()
+        store.download(info["storage_key"], Path(local_path))
+
+    if not os.path.exists(local_path):
+        raise FileNotFoundError(
+            f"Model file not found locally or in R2: {local_path}"
+        )
 
     if info.get("model_type") == "pytorch_nn":
         import pickle
-        with open(model_path, "rb") as f:
+        with open(local_path, "rb") as f:
             return pickle.load(f)
 
-    return joblib.load(model_path)
+    return joblib.load(local_path)
 
 
 def delete_model(model_name: str) -> bool:
-    """Delete a model from registry and disk."""
-    registry = _load_registry()
-    
-    if model_name not in registry["models"]:
-        return False
-    
-    # Delete file if exists
-    model_path = registry["models"][model_name]["model_path"]
-    if os.path.exists(model_path):
-        os.remove(model_path)
-    
-    # Remove from registry
-    del registry["models"][model_name]
-    _save_registry(registry)
-    
+    """Delete a model from registry, R2, and local cache."""
+    if not _db_available():
+        registry = _load_registry()
+        if model_name not in registry["models"]:
+            return False
+        model_path = registry["models"][model_name]["model_path"]
+        if os.path.exists(model_path):
+            os.remove(model_path)
+        del registry["models"][model_name]
+        _save_registry(registry)
+        return True
+
+    from backend.shared.artifact_store import get_artifact_store
+    from backend.shared.database import get_db_session
+    from backend.shared.models import Model, ModelVersion
+
+    store = get_artifact_store()
+
+    with get_db_session() as session:
+        model = session.query(Model).filter(Model.name == model_name).first()
+        if model is None:
+            return False
+
+        # Delete all version artifacts from R2
+        versions = (
+            session.query(ModelVersion)
+            .filter(ModelVersion.model_id == model.id)
+            .all()
+        )
+        for v in versions:
+            if v.storage_key:
+                try:
+                    store.delete(v.storage_key)
+                except Exception:
+                    pass
+
+        # Delete from Postgres (CASCADE deletes versions)
+        session.delete(model)
+
+    # Delete local cache
+    local_path = os.path.join(TRAINED_MODELS_DIR, f"{_sanitize(model_name)}.joblib")
+    if os.path.exists(local_path):
+        os.remove(local_path)
+
     return True
 
 

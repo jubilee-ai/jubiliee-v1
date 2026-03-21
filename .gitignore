@@ -111,7 +111,7 @@ Thumbs.db
 
 
 
-datasets/warehouse.db
+*.db
 tools/data-tools/.embedding_cache/openai_embeddings.json
 
 .cursor/

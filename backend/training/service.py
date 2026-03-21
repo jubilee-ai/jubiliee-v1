@@ -109,6 +109,7 @@ def run_training_sync(
             user_model_preference=model_pref,
         )
 
+        repository.save_run_dataset_links(job_id, result)
         repository.update_training_status(
             job_id,
             {
@@ -264,6 +265,7 @@ def generate_simple_sse_events(
                     yield f"data: {json.dumps(serialize_state(update))}\n\n"
 
         repository.save_training_context(shared_state)
+        repository.save_run_dataset_links(thread_id, shared_state)
         completed_payload = {
             "type": "completed",
             "node": "end",
@@ -347,6 +349,7 @@ def generate_simple_resume_sse_events(
                     yield f"data: {json.dumps(serialize_state(update))}\n\n"
 
         repository.save_training_context(shared_state)
+        repository.save_run_dataset_links(thread_id, shared_state)
         completed_payload = {
             "type": "completed",
             "node": "end",

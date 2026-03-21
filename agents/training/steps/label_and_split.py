@@ -242,6 +242,10 @@ def _detect_target_transform(
     if len(target) < 30:
         return None
 
+    # Few unique values → classification target, not a regression candidate
+    if target.nunique() <= 20:
+        return None
+
     skew = float(target.skew())
     if target.min() >= 0 and abs(skew) > 1.0:
         return "log1p"
