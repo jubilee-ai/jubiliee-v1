@@ -1,0 +1,598 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Jubilee Architecture</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Instrument+Serif:ital@0;1&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0a0a0f;
+    --surface: #12121a;
+    --surface-2: #1a1a26;
+    --border: #2a2a3a;
+    --border-hi: #3a3a5a;
+    --text: #e8e8f0;
+    --text-dim: #8888a0;
+    --accent-orange: #f59e0b;
+    --accent-blue: #3b82f6;
+    --accent-green: #10b981;
+    --accent-purple: #8b5cf6;
+    --accent-pink: #ec4899;
+    --accent-cyan: #06b6d4;
+    --accent-red: #ef4444;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Space Grotesk', sans-serif;
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  .header {
+    text-align: center;
+    padding: 60px 40px 20px;
+  }
+
+  .header h1 {
+    font-family: 'Instrument Serif', serif;
+    font-size: 3.2rem;
+    font-weight: 400;
+    letter-spacing: -0.02em;
+    background: linear-gradient(135deg, var(--accent-orange), var(--accent-pink));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    margin-bottom: 8px;
+  }
+
+  .header p {
+    color: var(--text-dim);
+    font-size: 1rem;
+    font-family: 'DM Mono', monospace;
+  }
+
+  .legend {
+    display: flex;
+    justify-content: center;
+    gap: 24px;
+    padding: 24px 40px;
+    flex-wrap: wrap;
+  }
+
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.8rem;
+    color: var(--text-dim);
+    font-family: 'DM Mono', monospace;
+  }
+
+  .legend-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+  }
+
+  svg {
+    display: block;
+    margin: 0 auto;
+  }
+
+  /* Nodes */
+  .node-box {
+    rx: 12;
+    ry: 12;
+    stroke-width: 1.5;
+    transition: all 0.3s ease;
+    cursor: pointer;
+  }
+
+  .node-box:hover {
+    filter: brightness(1.3);
+    stroke-width: 2.5;
+  }
+
+  .node-label {
+    font-family: 'Space Grotesk', sans-serif;
+    font-weight: 600;
+    font-size: 13px;
+    fill: var(--text);
+    pointer-events: none;
+  }
+
+  .node-sublabel {
+    font-family: 'DM Mono', monospace;
+    font-size: 10px;
+    fill: var(--text-dim);
+    pointer-events: none;
+  }
+
+  .node-icon {
+    font-size: 18px;
+    pointer-events: none;
+  }
+
+  /* Edges */
+  .edge {
+    stroke-width: 1.8;
+    fill: none;
+    opacity: 0.6;
+  }
+
+  .edge-label {
+    font-family: 'DM Mono', monospace;
+    font-size: 9.5px;
+    fill: var(--text-dim);
+  }
+
+  .edge-label-bg {
+    fill: var(--bg);
+    rx: 4;
+    ry: 4;
+  }
+
+  /* Arrow markers */
+  marker path {
+    stroke: none;
+  }
+
+  /* Section titles */
+  .section-title {
+    font-family: 'Instrument Serif', serif;
+    font-size: 14px;
+    fill: var(--text-dim);
+    font-style: italic;
+  }
+
+  .section-box {
+    fill: none;
+    stroke: var(--border);
+    stroke-width: 1;
+    stroke-dasharray: 6 4;
+    rx: 16;
+    ry: 16;
+  }
+
+  /* DB Table list */
+  .table-row {
+    font-family: 'DM Mono', monospace;
+    font-size: 9px;
+    fill: var(--text-dim);
+    pointer-events: none;
+  }
+
+  /* Animations */
+  @keyframes flowPulse {
+    0% { stroke-dashoffset: 20; }
+    100% { stroke-dashoffset: 0; }
+  }
+
+  .flow-animated {
+    stroke-dasharray: 8 4;
+    animation: flowPulse 1.5s linear infinite;
+  }
+
+  @keyframes fadeSlideIn {
+    from { opacity: 0; transform: translateY(10px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  .animate-in {
+    animation: fadeSlideIn 0.6s ease-out both;
+  }
+
+  /* Detail panel */
+  .detail-panel {
+    max-width: 900px;
+    margin: 0 auto;
+    padding: 30px 40px 60px;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px;
+  }
+
+  .detail-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px;
+    animation: fadeSlideIn 0.5s ease-out both;
+  }
+
+  .detail-card h3 {
+    font-family: 'Space Grotesk', sans-serif;
+    font-size: 0.95rem;
+    font-weight: 600;
+    margin-bottom: 10px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .detail-card ul {
+    list-style: none;
+    padding: 0;
+  }
+
+  .detail-card li {
+    font-family: 'DM Mono', monospace;
+    font-size: 0.78rem;
+    color: var(--text-dim);
+    padding: 4px 0;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .detail-card li:last-child { border: none; }
+
+  .detail-card li strong {
+    color: var(--text);
+    font-weight: 500;
+  }
+
+  .flow-section {
+    grid-column: 1 / -1;
+  }
+
+  .flow-step {
+    display: flex;
+    align-items: flex-start;
+    gap: 14px;
+    padding: 10px 0;
+  }
+
+  .flow-num {
+    width: 26px;
+    height: 26px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.75rem;
+    font-weight: 700;
+    flex-shrink: 0;
+    color: var(--bg);
+  }
+
+  .flow-text {
+    font-size: 0.82rem;
+    line-height: 1.5;
+  }
+
+  .flow-text code {
+    font-family: 'DM Mono', monospace;
+    font-size: 0.75rem;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 1px 5px;
+  }
+
+  .highlight-orange { color: var(--accent-orange); }
+  .highlight-blue { color: var(--accent-blue); }
+  .highlight-green { color: var(--accent-green); }
+  .highlight-purple { color: var(--accent-purple); }
+  .highlight-pink { color: var(--accent-pink); }
+  .highlight-cyan { color: var(--accent-cyan); }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>Jubilee Architecture</h1>
+  <p>cloud services &middot; dataflow &middot; storage layers</p>
+</div>
+
+<div class="legend">
+  <div class="legend-item"><div class="legend-dot" style="background:var(--accent-blue)"></div>Vercel (Frontend)</div>
+  <div class="legend-item"><div class="legend-dot" style="background:var(--accent-orange)"></div>Railway (Compute)</div>
+  <div class="legend-item"><div class="legend-dot" style="background:var(--accent-green)"></div>Cloudflare R2</div>
+  <div class="legend-item"><div class="legend-dot" style="background:var(--accent-purple)"></div>External APIs</div>
+  <div class="legend-item"><div class="legend-dot" style="background:var(--accent-pink)"></div>Data Sources</div>
+</div>
+
+<svg viewBox="0 0 960 680" width="960" height="680" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <marker id="arr-orange" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6" fill="#f59e0b"/>
+    </marker>
+    <marker id="arr-blue" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6" fill="#3b82f6"/>
+    </marker>
+    <marker id="arr-green" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6" fill="#10b981"/>
+    </marker>
+    <marker id="arr-purple" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6" fill="#8b5cf6"/>
+    </marker>
+    <marker id="arr-pink" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6" fill="#ec4899"/>
+    </marker>
+    <marker id="arr-cyan" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6" fill="#06b6d4"/>
+    </marker>
+    <marker id="arr-dim" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6" fill="#8888a0"/>
+    </marker>
+
+    <filter id="glow-orange" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="0" stdDeviation="6" flood-color="#f59e0b" flood-opacity="0.15"/>
+    </filter>
+    <filter id="glow-blue" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="0" stdDeviation="6" flood-color="#3b82f6" flood-opacity="0.15"/>
+    </filter>
+    <filter id="glow-green" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="0" stdDeviation="6" flood-color="#10b981" flood-opacity="0.15"/>
+    </filter>
+    <filter id="glow-purple" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="0" stdDeviation="6" flood-color="#8b5cf6" flood-opacity="0.15"/>
+    </filter>
+    <filter id="glow-pink" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="0" stdDeviation="6" flood-color="#ec4899" flood-opacity="0.15"/>
+    </filter>
+  </defs>
+
+  <!-- ===================== SECTION: Railway ===================== -->
+  <rect class="section-box" x="220" y="20" width="520" height="640" style="stroke: #f59e0b30;"/>
+  <text class="section-title" x="240" y="46">Railway</text>
+
+  <!-- FastAPI Backend -->
+  <g class="animate-in" style="animation-delay: 0.1s">
+    <rect class="node-box" x="340" y="70" width="190" height="60" fill="#1a1510" stroke="var(--accent-orange)" filter="url(#glow-orange)"/>
+    <text class="node-icon" x="356" y="106">&#9889;</text>
+    <text class="node-label" x="376" y="96">FastAPI Backend</text>
+    <text class="node-sublabel" x="376" y="112">port 8000 &middot; SSE streams</text>
+  </g>
+
+  <!-- Celery Worker -->
+  <g class="animate-in" style="animation-delay: 0.15s">
+    <rect class="node-box" x="340" y="200" width="190" height="60" fill="#1a1510" stroke="var(--accent-orange)" filter="url(#glow-orange)"/>
+    <text class="node-icon" x="356" y="236">&#9881;</text>
+    <text class="node-label" x="376" y="226">Celery Worker</text>
+    <text class="node-sublabel" x="376" y="242">async training jobs</text>
+  </g>
+
+  <!-- LangGraph Agent -->
+  <g class="animate-in" style="animation-delay: 0.2s">
+    <rect class="node-box" x="310" y="330" width="250" height="70" fill="#1a1016" stroke="var(--accent-pink)" filter="url(#glow-pink)"/>
+    <text class="node-icon" x="326" y="370">&#129302;</text>
+    <text class="node-label" x="350" y="358">LangGraph Training Agent</text>
+    <text class="node-sublabel" x="350" y="374">collect &rarr; clean &rarr; engineer &rarr;</text>
+    <text class="node-sublabel" x="350" y="388">split &rarr; train &rarr; evaluate</text>
+  </g>
+
+  <!-- Redis -->
+  <g class="animate-in" style="animation-delay: 0.25s">
+    <rect class="node-box" x="565" y="150" width="150" height="50" fill="#1a1010" stroke="#ef4444"/>
+    <text class="node-icon" x="580" y="182">&#9632;</text>
+    <text class="node-label" x="600" y="176">Redis</text>
+    <text class="node-sublabel" x="600" y="190">task queue + cache</text>
+  </g>
+
+  <!-- Postgres -->
+  <g class="animate-in" style="animation-delay: 0.3s">
+    <rect class="node-box" x="280" y="470" width="310" height="170" fill="#101518" stroke="var(--accent-cyan)"/>
+    <text class="node-icon" x="296" y="502">&#128451;</text>
+    <text class="node-label" x="318" y="498">PostgreSQL</text>
+    <text class="node-sublabel" x="318" y="514">metadata &amp; model registry</text>
+
+    <line x1="296" y1="526" x2="574" y2="526" stroke="var(--border)" stroke-width="1"/>
+    <text class="table-row" x="302" y="544">training_jobs</text>
+    <text class="table-row" x="302" y="558">training_summaries</text>
+    <text class="table-row" x="302" y="572">chat_threads</text>
+    <text class="table-row" x="302" y="586">agent_checkpoints</text>
+
+    <text class="table-row" x="438" y="544" style="fill: var(--accent-cyan)">datasets</text>
+    <text class="table-row" x="438" y="558" style="fill: var(--accent-cyan)">models</text>
+    <text class="table-row" x="438" y="572" style="fill: var(--accent-cyan)">model_versions</text>
+    <text class="table-row" x="438" y="586" style="fill: var(--accent-cyan)">run_dataset_links</text>
+
+    <text class="table-row" x="438" y="602" style="fill: var(--text-dim); font-style: italic">&#8593; new MLOps tables</text>
+    <text class="table-row" x="302" y="602" style="fill: var(--text-dim); font-style: italic">&#8593; existing tables</text>
+  </g>
+
+  <!-- ===================== SECTION: Vercel ===================== -->
+  <g class="animate-in" style="animation-delay: 0.05s">
+    <rect class="node-box" x="30" y="70" width="170" height="60" fill="#10101a" stroke="var(--accent-blue)" filter="url(#glow-blue)"/>
+    <text class="node-icon" x="46" y="106">&#9670;</text>
+    <text class="node-label" x="66" y="96">React + Vite UI</text>
+    <text class="node-sublabel" x="66" y="112">Vercel &middot; chat interface</text>
+  </g>
+
+  <!-- ===================== SECTION: R2 ===================== -->
+  <g class="animate-in" style="animation-delay: 0.35s">
+    <rect class="node-box" x="30" y="330" width="200" height="70" fill="#0f1a14" stroke="var(--accent-green)" filter="url(#glow-green)"/>
+    <text class="node-icon" x="46" y="370">&#9729;</text>
+    <text class="node-label" x="68" y="358">Cloudflare R2</text>
+    <text class="node-sublabel" x="68" y="374">jubilee-models bucket</text>
+    <text class="node-sublabel" x="68" y="388">S3-compatible &middot; boto3</text>
+  </g>
+
+  <!-- ===================== SECTION: External APIs ===================== -->
+  <g class="animate-in" style="animation-delay: 0.4s">
+    <rect class="node-box" x="770" y="280" width="160" height="50" fill="#14101a" stroke="var(--accent-purple)" filter="url(#glow-purple)"/>
+    <text class="node-icon" x="786" y="312">&#10024;</text>
+    <text class="node-label" x="808" y="306">OpenAI API</text>
+    <text class="node-sublabel" x="808" y="320">GPT-4o decisions</text>
+  </g>
+
+  <g class="animate-in" style="animation-delay: 0.42s">
+    <rect class="node-box" x="770" y="350" width="160" height="50" fill="#14101a" stroke="var(--accent-purple)" filter="url(#glow-purple)"/>
+    <text class="node-icon" x="786" y="382">&#128269;</text>
+    <text class="node-label" x="808" y="376">LangSmith</text>
+    <text class="node-sublabel" x="808" y="390">tracing &amp; observability</text>
+  </g>
+
+  <!-- ===================== SECTION: Data Sources ===================== -->
+  <g class="animate-in" style="animation-delay: 0.45s">
+    <rect class="node-box" x="770" y="470" width="160" height="50" fill="#1a1018" stroke="var(--accent-pink)" filter="url(#glow-pink)"/>
+    <text class="node-label" x="808" y="500">Kaggle / HF</text>
+    <text class="node-sublabel" x="808" y="514">dataset sources</text>
+  </g>
+
+  <g class="animate-in" style="animation-delay: 0.47s">
+    <rect class="node-box" x="770" y="540" width="160" height="50" fill="#1a1018" stroke="var(--accent-pink)" filter="url(#glow-pink)"/>
+    <text class="node-label" x="808" y="570">Local CSV/Parquet</text>
+    <text class="node-sublabel" x="808" y="584">catalog.json</text>
+  </g>
+
+  <!-- ===================== EDGES ===================== -->
+
+  <!-- User -> Vercel (implicit) -->
+
+  <!-- Vercel -> FastAPI: HTTP + SSE -->
+  <path class="edge flow-animated" d="M200,100 L340,100" stroke="var(--accent-blue)" marker-end="url(#arr-blue)"/>
+  <rect class="edge-label-bg" x="240" y="81" width="40" height="16"/>
+  <text class="edge-label" x="243" y="93">SSE</text>
+
+  <!-- FastAPI -> Celery (dispatch) -->
+  <path class="edge" d="M435,130 L435,200" stroke="var(--accent-orange)" marker-end="url(#arr-orange)"/>
+  <rect class="edge-label-bg" x="441" y="157" width="52" height="16"/>
+  <text class="edge-label" x="444" y="169">dispatch</text>
+
+  <!-- FastAPI <-> Redis -->
+  <path class="edge" d="M530,100 L580,155" stroke="#ef4444" marker-end="url(#arr-dim)"/>
+
+  <!-- Celery <-> Redis -->
+  <path class="edge" d="M530,230 L580,195" stroke="#ef4444" marker-end="url(#arr-dim)"/>
+  <rect class="edge-label-bg" x="524" y="206" width="36" height="16"/>
+  <text class="edge-label" x="527" y="218">jobs</text>
+
+  <!-- Celery -> Agent -->
+  <path class="edge" d="M435,260 L435,330" stroke="var(--accent-pink)" marker-end="url(#arr-pink)"/>
+  <rect class="edge-label-bg" x="441" y="287" width="36" height="16"/>
+  <text class="edge-label" x="444" y="299">runs</text>
+
+  <!-- Agent -> Postgres (metadata writes) -->
+  <path class="edge" d="M435,400 L435,470" stroke="var(--accent-cyan)" marker-end="url(#arr-cyan)"/>
+  <rect class="edge-label-bg" x="441" y="424" width="90" height="16"/>
+  <text class="edge-label" x="444" y="436">metadata writes</text>
+
+  <!-- Agent -> R2 (model upload) -->
+  <path class="edge flow-animated" d="M310,380 L230,370" stroke="var(--accent-green)" marker-end="url(#arr-green)"/>
+  <rect class="edge-label-bg" x="235" y="354" width="72" height="16"/>
+  <text class="edge-label" x="238" y="366">.joblib upload</text>
+
+  <!-- Agent -> OpenAI -->
+  <path class="edge" d="M560,355 L770,305" stroke="var(--accent-purple)" marker-end="url(#arr-purple)"/>
+  <rect class="edge-label-bg" x="630" y="318" width="78" height="16"/>
+  <text class="edge-label" x="633" y="330">tool decisions</text>
+
+  <!-- Agent -> LangSmith -->
+  <path class="edge" d="M560,375 L770,375" stroke="var(--accent-purple)" marker-end="url(#arr-purple)" opacity="0.4"/>
+  <rect class="edge-label-bg" x="640" y="362" width="46" height="16"/>
+  <text class="edge-label" x="643" y="374">traces</text>
+
+  <!-- Data Sources -> Agent -->
+  <path class="edge" d="M770,495 L560,385" stroke="var(--accent-pink)" marker-end="url(#arr-pink)"/>
+  <rect class="edge-label-bg" x="640" y="434" width="62" height="16"/>
+  <text class="edge-label" x="643" y="446">load data</text>
+
+  <path class="edge" d="M770,565 L590,540" stroke="var(--accent-pink)" marker-end="url(#arr-pink)" opacity="0.4"/>
+
+  <!-- R2 -> Agent (model download / load) -->
+  <path class="edge" d="M210,340 L310,345" stroke="var(--accent-green)" marker-end="url(#arr-green)" opacity="0.35" stroke-dasharray="4 3"/>
+  <rect class="edge-label-bg" x="225" y="326" width="60" height="16"/>
+  <text class="edge-label" x="228" y="338">download</text>
+
+  <!-- model_storage.py -> Postgres -->
+  <!-- model_storage.py -> R2 -->
+  <!-- register_dataset -> Postgres -->
+  <!-- These are already captured in Agent -> Postgres and Agent -> R2 -->
+
+  <!-- run_dataset_links visual cue -->
+  <rect class="edge-label-bg" x="30" y="430" width="200" height="56" rx="8" ry="8" fill="var(--surface)" stroke="var(--border)"/>
+  <text class="node-sublabel" x="44" y="448" style="fill: var(--accent-green)">&#10003; Model weights only</text>
+  <text class="node-sublabel" x="44" y="464" style="fill: var(--text-dim)">No user datasets in R2</text>
+  <text class="node-sublabel" x="44" y="478" style="fill: var(--text-dim)">Metadata stays in Postgres</text>
+
+</svg>
+
+<div class="detail-panel">
+
+  <div class="detail-card flow-section" style="animation-delay: 0.5s">
+    <h3>&#128260; Training Job Dataflow</h3>
+    <div class="flow-step">
+      <div class="flow-num" style="background: var(--accent-blue)">1</div>
+      <div class="flow-text"><strong class="highlight-blue">React UI</strong> sends training goal + dataset selection via HTTP POST to <code>/api/train/stream</code></div>
+    </div>
+    <div class="flow-step">
+      <div class="flow-num" style="background: var(--accent-orange)">2</div>
+      <div class="flow-text"><strong class="highlight-orange">FastAPI</strong> creates a <code>training_jobs</code> row in Postgres, dispatches to <strong class="highlight-orange">Celery</strong> via <strong style="color: #ef4444">Redis</strong> queue (or runs sync + streams SSE)</div>
+    </div>
+    <div class="flow-step">
+      <div class="flow-num" style="background: var(--accent-pink)">3</div>
+      <div class="flow-text"><strong class="highlight-pink">LangGraph Agent</strong> runs the pipeline: data collection &rarr; cleaning &rarr; feature engineering &rarr; label/split &rarr; train &rarr; evaluate. Each step calls <strong class="highlight-purple">OpenAI</strong> for tool-use decisions.</div>
+    </div>
+    <div class="flow-step">
+      <div class="flow-num" style="background: var(--accent-cyan)">4</div>
+      <div class="flow-text"><code>register_dataset()</code> writes dataset metadata to <strong class="highlight-cyan">Postgres</strong> <code>datasets</code> table (no files uploaded). Datasets loaded from <strong class="highlight-pink">Kaggle/HuggingFace/local CSV</strong> into memory.</div>
+    </div>
+    <div class="flow-step">
+      <div class="flow-num" style="background: var(--accent-green)">5</div>
+      <div class="flow-text"><code>register_model()</code> UPSERTs into <code>models</code> + <code>model_versions</code>, then uploads <code>.joblib</code> weights to <strong class="highlight-green">Cloudflare R2</strong> via <code>ArtifactStore</code> (boto3 S3 API). The <code>storage_key</code> is saved in <code>model_versions</code>.</div>
+    </div>
+    <div class="flow-step">
+      <div class="flow-num" style="background: var(--accent-purple)">6</div>
+      <div class="flow-text"><code>save_run_dataset_links()</code> writes <code>run_dataset_links</code> rows connecting the training job to each dataset by role (<em>source, train, validation, test</em>) &mdash; enabling <strong>bidirectional queries</strong>.</div>
+    </div>
+    <div class="flow-step">
+      <div class="flow-num" style="background: var(--accent-blue)">7</div>
+      <div class="flow-text">Progress streams back to <strong class="highlight-blue">React UI</strong> via SSE. On completion, user can predict with the model &mdash; <code>load_model()</code> fetches weights from R2 if not cached locally.</div>
+    </div>
+  </div>
+
+  <div class="detail-card" style="animation-delay: 0.6s">
+    <h3 style="color: var(--accent-orange)">&#9889; Railway Services</h3>
+    <ul>
+      <li><strong>FastAPI</strong> &mdash; HTTP API + SSE streaming</li>
+      <li><strong>Celery Worker</strong> &mdash; async training execution</li>
+      <li><strong>Redis</strong> &mdash; Celery broker + result backend</li>
+      <li><strong>PostgreSQL</strong> &mdash; all persistent state</li>
+    </ul>
+  </div>
+
+  <div class="detail-card" style="animation-delay: 0.65s">
+    <h3 style="color: var(--accent-cyan)">&#128451; Postgres Tables</h3>
+    <ul>
+      <li><strong>training_jobs</strong> &mdash; job status, progress, state</li>
+      <li><strong>datasets</strong> &mdash; name, source_type, JSONB props</li>
+      <li><strong>models</strong> &mdash; stable identity per model concept</li>
+      <li><strong>model_versions</strong> &mdash; R2 key, metrics, version #</li>
+      <li><strong>run_dataset_links</strong> &mdash; join table (role: source/train/val/test)</li>
+      <li><strong>training_summaries</strong> &mdash; post-training chat context</li>
+      <li><strong>agent_checkpoints</strong> &mdash; LangGraph HITL state</li>
+      <li><strong>chat_threads</strong> &mdash; thread metadata</li>
+    </ul>
+  </div>
+
+  <div class="detail-card" style="animation-delay: 0.7s">
+    <h3 style="color: var(--accent-green)">&#9729; Cloudflare R2</h3>
+    <ul>
+      <li><strong>Bucket:</strong> jubilee-models</li>
+      <li><strong>Stores:</strong> model weights (.joblib) only</li>
+      <li><strong>Key format:</strong> models/{name}/v{n}/artifact.joblib</li>
+      <li><strong>Access:</strong> boto3 S3-compatible API</li>
+      <li><strong>Fallback:</strong> LocalArtifactStore for dev</li>
+    </ul>
+  </div>
+
+  <div class="detail-card" style="animation-delay: 0.75s">
+    <h3 style="color: var(--accent-purple)">&#10024; External APIs</h3>
+    <ul>
+      <li><strong>OpenAI</strong> &mdash; GPT-4o for agent tool decisions</li>
+      <li><strong>LangSmith</strong> &mdash; tracing, debugging, observability</li>
+      <li><strong>Kaggle API</strong> &mdash; dataset downloads</li>
+      <li><strong>HuggingFace</strong> &mdash; dataset downloads</li>
+    </ul>
+  </div>
+
+</div>
+
+</body>
+</html>

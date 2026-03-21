@@ -36,6 +36,24 @@ class Settings(BaseSettings):
         description="Redis URL for Celery broker and result backend",
     )
 
+    # R2 / S3-compatible object storage (model weights)
+    R2_ENDPOINT_URL: Optional[str] = Field(
+        default=None,
+        description="Cloudflare R2 S3-compatible endpoint URL",
+    )
+    R2_ACCESS_KEY_ID: Optional[str] = Field(
+        default=None,
+        description="R2 API token access key ID",
+    )
+    R2_SECRET_ACCESS_KEY: Optional[SecretStr] = Field(
+        default=None,
+        description="R2 API token secret access key",
+    )
+    R2_BUCKET_NAME: str = Field(
+        default="jubilee-models",
+        description="R2 bucket name for model weights",
+    )
+
     # App config
     CORS_ORIGINS: list[str] = Field(
         default_factory=lambda: [
@@ -92,6 +110,18 @@ class Settings(BaseSettings):
             if self.OPENAI_API_KEY is not None
             else None
         )
+
+    @property
+    def r2_enabled(self) -> bool:
+        return bool(
+            self.R2_ENDPOINT_URL
+            and self.R2_ACCESS_KEY_ID
+            and self.R2_SECRET_ACCESS_KEY
+        )
+
+    @property
+    def trained_models_dir(self) -> Path:
+        return self.project_root / "trained_models"
 
 
 @lru_cache(maxsize=1)

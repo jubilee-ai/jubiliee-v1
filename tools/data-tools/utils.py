@@ -383,7 +383,13 @@ def _get_derived_path(ref: str) -> Path:
 _derived_sql_tables: set = set()
 
 
-def register_dataset(ref: str, df, persist: bool = True, register_sql: bool = True) -> str:
+def register_dataset(
+    ref: str,
+    df,
+    persist: bool = True,
+    register_sql: bool = True,
+    source_type: str = "derived",
+) -> str:
     """
     Register a DataFrame in the registry, persist to disk, and add to SQL warehouse.
     
@@ -391,12 +397,14 @@ def register_dataset(ref: str, df, persist: bool = True, register_sql: bool = Tr
     1. Stored in memory for fast access
     2. Saved to datasets/derived/ as parquet files for durability
     3. Added to the SQL warehouse as tables for SQL querying
+    4. Registered in Postgres datasets table (metadata only, non-blocking)
     
     Args:
         ref: Unique reference ID for this dataset
         df: Pandas DataFrame to store
         persist: If True, save to disk as parquet (default True)
         register_sql: If True, add to SQL warehouse for SQL queries (default True)
+        source_type: Dataset origin -- "derived", "local", "kaggle", "huggingface"
     
     Returns:
         The reference ID
@@ -411,7 +419,6 @@ def register_dataset(ref: str, df, persist: bool = True, register_sql: bool = Tr
             file_path = _get_derived_path(ref)
             df.to_parquet(file_path, index=False)
         except Exception as e:
-            # Log but don't fail - in-memory is still available
             print(f"Warning: Failed to persist dataset '{ref}' to disk: {e}")
     
     # Register in SQL warehouse for SQL queries
@@ -419,10 +426,45 @@ def register_dataset(ref: str, df, persist: bool = True, register_sql: bool = Tr
         try:
             _register_in_sql_warehouse(ref, df)
         except Exception as e:
-            # Log but don't fail - other access methods still work
             print(f"Warning: Failed to register '{ref}' in SQL warehouse: {e}")
-    
+
+    # Register metadata in Postgres (non-blocking)
+    if isinstance(df, pd.DataFrame):
+        try:
+            _register_in_postgres(ref, df, source_type)
+        except Exception:
+            pass
+
     return ref
+
+
+def _register_in_postgres(ref: str, df, source_type: str) -> None:
+    """Write dataset metadata to Postgres datasets table. Best-effort."""
+    try:
+        from backend.shared.database import get_db_session
+        from backend.shared.models import Dataset
+    except ImportError:
+        return
+
+    import pandas as pd
+
+    properties: dict = {
+        "format": "parquet",
+        "row_count": len(df),
+        "columns": list(df.columns),
+    }
+    try:
+        dtypes = {col: str(dtype) for col, dtype in df.dtypes.items()}
+        properties["schema_info"] = dtypes
+    except Exception:
+        pass
+
+    with get_db_session() as session:
+        existing = session.query(Dataset).filter(Dataset.name == ref).first()
+        if existing:
+            existing.properties = {**(existing.properties or {}), **properties}
+        else:
+            session.add(Dataset(name=ref, source_type=source_type, properties=properties))
 
 
 def _dedupe_column_names(df) -> "pd.DataFrame":

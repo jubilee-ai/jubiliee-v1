@@ -55,6 +55,12 @@ def run_training_task(
             use_external_sources=use_external_sources,
         )
 
+        try:
+            from backend.training.repository import save_run_dataset_links
+            save_run_dataset_links(job_id, result)
+        except Exception:
+            pass
+
         return {
             "status": "completed",
             "job_id": job_id,

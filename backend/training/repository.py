@@ -5,7 +5,7 @@ from typing import Optional
 from sqlalchemy import select
 
 from backend.shared.database import get_db_session
-from backend.shared.models import AgentStore, ChatThread, TrainingContext, TrainingJob
+from backend.shared.models import AgentCheckpoint, ChatThread, TrainingSummary, TrainingJob
 
 # Also re-export the in-memory fallbacks so existing `from repository import` still works.
 from backend.shared.state import (
@@ -94,18 +94,18 @@ def cancel_training(job_id: str) -> bool:
     return True
 
 
-# --- Agent store (for LangGraph interrupt/resume) ---
+# --- Agent checkpoints (for LangGraph interrupt/resume) ---
 
 def put_simple_agent_store(thread_id: str, value: dict[str, object]) -> None:
     simple_agent_store[thread_id] = value
 
     serializable = _make_serializable(value)
     with get_db_session() as session:
-        existing = session.get(AgentStore, thread_id)
+        existing = session.get(AgentCheckpoint, thread_id)
         if existing:
             existing.state = serializable
         else:
-            session.add(AgentStore(thread_id=thread_id, state=serializable))
+            session.add(AgentCheckpoint(thread_id=thread_id, state=serializable))
 
 
 def get_simple_agent_store(thread_id: str) -> Optional[dict[str, object]]:
@@ -113,7 +113,7 @@ def get_simple_agent_store(thread_id: str) -> Optional[dict[str, object]]:
         return simple_agent_store[thread_id]
 
     with get_db_session() as session:
-        row = session.get(AgentStore, thread_id)
+        row = session.get(AgentCheckpoint, thread_id)
         if row is None:
             return None
         return row.state
@@ -124,7 +124,7 @@ def thread_exists(thread_id: str) -> bool:
         return True
 
     with get_db_session() as session:
-        return session.get(AgentStore, thread_id) is not None
+        return session.get(AgentCheckpoint, thread_id) is not None
 
 
 def save_interrupt_ids(thread_id: str, interrupt_ids: list[str]) -> None:
@@ -132,12 +132,12 @@ def save_interrupt_ids(thread_id: str, interrupt_ids: list[str]) -> None:
         simple_agent_store[thread_id]["interrupt_ids"] = interrupt_ids
 
     with get_db_session() as session:
-        row = session.get(AgentStore, thread_id)
+        row = session.get(AgentCheckpoint, thread_id)
         if row:
             row.interrupt_ids = interrupt_ids
 
 
-# --- Training context (for chat) ---
+# --- Training summaries (for chat) ---
 
 def save_training_context(shared_state: dict[str, object]) -> None:
     metrics = shared_state.get("training_metrics", {})
@@ -177,7 +177,7 @@ def save_training_context(shared_state: dict[str, object]) -> None:
         if ctx.get(k) is not None
     }
     with get_db_session() as session:
-        row = TrainingContext(
+        row = TrainingSummary(
             model_name=ctx.get("model_name"),
             model_type=ctx.get("model_type"),
             goal=ctx.get("goal"),
@@ -189,13 +189,13 @@ def save_training_context(shared_state: dict[str, object]) -> None:
 
 
 def get_latest_training_context() -> Optional[dict[str, object]]:
-    """Retrieve the most recent training context from DB."""
+    """Retrieve the most recent training summary from DB."""
     if last_training_context:
         return dict(last_training_context)
 
     with get_db_session() as session:
         row = session.execute(
-            select(TrainingContext).order_by(TrainingContext.id.desc()).limit(1)
+            select(TrainingSummary).order_by(TrainingSummary.id.desc()).limit(1)
         ).scalar_one_or_none()
         if row is None:
             return None
@@ -229,6 +229,49 @@ def chat_thread_has_context(thread_id: str) -> bool:
     with get_db_session() as session:
         row = session.get(ChatThread, thread_id)
         return row is not None and row.has_training_context
+
+
+def save_run_dataset_links(job_id: str, agent_state: dict[str, object]) -> None:
+    """Extract dataset refs from agent state and persist bidirectional links."""
+    try:
+        from backend.shared.models import Dataset, RunDatasetLink
+    except ImportError:
+        return
+
+    ref_role_pairs = [
+        (agent_state.get("collected_dataset_ref"), "source"),
+        (agent_state.get("train_dataset_ref"), "train"),
+        (agent_state.get("val_dataset_ref"), "validation"),
+        (agent_state.get("test_dataset_ref"), "test"),
+    ]
+
+    refs_to_link = [(ref, role) for ref, role in ref_role_pairs if ref]
+    if not refs_to_link:
+        return
+
+    try:
+        with get_db_session() as session:
+            for ref, role in refs_to_link:
+                ds = session.query(Dataset).filter(Dataset.name == ref).first()
+                if ds is None:
+                    continue
+                exists = (
+                    session.query(RunDatasetLink)
+                    .filter(
+                        RunDatasetLink.training_run_id == job_id,
+                        RunDatasetLink.dataset_id == ds.id,
+                        RunDatasetLink.role == role,
+                    )
+                    .first()
+                )
+                if not exists:
+                    session.add(RunDatasetLink(
+                        training_run_id=job_id,
+                        dataset_id=ds.id,
+                        role=role,
+                    ))
+    except Exception as e:
+        print(f"Warning: Failed to save run-dataset links for {job_id}: {e}")
 
 
 def _make_serializable(obj: object) -> object:
