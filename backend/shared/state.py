@@ -1,7 +1,7 @@
-training_jobs: dict[str, dict[str, object]] = {}
-simple_agent_store: dict[str, dict[str, object]] = {}
-last_training_context: dict[str, object] = {}
-chat_threads_with_context: set[str] = set()
+"""
+In-memory state kept only for ephemeral per-process caches and constant mappings.
+Persistent state now lives in PostgreSQL via backend.shared.models.
+"""
 
 TOOL_TO_STEP = {
     "tool_data_collection": "data_collection",
@@ -14,3 +14,9 @@ TOOL_TO_STEP = {
     "tool_training": "training",
     "tool_generate_report": "generate_report",
 }
+
+# Kept for backward-compat imports; code should migrate to DB-backed repository.
+training_jobs: dict[str, dict[str, object]] = {}
+simple_agent_store: dict[str, dict[str, object]] = {}
+last_training_context: dict[str, object] = {}
+chat_threads_with_context: set[str] = set()
