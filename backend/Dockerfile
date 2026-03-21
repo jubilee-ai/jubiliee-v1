@@ -37,10 +37,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=builder /opt/venv /opt/venv
 COPY . .
 
-RUN chown -R appuser:appuser /app
+RUN chmod +x backend/entrypoint.sh \
+    && chown -R appuser:appuser /app
 
 USER appuser
 
 EXPOSE 8000
 
-CMD ["uvicorn", "backend.app:app", "--host", "0.0.0.0", "--port", "8000"]
+ENTRYPOINT ["backend/entrypoint.sh"]

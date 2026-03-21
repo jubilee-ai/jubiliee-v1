@@ -14,12 +14,15 @@ bootstrap_paths()
 
 from backend.catalog.routes import router as catalog_router
 from backend.chat.routes import router as chat_router
+from backend.shared.database import init_db
 from backend.training.routes import router as training_router
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     print("🚀 Jubilee Training Agent API starting...")
+    init_db()
+    print("✅ Database tables verified")
     yield
     print("👋 Jubilee Training Agent API shutting down...")
 
@@ -47,7 +50,20 @@ async def root():
 
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "service": "Jubilee Training Agent API"}
+    db_ok = False
+    try:
+        from sqlalchemy import text
+        from backend.shared.database import get_db_session
+        with get_db_session() as session:
+            session.execute(text("SELECT 1"))
+            db_ok = True
+    except Exception:
+        pass
+    return {
+        "status": "ok" if db_ok else "degraded",
+        "service": "Jubilee Training Agent API",
+        "database": "connected" if db_ok else "unavailable",
+    }
 
 
 app.include_router(catalog_router)

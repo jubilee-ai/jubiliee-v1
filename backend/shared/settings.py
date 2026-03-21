@@ -24,6 +24,12 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("OPENAI_API_KEY"),
     )
 
+    # Database
+    DATABASE_URL: str = Field(
+        default="sqlite:///jubilee.db",
+        description="PostgreSQL (or SQLite fallback) connection URL",
+    )
+
     # Redis / Celery
     REDIS_URL: str = Field(
         default="redis://localhost:6379/0",

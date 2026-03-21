@@ -5,7 +5,7 @@ from typing import Optional
 from agents.training.utils.streaming import build_node_update
 from backend.chat import repository
 from backend.shared.serialization import serialize_state
-from backend.shared.state import chat_threads_with_context, last_training_context
+from backend.training import repository as training_repo
 
 
 def _build_training_context_message(ctx: dict) -> str:
@@ -71,13 +71,14 @@ def generate_chat_sse(
     context_block = training_context or ""
     if (
         not context_block
-        and last_training_context
-        and thread_id not in chat_threads_with_context
+        and not training_repo.chat_thread_has_context(thread_id)
     ):
-        context_block = _build_training_context_message(last_training_context)
+        latest_ctx = training_repo.get_latest_training_context()
+        if latest_ctx:
+            context_block = _build_training_context_message(latest_ctx)
 
     if context_block:
-        chat_threads_with_context.add(thread_id)
+        training_repo.mark_chat_thread_has_context(thread_id)
         augmented_message = f"{context_block}\n\nUser message: {message}"
     else:
         augmented_message = message

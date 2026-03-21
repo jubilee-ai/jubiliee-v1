@@ -27,6 +27,8 @@ bm25s
 openai
 python-dotenv
 sqlalchemy
+psycopg2-binary
+alembic
 fastapi
 uvicorn[standard]
 celery[redis]
