@@ -34,3 +34,4 @@ fastapi
 uvicorn[standard]
 celery[redis]
 redis
+mcp

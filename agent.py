@@ -697,4 +697,33 @@ agent = create_agent(
     checkpointer=_checkpointer,
 )
 
+# Training / analysis import `from agent import DataRetrievalResult, retrieve_data`
+# but this file *is* the `agent` module when the MCP server loads it. Re-export
+# the data-retrieval helpers from agents/data-retrieval/agent.py (PEP 562).
+_DATA_RETRIEVAL_EXPORTS = frozenset({"DataRetrievalResult", "retrieve_data", "get_dataset"})
+_data_retrieval_agent_mod: Any = None
+
+
+def _data_retrieval_agent():
+    global _data_retrieval_agent_mod
+    if _data_retrieval_agent_mod is None:
+        import importlib.util
+
+        path = _ROOT / "agents" / "data-retrieval" / "agent.py"
+        spec = importlib.util.spec_from_file_location(
+            "jubilee_agents_data_retrieval_agent", path
+        )
+        mod = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(mod)
+        _data_retrieval_agent_mod = mod
+    return _data_retrieval_agent_mod
+
+
+def __getattr__(name: str) -> Any:
+    if name in _DATA_RETRIEVAL_EXPORTS:
+        return getattr(_data_retrieval_agent(), name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
 __all__ = ["agent", "TOOLS", "ORCHESTRATOR_SYSTEM_PROMPT"]

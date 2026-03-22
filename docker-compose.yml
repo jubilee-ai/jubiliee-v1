@@ -61,5 +61,25 @@ services:
       - "5173:80"
     restart: unless-stopped
 
+  mcp-server:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: jubilee-mcp
+    env_file:
+      - .env
+    environment:
+      - START_COMMAND=python -m mcp_server
+      - PORT=8080
+      - PYTHONPATH=/app:/app/tools/data-tools:/app/tools/models-tools/training
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./datasets:/app/datasets
+      - ./trained_models:/app/trained_models
+    profiles:
+      - mcp
+    restart: unless-stopped
+
 volumes:
   redis_data:
