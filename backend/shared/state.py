@@ -15,8 +15,15 @@ TOOL_TO_STEP = {
     "tool_generate_report": "generate_report",
 }
 
-# Kept for backward-compat imports; code should migrate to DB-backed repository.
 training_jobs: dict[str, dict[str, object]] = {}
 simple_agent_store: dict[str, dict[str, object]] = {}
+
+# Experiment-keyed state (replaces old singletons)
+training_states: dict[str, dict[str, object]] = {}      # experiment_id -> pipeline state
+training_contexts: dict[str, dict[str, object]] = {}     # experiment_id -> post-training context
+experiment_chat_threads: dict[str, str] = {}             # experiment_id -> chat_thread_id
+
+# Backward-compat aliases — deprecated, but kept so old imports don't crash.
+# Code should use the experiment-keyed dicts above instead.
 last_training_context: dict[str, object] = {}
 chat_threads_with_context: set[str] = set()

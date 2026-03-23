@@ -31,10 +31,38 @@ def _uuid_pk():
 # =============================================================================
 
 
+class Experiment(Base):
+    __tablename__ = "experiments"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    name: Mapped[str] = mapped_column(String(256), nullable=False)
+    goal: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String(32), default="created", index=True)
+    chat_thread_id: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    chat_history: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    training_state: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    training_context: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    linked_datasets: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    training_jobs: Mapped[list["TrainingJob"]] = relationship(
+        back_populates="experiment", passive_deletes=True,
+    )
+
+
 class TrainingJob(Base):
     __tablename__ = "training_jobs"
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    experiment_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("experiments.id", ondelete="SET NULL"),
+        nullable=True, index=True,
+    )
     status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
     progress: Mapped[int] = mapped_column(Integer, default=0)
     current_step: Mapped[str | None] = mapped_column(String(128), nullable=True)
@@ -50,6 +78,9 @@ class TrainingJob(Base):
         DateTime(timezone=True), nullable=True
     )
 
+    experiment: Mapped["Experiment | None"] = relationship(
+        back_populates="training_jobs",
+    )
     model_versions: Mapped[list["ModelVersion"]] = relationship(
         back_populates="training_run", passive_deletes=True,
     )

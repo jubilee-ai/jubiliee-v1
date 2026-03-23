@@ -1,25 +1,16 @@
-import { Bot } from "lucide-react"
+const BAR_COUNT = 5
+const BAR_DELAYS = [0, 120, 240, 100, 200]
 
 export function LoadingIndicator() {
   return (
-    <div className="flex gap-3">
-      <div className="flex-shrink-0 w-7 h-7 rounded-full flex items-center justify-center bg-muted">
-        <Bot className="h-3.5 w-3.5 text-muted-foreground" />
-      </div>
-      <div className="flex items-center gap-1.5 py-3 px-1">
-        <span 
-          className="w-1.5 h-1.5 rounded-full bg-muted-foreground/40 animate-pulse" 
-          style={{ animationDelay: "0ms" }} 
+    <div className="flex items-end gap-[3px] py-3 px-1 h-8 animate-message-in">
+      {Array.from({ length: BAR_COUNT }, (_, i) => (
+        <div
+          key={i}
+          className="w-[3px] rounded-full bg-primary/40 animate-wave"
+          style={{ animationDelay: `${BAR_DELAYS[i]}ms`, height: "14px" }}
         />
-        <span 
-          className="w-1.5 h-1.5 rounded-full bg-muted-foreground/40 animate-pulse" 
-          style={{ animationDelay: "150ms" }} 
-        />
-        <span 
-          className="w-1.5 h-1.5 rounded-full bg-muted-foreground/40 animate-pulse" 
-          style={{ animationDelay: "300ms" }} 
-        />
-      </div>
+      ))}
     </div>
   )
 }

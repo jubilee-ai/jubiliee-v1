@@ -31,19 +31,19 @@ export function ProgressPanel({
   const totalSteps = steps.length
   const progress = Math.round((completedSteps / totalSteps) * 100)
 
-  return (
-    <div className="h-full flex flex-col bg-muted/30">
+    return (
+    <div className="h-full flex flex-col">
       {/* Header */}
       <div className="p-5 pb-4">
         <div className="flex items-baseline justify-between mb-1.5">
-          <span className="text-sm font-medium">Pipeline</span>
+          <span className="font-headline text-sm font-semibold">Experiment checklist</span>
           <span className="text-xs text-muted-foreground">
-            {completedSteps}/{totalSteps} steps
+            {completedSteps}/{totalSteps} done
           </span>
         </div>
-        <div className="h-1.5 bg-border/60 rounded-full overflow-hidden">
+        <div className="h-1.5 bg-muted rounded-full overflow-hidden">
           <div 
-            className="h-full bg-foreground rounded-full transition-all duration-500 ease-out"
+            className="h-full bg-gradient-to-r from-primary to-accent rounded-full transition-all duration-500 ease-out"
             style={{ width: `${progress}%` }}
           />
         </div>
@@ -104,7 +104,7 @@ export function ProgressPanel({
             <Separator />
             <div className="p-5">
               <div className="flex items-center gap-2 mb-3">
-                <CheckCircle2 className="h-4 w-4 text-green-600" />
+                <CheckCircle2 className="h-4 w-4 text-[hsl(var(--step-complete))]" />
                 <span className="text-sm font-medium">Complete</span>
               </div>
               {hasClassificationMetrics ? (
