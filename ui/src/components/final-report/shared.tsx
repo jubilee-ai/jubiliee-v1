@@ -27,7 +27,7 @@ export function MetricBox({
   return (
     <div className={`rounded-xl p-4 ${highlight ? "bg-foreground/5" : "bg-muted/30"}`}>
       <div className="text-xs text-muted-foreground mb-1">{label}</div>
-      <div className="text-xl font-semibold">{value}</div>
+      <div className="text-sm font-semibold">{value}</div>
     </div>
   )
 }

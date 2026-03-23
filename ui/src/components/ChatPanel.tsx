@@ -1,11 +1,10 @@
-import React, { useState, useRef, useEffect, useCallback, useImperativeHandle, forwardRef } from "react"
-import { ScrollArea } from "@/components/ui/scroll-area"
+import React, { useState, useRef, useEffect, useCallback, useMemo, useImperativeHandle, forwardRef } from "react"
 import type { ChatMessage, ConfirmationRequest, ConfirmationAction, Dataset, TrainingAgentState, StepInfo } from "@/types/agent"
 import type { Dataset as ApiDataset, ModelType } from "@/lib/api"
 import { AVAILABLE_DATASETS, AVAILABLE_MODELS } from "@/lib/mockAgent"
 import { StepDetailModal } from "@/components/StepDetailModal"
+import { Settings2, Sparkles, BarChart3, Zap, FileText } from "lucide-react"
 
-// Import subcomponents
 import {
   MessageBubble,
   EmptyState,
@@ -17,6 +16,18 @@ import {
   STEP_KEYWORDS,
 } from "./chat"
 import type { ResolvedConfirmation } from "./chat"
+
+const STEP_TO_PHASE: Record<string, string> = {
+  select_model: "Setup",
+  data_collection: "Setup",
+  cleaning: "Preparation",
+  label_split_definition: "Preparation",
+  feature_selection_specification: "Features",
+  feature_engineering_executor: "Features",
+  training_approval: "Training",
+  training: "Training",
+  generate_report: "Output",
+}
 
 interface ChatPanelProps {
   messages: ChatMessage[]
@@ -32,6 +43,7 @@ interface ChatPanelProps {
   onViewReport?: () => void
   agentState?: TrainingAgentState
   steps?: StepInfo[]
+  hasExperimentChecklist?: boolean
 }
 
 export interface ChatPanelRef {
@@ -53,8 +65,8 @@ export const ChatPanel = forwardRef<ChatPanelRef, ChatPanelProps>(function ChatP
   onViewReport,
   agentState,
   steps,
+  hasExperimentChecklist,
 }, ref) {
-  // Use provided datasets/models or fall back to defaults
   const availableDatasets = propDatasets && propDatasets.length > 0 
     ? propDatasets 
     : AVAILABLE_DATASETS
@@ -62,31 +74,28 @@ export const ChatPanel = forwardRef<ChatPanelRef, ChatPanelProps>(function ChatP
     ? propModelTypes
     : AVAILABLE_MODELS
 
-  // Local state
   const [draft, setDraft] = useState("")
   const [selectedStepId, setSelectedStepId] = useState<string | null>(null)
   const [selectedDatasets, setSelectedDatasets] = useState<string[]>([])
   const [selectedModel, setSelectedModel] = useState<string | null>(null)
   const [useHitl, setUseHitl] = useState(true)
   
-  // Refs
   const messageRefs = useRef<Map<string, HTMLDivElement>>(new Map())
+  const scrollContainerRef = useRef<HTMLDivElement>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   
-  // Track past confirmation requests so they persist in the chat
   const [pastConfirmations, setPastConfirmations] = useState<ResolvedConfirmation[]>([])
   const confirmationShownAfterMessageIdRef = useRef<string | null>(null)
   const prevConfirmationStepRef = useRef<string | null>(null)
 
-  // Auto-scroll to new messages
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" })
+    requestAnimationFrame(() => {
+      messagesEndRef.current?.scrollIntoView({ behavior: "smooth" })
+    })
   }, [messages.length])
 
-  // Track which message the current confirmation appeared after
   useEffect(() => {
     if (confirmationRequest && confirmationRequest.step !== prevConfirmationStepRef.current) {
-      // A new confirmation just appeared - record the last message ID
       const lastMessage = messages[messages.length - 1]
       confirmationShownAfterMessageIdRef.current = lastMessage?.id || null
       prevConfirmationStepRef.current = confirmationRequest.step
@@ -96,7 +105,6 @@ export const ChatPanel = forwardRef<ChatPanelRef, ChatPanelProps>(function ChatP
     }
   }, [confirmationRequest, messages])
 
-  // Clear past confirmations when messages are reset
   useEffect(() => {
     if (messages.length === 0) {
       setPastConfirmations([])
@@ -105,7 +113,6 @@ export const ChatPanel = forwardRef<ChatPanelRef, ChatPanelProps>(function ChatP
     }
   }, [messages.length])
 
-  // Create a map of messageId -> past confirmations that should appear after it
   const getConfirmationsAfterMessage = useCallback(() => {
     const map = new Map<string, ResolvedConfirmation[]>()
     for (const conf of pastConfirmations) {
@@ -118,7 +125,6 @@ export const ChatPanel = forwardRef<ChatPanelRef, ChatPanelProps>(function ChatP
     return map
   }, [pastConfirmations])
 
-  // Handle confirmation with tracking (saves confirmation before it disappears)
   const handleConfirmationWithTracking = useCallback((action: ConfirmationAction, comment?: string) => {
     if (confirmationRequest) {
       setPastConfirmations(prev => [...prev, { 
@@ -131,7 +137,6 @@ export const ChatPanel = forwardRef<ChatPanelRef, ChatPanelProps>(function ChatP
     onConfirmation(action, comment)
   }, [onConfirmation, confirmationRequest])
 
-  // Expose methods to parent via ref
   useImperativeHandle(ref, () => ({
     scrollToMessage: (messageId: string) => {
       const el = messageRefs.current.get(messageId)
@@ -155,27 +160,24 @@ export const ChatPanel = forwardRef<ChatPanelRef, ChatPanelProps>(function ChatP
     }
   }), [messages])
 
-  // Handle sending messages
   const handleSend = useCallback(() => {
     const text = draft.trim()
     if (!text) return
 
     if (selectedDatasets.length > 0) {
-      // Datasets attached → start the training pipeline (full step-by-step events)
       onStartAgent(text, selectedDatasets, selectedModel || undefined, useHitl)
       setSelectedDatasets([])
       setSelectedModel(null)
     } else {
-      // No datasets → route to the orchestrator chat agent
       onSendMessage(text)
     }
     setDraft("")
   }, [draft, onStartAgent, onSendMessage, selectedDatasets, selectedModel, useHitl])
 
-  // Handle dataset selection
   const handleDatasetSelect = useCallback((dataset: Dataset) => {
-    if (!selectedDatasets.includes(dataset.file)) {
-      setSelectedDatasets(prev => [...prev, dataset.file])
+    const key = dataset.file ?? dataset.name
+    if (key && !selectedDatasets.includes(key)) {
+      setSelectedDatasets(prev => [...prev, key])
     }
   }, [selectedDatasets])
 
@@ -183,7 +185,6 @@ export const ChatPanel = forwardRef<ChatPanelRef, ChatPanelProps>(function ChatP
     setSelectedDatasets(prev => prev.filter(d => d !== datasetFile))
   }, [])
 
-  // Clear highlight on container click
   const handleContainerClick = useCallback(() => {
     if (highlightedMessageId && onClearHighlight) {
       onClearHighlight()
@@ -192,25 +193,46 @@ export const ChatPanel = forwardRef<ChatPanelRef, ChatPanelProps>(function ChatP
 
   const confirmationsMap = getConfirmationsAfterMessage()
 
+  const phaseMarkers = useMemo(() => {
+    const markers = new Map<string, string>()
+    let lastPhase: string | null = null
+    for (const msg of messages) {
+      if (msg.role === "agent") {
+        const step = detectStepFromMessage(msg.content)
+        const phase = step ? STEP_TO_PHASE[step] : null
+        if (phase && phase !== lastPhase) {
+          markers.set(msg.id, phase)
+          lastPhase = phase
+        }
+      }
+    }
+    return markers
+  }, [messages])
+
   return (
-    <div className="h-full flex flex-col overflow-hidden bg-background" onClick={handleContainerClick}>
-      {/* Messages */}
-      <ScrollArea className="flex-1 min-h-0">
-        <div className="space-y-5 max-w-3xl mx-auto px-6 py-8">
-          {/* Empty state */}
+    <div
+      className="flex flex-1 min-h-0 flex-col overflow-hidden dot-grid"
+      onClick={handleContainerClick}
+    >
+      <div
+        ref={scrollContainerRef}
+        className="flex-1 min-h-0 overflow-y-auto overscroll-y-contain"
+      >
+        <div className={`space-y-5 max-w-3xl mx-auto px-6 py-8 ${hasExperimentChecklist ? "pt-14" : ""}`}>
           {messages.length === 0 && (
             <EmptyState onSelectSuggestion={setDraft} />
           )}
 
-          {/* Message list with past confirmations */}
           {messages.map((msg) => {
             const detectedStep = msg.role === "agent" ? detectStepFromMessage(msg.content) : null
             const stepInfo = detectedStep && steps ? steps.find(s => s.id === detectedStep) : null
             const isClickable = !!detectedStep && !!agentState && !!steps && stepInfo?.status === "completed"
             const confsAfterThis = confirmationsMap.get(msg.id) || []
+            const phaseMarker = phaseMarkers.get(msg.id)
             
             return (
               <React.Fragment key={msg.id}>
+                {phaseMarker && <PhaseMarker phase={phaseMarker} />}
                 <MessageBubble 
                   message={msg} 
                   isHighlighted={highlightedMessageId === msg.id}
@@ -224,7 +246,6 @@ export const ChatPanel = forwardRef<ChatPanelRef, ChatPanelProps>(function ChatP
                   }}
                 />
                 
-                {/* Render past confirmations that appeared after this message */}
                 {confsAfterThis.map((conf, index) => (
                   <PastConfirmation
                     key={`past-conf-${msg.id}-${index}`}
@@ -238,12 +259,10 @@ export const ChatPanel = forwardRef<ChatPanelRef, ChatPanelProps>(function ChatP
             )
           })}
 
-          {/* Loading indicator */}
           {isRunning && !confirmationRequest && (
             <LoadingIndicator />
           )}
 
-          {/* Current confirmation panel */}
           {confirmationRequest && (
             <ConfirmationPanel
               confirmationRequest={confirmationRequest}
@@ -256,9 +275,8 @@ export const ChatPanel = forwardRef<ChatPanelRef, ChatPanelProps>(function ChatP
 
           <div ref={messagesEndRef} />
         </div>
-      </ScrollArea>
+      </div>
 
-      {/* Input area */}
       <ChatInput
         draft={draft}
         onDraftChange={setDraft}
@@ -277,7 +295,6 @@ export const ChatPanel = forwardRef<ChatPanelRef, ChatPanelProps>(function ChatP
         onToggleHitl={() => setUseHitl(v => !v)}
       />
 
-      {/* Step Detail Modal */}
       {selectedStepId && agentState && steps && (
         <StepDetailModal
           stepId={selectedStepId}
@@ -289,3 +306,25 @@ export const ChatPanel = forwardRef<ChatPanelRef, ChatPanelProps>(function ChatP
     </div>
   )
 })
+
+const PHASE_ICONS: Record<string, React.ComponentType<{ className?: string }>> = {
+  Setup: Settings2,
+  Preparation: Sparkles,
+  Features: BarChart3,
+  Training: Zap,
+  Output: FileText,
+}
+
+function PhaseMarker({ phase }: { phase: string }) {
+  const Icon = PHASE_ICONS[phase]
+  return (
+    <div className="flex items-center gap-3 py-2 animate-phase-in">
+      <div className="flex-1 h-px bg-gradient-to-r from-transparent via-border/40 to-transparent" />
+      <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-[0.15em] text-muted-foreground/50 font-semibold select-none">
+        {Icon && <Icon className="h-3 w-3 text-primary/40 animate-spin-in" />}
+        <span>{phase}</span>
+      </div>
+      <div className="flex-1 h-px bg-gradient-to-r from-transparent via-border/40 to-transparent" />
+    </div>
+  )
+}

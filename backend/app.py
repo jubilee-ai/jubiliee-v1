@@ -14,6 +14,7 @@ bootstrap_paths()
 
 from backend.catalog.routes import router as catalog_router
 from backend.chat.routes import router as chat_router
+from backend.experiments.routes import router as experiments_router
 from backend.shared.database import init_db
 from backend.training.routes import router as training_router
 
@@ -69,6 +70,7 @@ async def health():
 app.include_router(catalog_router)
 app.include_router(training_router)
 app.include_router(chat_router)
+app.include_router(experiments_router)
 
 
 if __name__ == "__main__":

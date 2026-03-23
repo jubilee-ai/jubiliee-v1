@@ -5,14 +5,16 @@ from typing import Optional
 from sqlalchemy import select
 
 from backend.shared.database import get_db_session
-from backend.shared.models import AgentCheckpoint, ChatThread, TrainingSummary, TrainingJob
-
-# Also re-export the in-memory fallbacks so existing `from repository import` still works.
+from backend.shared.models import (
+    AgentCheckpoint, ChatThread, Experiment, TrainingSummary, TrainingJob,
+)
 from backend.shared.state import (
     chat_threads_with_context,
     last_training_context,
     simple_agent_store,
+    training_contexts,
     training_jobs,
+    training_states,
 )
 
 
@@ -139,11 +141,10 @@ def save_interrupt_ids(thread_id: str, interrupt_ids: list[str]) -> None:
 
 # --- Training summaries (for chat) ---
 
-def save_training_context(shared_state: dict[str, object]) -> None:
+def _build_context_dict(shared_state: dict[str, object]) -> dict[str, object]:
     metrics = shared_state.get("training_metrics", {})
     label_def = shared_state.get("label_definition") or {}
-
-    ctx = {
+    return {
         "model_name": metrics.get("model_name") or shared_state.get("model_weights_path"),
         "model_type": metrics.get("model_type") or shared_state.get("selected_model"),
         "goal": shared_state.get("goal"),
@@ -161,12 +162,22 @@ def save_training_context(shared_state: dict[str, object]) -> None:
         "report_path": shared_state.get("report_path"),
     }
 
-    # In-memory mirror
+
+def save_training_context(
+    shared_state: dict[str, object],
+    experiment_id: Optional[str] = None,
+) -> None:
+    ctx = _build_context_dict(shared_state)
+
+    # Experiment-keyed in-memory store
+    if experiment_id:
+        training_contexts[experiment_id] = dict(ctx)
+    # Backward compat: also write to the old singleton
     last_training_context.clear()
     last_training_context.update(ctx)
     chat_threads_with_context.clear()
 
-    # Persist
+    # Persist to training_summaries table
     metric_fields = {
         k: ctx[k]
         for k in [
@@ -187,9 +198,26 @@ def save_training_context(shared_state: dict[str, object]) -> None:
         )
         session.add(row)
 
+        # Also persist context on the experiment row
+        if experiment_id:
+            exp = session.get(Experiment, experiment_id)
+            if exp:
+                exp.training_context = ctx
 
-def get_latest_training_context() -> Optional[dict[str, object]]:
-    """Retrieve the most recent training summary from DB."""
+
+def get_latest_training_context(
+    experiment_id: Optional[str] = None,
+) -> Optional[dict[str, object]]:
+    """Retrieve the most recent training summary, scoped to an experiment if given."""
+    if experiment_id:
+        if experiment_id in training_contexts:
+            return dict(training_contexts[experiment_id])
+        with get_db_session() as session:
+            exp = session.get(Experiment, experiment_id)
+            if exp and exp.training_context:
+                return dict(exp.training_context)
+
+    # Fallback: global most-recent (backward compat)
     if last_training_context:
         return dict(last_training_context)
 
@@ -285,3 +313,107 @@ def _make_serializable(obj: object) -> object:
         if isinstance(obj, (list, tuple)):
             return [_make_serializable(v) for v in obj]
         return str(obj)
+
+
+# =========================================================================
+# Experiment CRUD
+# =========================================================================
+
+def create_experiment(
+    experiment_id: str,
+    name: str,
+    chat_thread_id: str,
+    linked_datasets: Optional[list[str]] = None,
+) -> dict[str, object]:
+    with get_db_session() as session:
+        exp = Experiment(
+            id=experiment_id,
+            name=name,
+            chat_thread_id=chat_thread_id,
+            linked_datasets=linked_datasets or [],
+        )
+        session.add(exp)
+    return {
+        "id": experiment_id,
+        "name": name,
+        "status": "created",
+        "chat_thread_id": chat_thread_id,
+        "linked_datasets": linked_datasets or [],
+        "chat_history": [],
+        "training_state": None,
+        "training_context": None,
+    }
+
+
+def list_experiments() -> list[dict[str, object]]:
+    with get_db_session() as session:
+        rows = session.execute(
+            select(Experiment).order_by(Experiment.updated_at.desc())
+        ).scalars().all()
+        return [
+            {
+                "id": r.id,
+                "name": r.name,
+                "goal": r.goal,
+                "status": r.status,
+                "chat_thread_id": r.chat_thread_id,
+                "linked_datasets": r.linked_datasets,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+                "updated_at": r.updated_at.isoformat() if r.updated_at else None,
+                "last_message": (
+                    r.chat_history[-1].get("content", "")[:80]
+                    if r.chat_history and isinstance(r.chat_history, list) and r.chat_history
+                    else None
+                ),
+            }
+            for r in rows
+        ]
+
+
+def get_experiment(experiment_id: str) -> Optional[dict[str, object]]:
+    with get_db_session() as session:
+        exp = session.get(Experiment, experiment_id)
+        if exp is None:
+            return None
+        return {
+            "id": exp.id,
+            "name": exp.name,
+            "goal": exp.goal,
+            "status": exp.status,
+            "chat_thread_id": exp.chat_thread_id,
+            "chat_history": exp.chat_history or [],
+            "training_state": exp.training_state,
+            "training_context": exp.training_context,
+            "linked_datasets": exp.linked_datasets,
+            "created_at": exp.created_at.isoformat() if exp.created_at else None,
+            "updated_at": exp.updated_at.isoformat() if exp.updated_at else None,
+        }
+
+
+def update_experiment(experiment_id: str, updates: dict[str, object]) -> bool:
+    with get_db_session() as session:
+        exp = session.get(Experiment, experiment_id)
+        if exp is None:
+            return False
+        for key, value in updates.items():
+            if hasattr(exp, key) and key not in ("id", "created_at"):
+                setattr(exp, key, value)
+        return True
+
+
+def delete_experiment(experiment_id: str) -> bool:
+    with get_db_session() as session:
+        exp = session.get(Experiment, experiment_id)
+        if exp is None:
+            return False
+        session.delete(exp)
+        return True
+
+
+def save_experiment_chat_history(
+    experiment_id: str, chat_history: list[dict],
+) -> None:
+    with get_db_session() as session:
+        exp = session.get(Experiment, experiment_id)
+        if exp:
+            exp.chat_history = chat_history

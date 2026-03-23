@@ -19,6 +19,8 @@ import {
   streamTraining,
   streamResumeTraining,
   streamChat,
+  getExperiment,
+  saveExperimentMessages,
   type Dataset,
   type ModelType,
   type StreamEvent,
@@ -99,6 +101,7 @@ export interface UseRealAgentReturn {
   currentJobId: string | null
   progress: number
   confirmationRequest: ConfirmationRequest | null
+  experimentId: string | null
   
   // Data
   datasets: Dataset[]
@@ -110,6 +113,9 @@ export interface UseRealAgentReturn {
   handleConfirmation: (action: ConfirmationAction, comment?: string) => void
   reset: () => void
   checkConnection: () => Promise<boolean>
+  setExperimentId: (id: string | null) => void
+  loadExperiment: (id: string) => Promise<void>
+  saveCurrentMessages: () => Promise<void>
 }
 
 export function useRealAgent(): UseRealAgentReturn {
@@ -126,11 +132,18 @@ export function useRealAgent(): UseRealAgentReturn {
   const [chatThreadId, setChatThreadId] = useState<string | null>(null)
   const [confirmationRequest, setConfirmationRequest] = useState<ConfirmationRequest | null>(null)
   const [acceptAllMode, setAcceptAllMode] = useState(false)
+  const [experimentId, setExperimentId] = useState<string | null>(null)
   
   // Use a ref to track accept-all mode to avoid stale closure issues in callbacks
   const acceptAllModeRef = useRef(acceptAllMode)
   acceptAllModeRef.current = acceptAllMode
   
+  const messagesRef = useRef<ChatMessage[]>([])
+  messagesRef.current = messages
+
+  const experimentIdRef = useRef<string | null>(experimentId)
+  experimentIdRef.current = experimentId
+
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const streamControllerRef = useRef<AbortController | null>(null)
   const chatControllerRef = useRef<AbortController | null>(null)
@@ -1239,6 +1252,8 @@ export function useRealAgent(): UseRealAgentReturn {
         prev.map((m) => (m._streaming ? { ...m, _streaming: undefined } : m))
       )
       setIsRunning(false)
+      // Persist messages to backend after exchange completes
+      setTimeout(() => saveCurrentMessages(), 100)
     } else if (event.type === "error") {
       addMessage("system", `Error: ${event.error || "Unknown error"}`)
       setIsRunning(false)
@@ -1288,6 +1303,7 @@ export function useRealAgent(): UseRealAgentReturn {
       {
         message: content,
         thread_id: chatThreadId || undefined,
+        experiment_id: experimentId || undefined,
         training_context: buildTrainingContext(),
       },
       handleChatEvent,
@@ -1296,7 +1312,26 @@ export function useRealAgent(): UseRealAgentReturn {
         addMessage("system", `Chat error: ${error.message}`)
       },
     )
-  }, [addMessage, isRunning, chatThreadId, handleChatEvent, buildTrainingContext])
+  }, [addMessage, isRunning, chatThreadId, experimentId, handleChatEvent, buildTrainingContext])
+
+  const saveCurrentMessages = useCallback(async () => {
+    const eid = experimentIdRef.current
+    const msgs = messagesRef.current
+    if (!eid || msgs.length === 0) return
+    try {
+      await saveExperimentMessages(
+        eid,
+        msgs.map((m) => ({
+          id: m.id,
+          role: m.role,
+          content: m.content,
+          timestamp: m.timestamp,
+        })),
+      )
+    } catch {
+      // best-effort save
+    }
+  }, [])
 
   // Reset everything
   const reset = useCallback(() => {
@@ -1326,6 +1361,49 @@ export function useRealAgent(): UseRealAgentReturn {
     emittedStepsRef.current = new Set()
   }, [])
 
+  const loadExperiment = useCallback(async (id: string) => {
+    try {
+      // Save current experiment's messages before switching
+      await saveCurrentMessages()
+
+      const exp = await getExperiment(id)
+      streamControllerRef.current?.abort()
+      chatControllerRef.current?.abort()
+
+      setExperimentId(exp.id)
+      setChatThreadId(exp.chat_thread_id)
+
+      // Restore chat history
+      if (exp.chat_history && Array.isArray(exp.chat_history)) {
+        setMessages(
+          exp.chat_history.map((m: Record<string, unknown>) => ({
+            id: (m.id as string) || uid("msg"),
+            role: (m.role as ChatMessage["role"]) || "agent",
+            content: (m.content as string) || "",
+            timestamp: (m.timestamp as number) || Date.now(),
+          })),
+        )
+      } else {
+        setMessages([])
+      }
+
+      // Restore training state if available
+      if (exp.training_state) {
+        setAgentState((prev) => ({ ...prev, ...(exp.training_state as Partial<TrainingAgentState>) }))
+      } else {
+        setAgentState(createInitialState())
+      }
+
+      setSteps(createInitialSteps())
+      setIsRunning(false)
+      setConfirmationRequest(null)
+      setAcceptAllMode(false)
+      emittedStepsRef.current = new Set()
+    } catch (err) {
+      console.error("Failed to load experiment:", err)
+    }
+  }, [])
+
   // Cleanup on unmount
   useEffect(() => {
     return () => {
@@ -1350,6 +1428,7 @@ export function useRealAgent(): UseRealAgentReturn {
     currentJobId,
     progress,
     confirmationRequest,
+    experimentId,
     datasets,
     modelTypes,
     startAgent,
@@ -1357,5 +1436,8 @@ export function useRealAgent(): UseRealAgentReturn {
     handleConfirmation,
     reset,
     checkConnection,
+    setExperimentId,
+    loadExperiment,
+    saveCurrentMessages,
   }
 }
