@@ -74,12 +74,12 @@ export function ChatInput({
   }
 
   return (
-    <div className="flex-shrink-0 px-6 py-4 max-w-3xl mx-auto w-full">
-      <div className="rounded-2xl border border-border bg-card shadow-sm">
+    <div className="flex-shrink-0 px-4 py-3 max-w-3xl mx-auto w-full">
+      <div className="rounded-xl border border-border/80 bg-card shadow-sm">
         {/* Selected items */}
         {(selectedDatasets.length > 0 || selectedModel) && (
-          <div className="flex items-center gap-2 px-4 pt-3 flex-wrap">
-            {selectedDatasets.map((ds) => (
+          <div className="flex items-center gap-2 px-3 pt-2.5 pb-1 flex-wrap">
+            {selectedDatasets.filter(Boolean).map((ds) => (
               <Badge 
                 key={ds} 
                 variant="secondary" 
@@ -119,19 +119,19 @@ export function ChatInput({
           onChange={(e) => onDraftChange(e.target.value)}
           onKeyDown={handleKeyDown}
           placeholder={placeholder}
-          className="min-h-[56px] max-h-[200px] resize-none border-0 shadow-none focus-visible:ring-0 px-4 py-3 text-[15px] placeholder:text-muted-foreground/60"
+          className="min-h-[52px] max-h-[160px] resize-none border-0 shadow-none focus-visible:ring-0 px-3 py-2.5 text-[14px] leading-6 placeholder:text-muted-foreground/60"
           disabled={isDisabled}
         />
 
         {/* Actions bar */}
-        <div className="flex items-center justify-between px-3 pb-3">
+        <div className="flex items-center justify-between px-2.5 pb-2.5 pt-1 border-t border-border/60">
           <div className="flex items-center gap-1">
             <Dialog open={showDatasetPicker} onOpenChange={setShowDatasetPicker}>
               <DialogTrigger asChild>
                 <Button 
                   variant="ghost" 
                   size="sm" 
-                  className="h-8 px-3 text-muted-foreground hover:text-foreground"
+                  className="h-8 w-8 p-0 text-muted-foreground hover:text-foreground"
                 >
                   <Database className="h-4 w-4" />
                 </Button>
@@ -162,7 +162,7 @@ export function ChatInput({
                 <Button 
                   variant="ghost" 
                   size="sm" 
-                  className="h-8 px-3 text-muted-foreground hover:text-foreground"
+                  className="h-8 w-8 p-0 text-muted-foreground hover:text-foreground"
                 >
                   <Cpu className="h-4 w-4" />
                 </Button>
@@ -195,7 +195,7 @@ export function ChatInput({
                 <Button
                   variant={useHitl ? "default" : "ghost"}
                   size="sm"
-                  className={`h-8 px-3 ${useHitl ? "" : "text-muted-foreground hover:text-foreground"}`}
+                  className={`h-8 w-8 p-0 ${useHitl ? "" : "text-muted-foreground hover:text-foreground"}`}
                   onClick={onToggleHitl}
                 >
                   <ShieldCheck className="h-4 w-4" />
@@ -209,7 +209,7 @@ export function ChatInput({
 
           <Button
             size="sm"
-            className="h-8 px-3 rounded-lg"
+            className="h-8 px-3 rounded-md"
             onClick={onSend}
             disabled={isDisabled || !draft.trim()}
           >

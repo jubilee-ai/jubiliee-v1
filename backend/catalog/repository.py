@@ -44,6 +44,7 @@ def _dataset_to_dict(row: Any) -> dict[str, object]:
     return {
         "id": str(row.id),
         "name": row.name,
+        "file": props.get("file", row.name),
         "source_type": row.source_type,
         "format": props.get("format", ""),
         "rows": props.get("row_count"),

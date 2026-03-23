@@ -25,6 +25,7 @@ import {
   type ChatStreamEvent,
 } from "@/lib/api"
 import { uid } from "@/lib/utils"
+import type { ProjectSessionSnapshot } from "@/types/project"
 
 // Step definitions matching the agent's tool set (agent_simple.py _STEP_ORDER)
 const STEP_DEFINITIONS = [
@@ -109,6 +110,8 @@ export interface UseRealAgentReturn {
   sendMessage: (content: string) => void
   handleConfirmation: (action: ConfirmationAction, comment?: string) => void
   reset: () => void
+  getSessionSnapshot: () => ProjectSessionSnapshot
+  loadSessionSnapshot: (snapshot: ProjectSessionSnapshot) => void
   checkConnection: () => Promise<boolean>
 }
 
@@ -1326,6 +1329,46 @@ export function useRealAgent(): UseRealAgentReturn {
     emittedStepsRef.current = new Set()
   }, [])
 
+  const getSessionSnapshot = useCallback((): ProjectSessionSnapshot => {
+    return {
+      agentState,
+      steps,
+      messages,
+      progress,
+      threadId,
+      chatThreadId,
+    }
+  }, [agentState, steps, messages, progress, threadId, chatThreadId])
+
+  const loadSessionSnapshot = useCallback((snapshot: ProjectSessionSnapshot) => {
+    if (pollingRef.current) {
+      clearInterval(pollingRef.current)
+      pollingRef.current = null
+    }
+    if (streamControllerRef.current) {
+      streamControllerRef.current.abort()
+      streamControllerRef.current = null
+    }
+    if (chatControllerRef.current) {
+      chatControllerRef.current.abort()
+      chatControllerRef.current = null
+    }
+
+    setAgentState(snapshot.agentState)
+    setSteps(snapshot.steps)
+    setMessages(snapshot.messages)
+    setProgress(snapshot.progress)
+    setThreadId(snapshot.threadId)
+    setChatThreadId(snapshot.chatThreadId)
+
+    setIsRunning(false)
+    setCurrentJobId(null)
+    setConfirmationRequest(null)
+    setAcceptAllMode(false)
+    acceptAllModeRef.current = false
+    emittedStepsRef.current = new Set()
+  }, [])
+
   // Cleanup on unmount
   useEffect(() => {
     return () => {
@@ -1356,6 +1399,8 @@ export function useRealAgent(): UseRealAgentReturn {
     sendMessage,
     handleConfirmation,
     reset,
+    getSessionSnapshot,
+    loadSessionSnapshot,
     checkConnection,
   }
 }

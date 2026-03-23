@@ -1,7 +1,7 @@
 import { useState, forwardRef } from "react"
 import ReactMarkdown from "react-markdown"
 import { cn } from "@/lib/utils"
-import { User, Bot, FileText, ChevronRight } from "lucide-react"
+import { Bot, FileText, ChevronRight } from "lucide-react"
 import type { ChatMessage } from "@/types/agent"
 
 const MAX_CONTENT_LENGTH = 400 // Characters before truncation
@@ -52,36 +52,44 @@ export const MessageBubble = forwardRef<HTMLDivElement, MessageBubbleProps>(
       }
     }
 
+    const showAvatar = !isUser
+    const bubbleBase = "flex-1 min-w-0 rounded-2xl px-4 py-2.5 transition-all duration-300"
+    const userBubble = "ml-auto bg-foreground/[0.06] text-foreground border border-border/70 rounded-br-md"
+    const agentBubble = "bg-muted/40 text-foreground"
+
     return (
       <div 
         ref={ref}
         data-step-id={stepId}
         className={cn(
-          "flex gap-3 transition-all duration-300",
+          "w-full flex items-start gap-2.5 transition-all duration-300",
           isUser && "flex-row-reverse",
           isHighlighted && "scale-[1.02]"
         )}
       >
-        <div
-          className={cn(
-            "flex-shrink-0 w-7 h-7 rounded-full flex items-center justify-center",
-            isUser ? "bg-foreground text-background" : "bg-muted"
-          )}
-        >
-          {isUser ? <User className="h-3.5 w-3.5" /> : <Bot className="h-3.5 w-3.5 text-muted-foreground" />}
-        </div>
+        {showAvatar && (
+          <div
+            className="flex-shrink-0 w-7 h-7 rounded-full flex items-center justify-center bg-muted mt-0.5"
+          >
+            <Bot className="h-3.5 w-3.5 text-muted-foreground" />
+          </div>
+        )}
         <div
           onClick={handleBubbleClick}
           className={cn(
-            "flex-1 max-w-[92%] rounded-2xl px-4 py-3 transition-all duration-300",
-            isUser ? "bg-foreground text-background" : "bg-muted/50",
+            bubbleBase,
+            isUser ? userBubble : agentBubble,
             isHighlighted && "ring-2 ring-foreground/20 shadow-lg",
             isClickable && "cursor-pointer hover:bg-muted/70 hover:shadow-md group"
           )}
         >
-          <div className="text-[15px] leading-relaxed prose prose-sm dark:prose-invert max-w-none prose-p:my-1 prose-p:leading-relaxed prose-headings:my-2 prose-headings:font-medium prose-ul:my-1 prose-ol:my-1 prose-li:my-0 prose-code:bg-black/5 prose-code:dark:bg-white/10 prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded-md prose-code:text-[13px] prose-code:font-normal prose-code:before:content-none prose-code:after:content-none prose-strong:font-semibold">
-            <ReactMarkdown>{displayContent}</ReactMarkdown>
-          </div>
+          {isUser ? (
+            <p className="text-[14px] leading-6 whitespace-pre-wrap">{displayContent}</p>
+          ) : (
+            <div className="text-[14px] leading-relaxed prose prose-sm dark:prose-invert max-w-none prose-p:my-1 prose-p:leading-relaxed prose-headings:my-2 prose-headings:font-medium prose-ul:my-1 prose-ol:my-1 prose-li:my-0 prose-code:bg-black/5 prose-code:dark:bg-white/10 prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded-md prose-code:text-[13px] prose-code:font-normal prose-code:before:content-none prose-code:after:content-none prose-strong:font-semibold">
+              <ReactMarkdown>{displayContent}</ReactMarkdown>
+            </div>
+          )}
           
           {/* Show more/less button */}
           {shouldTruncate && (

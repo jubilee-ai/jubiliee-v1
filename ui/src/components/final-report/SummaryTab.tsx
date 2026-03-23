@@ -27,7 +27,7 @@ export function SummaryTab({ agentState }: SummaryTabProps) {
   return (
     <div className="space-y-8">
       {/* Hero metrics */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 [&>div>div:first-child]:text-[11px] [&>div>div:last-child]:text-md">
         {hasClassificationMetrics ? (
           <>
             <MetricBox label="Test Accuracy" value={formatPercent(metrics?.test_accuracy)} highlight />
