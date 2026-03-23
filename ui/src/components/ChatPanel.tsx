@@ -174,8 +174,9 @@ export const ChatPanel = forwardRef<ChatPanelRef, ChatPanelProps>(function ChatP
 
   // Handle dataset selection
   const handleDatasetSelect = useCallback((dataset: Dataset) => {
-    if (!selectedDatasets.includes(dataset.file)) {
-      setSelectedDatasets(prev => [...prev, dataset.file])
+    const key = dataset.file ?? dataset.name
+    if (key && !selectedDatasets.includes(key)) {
+      setSelectedDatasets(prev => [...prev, key])
     }
   }, [selectedDatasets])
 
