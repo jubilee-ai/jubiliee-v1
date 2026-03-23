@@ -421,6 +421,20 @@ def generate_graph_sse_events(
                         progress_payload["plan"] = node_output["plan"]
                     if node_output.get("current_step"):
                         progress_payload["current_step"] = node_output["current_step"]
+                    if node_name == "planner":
+                        plan = node_output.get("plan")
+                        if plan and isinstance(plan, list):
+                            progress_payload["plan_steps"] = [
+                                {
+                                    "name": getattr(s, "step_name", s.get("step_name", "")) if isinstance(s, dict) else getattr(s, "step_name", str(s)),
+                                    "rationale": getattr(s, "rationale", s.get("rationale", "")) if isinstance(s, dict) else getattr(s, "rationale", ""),
+                                }
+                                for s in plan
+                            ]
+                    if node_name == "evaluator":
+                        for key in ("evaluator_decision", "evaluator_rationale"):
+                            if node_output.get(key):
+                                progress_payload[key] = node_output[key]
                 yield f"data: {json.dumps(serialize_state(progress_payload))}\n\n"
 
         yield f"data: {json.dumps({'type': 'completed', 'node': 'end', 'progress': 100, 'message': 'Pipeline completed', 'thread_id': thread_id})}\n\n"
@@ -483,6 +497,20 @@ def generate_graph_resume_sse_events(
                         progress_payload["plan"] = node_output["plan"]
                     if node_output.get("current_step"):
                         progress_payload["current_step"] = node_output["current_step"]
+                    if node_name == "planner":
+                        plan = node_output.get("plan")
+                        if plan and isinstance(plan, list):
+                            progress_payload["plan_steps"] = [
+                                {
+                                    "name": getattr(s, "step_name", s.get("step_name", "")) if isinstance(s, dict) else getattr(s, "step_name", str(s)),
+                                    "rationale": getattr(s, "rationale", s.get("rationale", "")) if isinstance(s, dict) else getattr(s, "rationale", ""),
+                                }
+                                for s in plan
+                            ]
+                    if node_name == "evaluator":
+                        for key in ("evaluator_decision", "evaluator_rationale"):
+                            if node_output.get(key):
+                                progress_payload[key] = node_output[key]
                 yield f"data: {json.dumps(serialize_state(progress_payload))}\n\n"
 
         yield f"data: {json.dumps({'type': 'completed', 'node': 'end', 'progress': 100, 'message': 'Pipeline completed', 'thread_id': thread_id})}\n\n"

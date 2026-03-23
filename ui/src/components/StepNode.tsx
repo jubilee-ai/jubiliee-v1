@@ -127,7 +127,7 @@ export function StepNode({ step, isActive: _isActive, onSelect }: StepNodeProps)
           <div
             className={cn(
               "w-5 h-5 rounded-full flex items-center justify-center transition-all",
-              isCompleted && "text-green-600 dark:text-green-400",
+              isCompleted && "text-[hsl(var(--step-complete))]",
               isRunning && "text-foreground",
               isError && "text-destructive",
               isStale && "text-amber-500",

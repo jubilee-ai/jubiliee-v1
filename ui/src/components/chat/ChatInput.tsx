@@ -75,7 +75,7 @@ export function ChatInput({
 
   return (
     <div className="flex-shrink-0 px-6 py-4 max-w-3xl mx-auto w-full">
-      <div className="rounded-2xl border border-border bg-card shadow-sm">
+      <div className="rounded-2xl border border-border/25 bg-card shadow-sm/50">
         {/* Selected items */}
         {(selectedDatasets.length > 0 || selectedModel) && (
           <div className="flex items-center gap-2 px-4 pt-3 flex-wrap">

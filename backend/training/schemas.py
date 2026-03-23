@@ -7,6 +7,7 @@ class TrainRequest(BaseModel):
     goal: str
     linked_datasets: Optional[list[str]] = None
     user_model_preference: Optional[str] = None
+    experiment_id: Optional[str] = None
     hitl: bool = True
 
 

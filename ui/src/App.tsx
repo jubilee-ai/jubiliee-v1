@@ -2,20 +2,22 @@ import { useState, useEffect, useRef, useCallback } from "react"
 import { useRealAgent } from "@/hooks/useRealAgent"
 import { ProgressPanel } from "@/components/ProgressPanel"
 import { ChatPanel, ChatPanelRef } from "@/components/ChatPanel"
+import { ExperimentSidebar } from "@/components/ExperimentSidebar"
 import { FinalReport } from "@/components/FinalReport"
 import { Button } from "@/components/ui/button"
 import { TooltipProvider } from "@/components/ui/tooltip"
-import { Sparkles, RotateCcw, FileText } from "lucide-react"
+import { Sparkles, RotateCcw, FileText, PanelLeftClose, PanelLeft } from "lucide-react"
 import type { StepInfo, TrainingAgentState, ConfirmationAction } from "@/types/agent"
+import { createExperiment, saveExperimentMessages } from "@/lib/api"
 
 export default function App() {
   const [showReport, setShowReport] = useState(false)
   const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null)
+  const [sidebarOpen, setSidebarOpen] = useState(true)
   const chatPanelRef = useRef<ChatPanelRef>(null)
-  
-  // Real agent hook
+
   const realAgent = useRealAgent()
-  
+
   const agent = {
     agentState: realAgent.agentState,
     steps: realAgent.steps,
@@ -28,17 +30,15 @@ export default function App() {
     sendMessage: realAgent.sendMessage,
     reset: realAgent.reset,
   }
-  
+
   const isComplete = agent.agentState.training_metrics?.success
 
-  // Check backend connection periodically
   useEffect(() => {
     realAgent.checkConnection()
     const interval = setInterval(() => realAgent.checkConnection(), 10000)
     return () => clearInterval(interval)
   }, [realAgent.checkConnection])
 
-  // Handle step click from progress panel
   const handleStepClick = useCallback((stepId: string) => {
     if (chatPanelRef.current) {
       const messageId = chatPanelRef.current.findMessageByStepName(stepId)
@@ -53,16 +53,59 @@ export default function App() {
     setHighlightedMessageId(null)
   }, [])
 
+  const [switchingTo, setSwitchingTo] = useState<string | null>(null)
+
+  const handleSelectExperiment = useCallback(async (id: string) => {
+    setSwitchingTo(id)
+    try {
+      await realAgent.loadExperiment(id)
+    } finally {
+      setSwitchingTo(null)
+    }
+  }, [realAgent.loadExperiment])
+
+  const handleNewExperiment = useCallback(async () => {
+    try {
+      // Save current experiment's messages before creating a new one
+      if (realAgent.experimentId && realAgent.messages.length > 0) {
+        await saveExperimentMessages(
+          realAgent.experimentId,
+          realAgent.messages.map((m) => ({
+            id: m.id,
+            role: m.role,
+            content: m.content,
+            timestamp: m.timestamp,
+          })),
+        )
+      }
+      const exp = await createExperiment()
+      realAgent.reset()
+      realAgent.setExperimentId(exp.id)
+    } catch {
+      realAgent.reset()
+    }
+  }, [realAgent])
+
   return (
     <TooltipProvider>
       <div className="h-screen bg-background flex flex-col overflow-hidden">
-        {/* Minimal Header */}
-        <header className="flex-shrink-0 h-14 px-5 flex items-center justify-between border-b border-border/50">
-          <div className="flex items-center gap-2.5">
-            <div className="w-7 h-7 rounded-lg bg-foreground flex items-center justify-center">
-              <Sparkles className="h-4 w-4 text-background" />
+        {/* Header */}
+        <header className="flex-shrink-0 h-14 px-4 flex items-center justify-between border-b border-border/25 bg-background/80 backdrop-blur-sm z-10">
+          <div className="flex items-center gap-3">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setSidebarOpen(!sidebarOpen)}
+              className="h-8 w-8 p-0 text-muted-foreground"
+            >
+              {sidebarOpen ? <PanelLeftClose className="h-4 w-4" /> : <PanelLeft className="h-4 w-4" />}
+            </Button>
+            <div className="flex items-center gap-2.5">
+              <div className="w-7 h-7 rounded-lg bg-primary flex items-center justify-center">
+                <Sparkles className="h-4 w-4 text-primary-foreground" />
+              </div>
+              <span className="font-semibold tracking-tight text-[15px]">Jubilee</span>
             </div>
-            <span className="font-semibold tracking-tight">Jubilee</span>
           </div>
 
           <div className="flex items-center gap-2">
@@ -71,17 +114,17 @@ export default function App() {
                 variant="outline"
                 size="sm"
                 onClick={() => setShowReport(true)}
-                className="h-8"
+                className="h-8 text-xs"
               >
-                <FileText className="h-4 w-4 mr-1.5" />
-                View Report
+                <FileText className="h-3.5 w-3.5 mr-1.5" />
+                Report
               </Button>
             )}
             <Button
               variant="ghost"
               size="sm"
               onClick={agent.reset}
-              className="h-8 w-8 p-0"
+              className="h-8 w-8 p-0 text-muted-foreground"
             >
               <RotateCcw className="h-4 w-4" />
             </Button>
@@ -90,16 +133,29 @@ export default function App() {
 
         {/* Backend offline banner */}
         {!realAgent.isBackendConnected && (
-          <div className="flex-shrink-0 px-5 py-2.5 text-sm text-muted-foreground bg-muted/40 border-b border-border/50">
-            Run <code className="bg-background px-2 py-0.5 rounded-md text-xs font-mono">uvicorn app:app --reload</code> to start
+          <div className="flex-shrink-0 px-5 py-2 text-sm text-muted-foreground bg-muted/40 border-b border-border/25">
+            Run <code className="bg-background px-2 py-0.5 rounded-md text-xs font-mono">docker compose up --build</code> to start
           </div>
         )}
 
         {/* Main Content */}
         <main className="flex-1 min-h-0 flex overflow-hidden">
-          <div className="w-full flex h-full">
-            {/* Left Panel - Progress */}
-            <div className="w-[340px] flex-shrink-0 hidden lg:block h-full overflow-auto border-r border-border/50">
+          {/* Experiment Sidebar */}
+          {sidebarOpen && (
+            <div className="w-[260px] flex-shrink-0 border-r border-border/25 hidden md:block">
+              <ExperimentSidebar
+                activeExperimentId={realAgent.experimentId}
+                onSelectExperiment={handleSelectExperiment}
+                onNewExperiment={handleNewExperiment}
+                isBackendConnected={realAgent.isBackendConnected}
+                switchingTo={switchingTo}
+              />
+            </div>
+          )}
+
+          <div className="flex-1 min-w-0 flex h-full">
+            {/* Pipeline Progress Panel */}
+            <div className="w-[280px] flex-shrink-0 hidden lg:block h-full overflow-auto border-r border-border/25">
               <ProgressPanel
                 steps={agent.steps}
                 currentStepId={agent.currentStepId}
@@ -109,7 +165,7 @@ export default function App() {
               />
             </div>
 
-            {/* Right Panel - Chat */}
+            {/* Chat Panel */}
             <div className="flex-1 min-w-0 h-full">
               <ChatPanel
                 ref={chatPanelRef}
@@ -131,7 +187,7 @@ export default function App() {
           </div>
         </main>
 
-        {/* Mobile Progress Toggle (for smaller screens) */}
+        {/* Mobile Progress Toggle */}
         <div className="lg:hidden fixed bottom-4 left-4 z-50">
           <MobileProgressButton
             steps={agent.steps}
@@ -154,7 +210,6 @@ export default function App() {
   )
 }
 
-// Mobile progress button component
 import {
   Dialog,
   DialogContent,

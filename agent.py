@@ -412,21 +412,34 @@ class TrainModelInput(BaseModel):
     )
 
 
+import queue as _queue_mod
+from threading import Thread as _Thread
+
+_training_states: dict[str, dict[str, Any]] = {}
+_training_progress_queues: dict[str, _queue_mod.Queue] = {}
+_thread_to_experiment: dict[str, str] = {}
+
+# Backward compat alias — some code reads this; prefer _training_states instead.
 _last_training_state: dict[str, Any] = {}
 
 
-def _run_training_to_completion(
+def _run_training_with_progress(
+    experiment_id: str,
     goal: str,
     linked_datasets: Optional[list[str]],
     model_preference: Optional[str],
     use_external_sources: bool = False,
 ) -> dict[str, Any]:
-    """Run the simple training agent end-to-end without HITL.
+    """Run the simple training agent, streaming step events to a progress queue.
 
-    Stores the final shared-state dict in ``_last_training_state`` so the SSE
-    chat handler can generate step-level events for the frontend.
+    The chat SSE generator polls this queue so the user sees real-time updates.
     """
     from agents.training.agent_simple import create_simple_training_agent
+    from agents.training.utils.streaming import build_node_update
+    from backend.shared.state import TOOL_TO_STEP
+
+    progress_q: _queue_mod.Queue = _queue_mod.Queue()
+    _training_progress_queues[experiment_id] = progress_q
 
     thread_id = f"orch-{uuid.uuid4().hex[:8]}"
     agent, shared_state = create_simple_training_agent(
@@ -438,31 +451,65 @@ def _run_training_to_completion(
     )
 
     config = {"configurable": {"thread_id": thread_id}}
-    result = agent.invoke({"messages": [{"role": "user", "content": goal}]}, config=config)
+    emitted: set[str] = set()
 
-    final_state = dict(shared_state)
+    try:
+        for event in agent.stream(
+            {"messages": [{"role": "user", "content": goal}]},
+            config=config,
+            stream_mode="updates",
+        ):
+            if "tools" in event:
+                tool_msgs = event["tools"].get("messages", [])
+                if tool_msgs:
+                    tool_name = getattr(tool_msgs[0], "name", "")
+                    step_name = TOOL_TO_STEP.get(tool_name)
+                    if step_name and step_name not in emitted:
+                        emitted.add(step_name)
+                        try:
+                            update = build_node_update(step_name, dict(shared_state))
+                            progress_q.put({
+                                "type": "training_step",
+                                "step": step_name,
+                                "update": update,
+                            })
+                        except Exception:
+                            progress_q.put({
+                                "type": "training_step",
+                                "step": step_name,
+                                "update": {"type": "node_complete", "node": step_name},
+                            })
 
-    completed_steps = [
-        step for step in [
-            "selected_model", "collected_dataset_ref", "cleaned_dataset_ref",
-            "transformed_train_ref", "training_metrics", "report_path",
+        final_state = dict(shared_state)
+        _training_states[experiment_id] = final_state
+        _last_training_state.clear()
+        _last_training_state.update(final_state)
+
+        completed_steps = [
+            s for s in ["selected_model", "collected_dataset_ref", "training_metrics", "report_path"]
+            if final_state.get(s) is not None
         ]
-        if final_state.get(step) is not None
-    ]
-    print(f"[train_model] Pipeline finished. State keys populated: {completed_steps}", flush=True)
+        print(f"[train_model] Pipeline finished. Populated: {completed_steps}", flush=True)
+        progress_q.put({"type": "training_done", "state": final_state})
+        return final_state
+    except Exception as e:
+        print(f"[train_model] Error: {e}", flush=True)
+        progress_q.put({"type": "training_error", "error": str(e)})
+        raise
+    finally:
+        _training_progress_queues.pop(experiment_id, None)
 
-    if not final_state.get("training_metrics") and not final_state.get("selected_model"):
-        msgs = result.get("messages", [])
-        last_msgs = [
-            m.content[:200] if hasattr(m, "content") else str(m)[:200]
-            for m in msgs[-3:]
-        ]
-        print(f"[train_model] WARNING: Pipeline completed without training. Last messages: {last_msgs}", flush=True)
 
-    _last_training_state.clear()
-    _last_training_state.update(final_state)
-
-    return final_state
+def _run_training_to_completion(
+    goal: str,
+    linked_datasets: Optional[list[str]],
+    model_preference: Optional[str],
+    use_external_sources: bool = False,
+    experiment_id: Optional[str] = None,
+) -> dict[str, Any]:
+    """Run the training agent. If experiment_id is provided, streams progress via queue."""
+    exp_id = experiment_id or f"ephemeral-{uuid.uuid4().hex[:8]}"
+    return _run_training_with_progress(exp_id, goal, linked_datasets, model_preference, use_external_sources)
 
 
 @tool(args_schema=TrainModelInput)
@@ -486,7 +533,13 @@ def train_model(
     user that they want to proceed with training.
     """
     try:
-        result = _run_training_to_completion(goal, linked_datasets, model_preference, use_external_sources)
+        experiment_id = _thread_to_experiment.get(
+            __import__("threading").current_thread().name
+        )
+        result = _run_training_to_completion(
+            goal, linked_datasets, model_preference, use_external_sources,
+            experiment_id=experiment_id,
+        )
 
         selected_model = result.get("selected_model", "unknown")
         model_explanation = result.get("model_explanation", "")

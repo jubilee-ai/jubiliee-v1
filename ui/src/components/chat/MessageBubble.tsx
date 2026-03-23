@@ -37,8 +37,8 @@ export const MessageBubble = forwardRef<HTMLDivElement, MessageBubbleProps>(
       return (
         <div ref={ref} className={cn(
           "text-xs text-center py-2",
-          isStepAccepted && "text-green-600 dark:text-green-500",
-          isRedo && "text-amber-600 dark:text-amber-500",
+          isStepAccepted && "text-[hsl(var(--step-complete))]",
+          isRedo && "text-amber-600 dark:text-amber-400",
           !isStepAccepted && !isRedo && "text-muted-foreground/70"
         )}>
           {message.content}
@@ -65,7 +65,7 @@ export const MessageBubble = forwardRef<HTMLDivElement, MessageBubbleProps>(
         <div
           className={cn(
             "flex-shrink-0 w-7 h-7 rounded-full flex items-center justify-center",
-            isUser ? "bg-foreground text-background" : "bg-muted"
+            isUser ? "bg-primary text-primary-foreground" : "bg-muted"
           )}
         >
           {isUser ? <User className="h-3.5 w-3.5" /> : <Bot className="h-3.5 w-3.5 text-muted-foreground" />}
@@ -74,8 +74,8 @@ export const MessageBubble = forwardRef<HTMLDivElement, MessageBubbleProps>(
           onClick={handleBubbleClick}
           className={cn(
             "flex-1 max-w-[92%] rounded-2xl px-4 py-3 transition-all duration-300",
-            isUser ? "bg-foreground text-background" : "bg-muted/50",
-            isHighlighted && "ring-2 ring-foreground/20 shadow-lg",
+            isUser ? "bg-primary text-primary-foreground" : "bg-muted/50",
+            isHighlighted && "ring-2 ring-primary/20 shadow-lg",
             isClickable && "cursor-pointer hover:bg-muted/70 hover:shadow-md group"
           )}
         >
@@ -111,7 +111,7 @@ export const MessageBubble = forwardRef<HTMLDivElement, MessageBubbleProps>(
                 e.stopPropagation()
                 onViewReport()
               }}
-              className="mt-3 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-foreground text-background text-sm font-medium hover:bg-foreground/90 transition-colors"
+              className="mt-3 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors"
             >
               <FileText className="h-3.5 w-3.5" />
               View Report

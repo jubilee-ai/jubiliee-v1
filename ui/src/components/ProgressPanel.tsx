@@ -41,9 +41,9 @@ export function ProgressPanel({
             {completedSteps}/{totalSteps} steps
           </span>
         </div>
-        <div className="h-1.5 bg-border/60 rounded-full overflow-hidden">
+        <div className="h-1.5 bg-border/40 rounded-full overflow-hidden">
           <div 
-            className="h-full bg-foreground rounded-full transition-all duration-500 ease-out"
+            className="h-full bg-primary rounded-full transition-all duration-500 ease-out"
             style={{ width: `${progress}%` }}
           />
         </div>
@@ -104,7 +104,7 @@ export function ProgressPanel({
             <Separator />
             <div className="p-5">
               <div className="flex items-center gap-2 mb-3">
-                <CheckCircle2 className="h-4 w-4 text-green-600" />
+                <CheckCircle2 className="h-4 w-4 text-[hsl(var(--step-complete))]" />
                 <span className="text-sm font-medium">Complete</span>
               </div>
               {hasClassificationMetrics ? (

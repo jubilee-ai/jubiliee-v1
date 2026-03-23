@@ -7,7 +7,7 @@ interface SuggestionChipProps {
 export function SuggestionChip({ label, onClick }: SuggestionChipProps) {
   return (
     <button
-      className="px-5 py-2.5 rounded-full border border-border bg-background hover:bg-muted/50 text-sm font-medium transition-all hover:border-muted-foreground/20"
+      className="px-5 py-2.5 rounded-full border border-primary/20 bg-primary/5 hover:bg-primary/10 text-sm font-medium transition-all hover:border-primary/30"
       onClick={onClick}
     >
       {label}
