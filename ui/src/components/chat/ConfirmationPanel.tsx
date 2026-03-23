@@ -1,6 +1,6 @@
 import { useState } from "react"
 import ReactMarkdown from "react-markdown"
-import { Bot, Check, FastForward, RotateCcw, ChevronRight } from "lucide-react"
+import { ShieldCheck, Check, FastForward, RotateCcw, ChevronRight } from "lucide-react"
 import type { ConfirmationRequest, ConfirmationAction, TrainingAgentState, StepInfo } from "@/types/agent"
 import { ConfirmationDetails } from "./PastConfirmation"
 
@@ -29,16 +29,12 @@ export function ConfirmationPanel({
   }
 
   return (
-    <div className="flex gap-3">
-      {/* Bot avatar */}
-      <div className="flex-shrink-0 w-7 h-7 rounded-full flex items-center justify-center bg-muted">
-        <Bot className="h-3.5 w-3.5 text-muted-foreground" />
-      </div>
-      
-      <div className="flex-1 max-w-[92%] space-y-3">
+    <div className="space-y-3">
+      <div className="flex-1 space-y-3">
         {/* Summary bubble */}
         <div className="rounded-2xl px-4 py-3 bg-muted/50">
           <div className="flex items-center gap-2 mb-2">
+            <ShieldCheck className="h-3.5 w-3.5 text-amber-500" />
             <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
               {confirmationRequest.stepName}
             </span>
@@ -116,3 +112,4 @@ export function ConfirmationPanel({
     </div>
   )
 }
+

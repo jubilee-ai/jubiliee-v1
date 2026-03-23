@@ -1,6 +1,6 @@
 import ReactMarkdown from "react-markdown"
 import { cn } from "@/lib/utils"
-import { Bot, Check, ChevronRight } from "lucide-react"
+import { Check, ChevronRight } from "lucide-react"
 import type { ConfirmationRequest, TrainingAgentState, StepInfo } from "@/types/agent"
 
 export interface ResolvedConfirmation extends ConfirmationRequest {
@@ -26,13 +26,8 @@ export function PastConfirmation({
   const redoComment = confirmation.redoComment
 
   return (
-    <div className="flex gap-3">
-      {/* Bot avatar */}
-      <div className="flex-shrink-0 w-7 h-7 rounded-full flex items-center justify-center bg-muted">
-        <Bot className="h-3.5 w-3.5 text-muted-foreground" />
-      </div>
-      
-      <div className="flex-1 max-w-[92%] space-y-2">
+    <div className="space-y-2">
+      <div className="flex-1 space-y-2">
         {/* Summary bubble - styling based on action */}
         <div className={cn(
           "rounded-2xl px-4 py-3 bg-muted/50 border",

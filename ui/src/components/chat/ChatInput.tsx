@@ -74,8 +74,8 @@ export function ChatInput({
   }
 
   return (
-    <div className="flex-shrink-0 px-4 py-3 max-w-3xl mx-auto w-full">
-      <div className="rounded-xl border border-border/80 bg-card shadow-sm">
+    <div className="flex-shrink-0 z-10 border-t border-border/20 bg-background/95 backdrop-blur-md px-5 pt-3 pb-5 max-w-3xl mx-auto w-full supports-[backdrop-filter]:bg-background/80">
+      <div className="rounded-2xl bg-card/95 backdrop-blur-sm border border-border/25 shadow-[0_2px_20px_-4px_rgba(0,0,0,0.06),0_0_0_1px_hsl(var(--border)/0.25)] transition-shadow duration-300 ease-out focus-within:border-border/40 focus-within:shadow-[0_0_0_1px_hsl(var(--primary)/0.18),0_0_24px_-4px_hsl(var(--primary)/0.14),0_12px_40px_-12px_rgba(0,0,0,0.08)]">
         {/* Selected items */}
         {(selectedDatasets.length > 0 || selectedModel) && (
           <div className="flex items-center gap-2 px-3 pt-2.5 pb-1 flex-wrap">
@@ -119,12 +119,12 @@ export function ChatInput({
           onChange={(e) => onDraftChange(e.target.value)}
           onKeyDown={handleKeyDown}
           placeholder={placeholder}
-          className="min-h-[52px] max-h-[160px] resize-none border-0 shadow-none focus-visible:ring-0 px-3 py-2.5 text-[14px] leading-6 placeholder:text-muted-foreground/60"
+          className="composer-textarea min-h-[60px] max-h-[180px] resize-none border-0 shadow-none px-4 py-3 text-[14px] leading-6 placeholder:text-muted-foreground/40 bg-transparent"
           disabled={isDisabled}
         />
 
         {/* Actions bar */}
-        <div className="flex items-center justify-between px-2.5 pb-2.5 pt-1 border-t border-border/60">
+        <div className="flex items-center justify-between px-3 pb-3 pt-1">
           <div className="flex items-center gap-1">
             <Dialog open={showDatasetPicker} onOpenChange={setShowDatasetPicker}>
               <DialogTrigger asChild>
@@ -188,7 +188,7 @@ export function ChatInput({
               </DialogContent>
             </Dialog>
 
-            <div className="h-5 w-px bg-border mx-1" />
+            <div className="h-5 w-px bg-muted mx-1" />
 
             <Tooltip>
               <TooltipTrigger asChild>

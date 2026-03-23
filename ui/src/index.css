@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
 
 @tailwind base;
 @tailwind components;
@@ -6,74 +6,79 @@
 
 @layer base {
   :root {
-    --background: 40 33% 98%;
-    --foreground: 240 10% 20%;
-    --card: 40 20% 99%;
-    --card-foreground: 240 10% 20%;
-    --popover: 40 20% 99%;
-    --popover-foreground: 240 10% 20%;
-    --primary: 245 40% 58%;
-    --primary-foreground: 0 0% 100%;
-    --secondary: 245 20% 95%;
-    --secondary-foreground: 240 10% 20%;
-    --muted: 240 20% 95%;
-    --muted-foreground: 240 10% 50%;
-    --accent: 245 20% 95%;
-    --accent-foreground: 240 10% 20%;
-    --destructive: 0 55% 60%;
-    --destructive-foreground: 0 0% 100%;
-    --border: 240 15% 90%;
-    --input: 240 15% 90%;
-    --ring: 245 40% 58%;
-    --radius: 0.625rem;
+    --background: 210 17% 98%;
+    --foreground: 195 8% 19%;
+    --card: 0 0% 100%;
+    --card-foreground: 195 8% 19%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 195 8% 19%;
+    --primary: 227 22% 42%;
+    --primary-foreground: 260 100% 99%;
+    --secondary: 130 34% 86%;
+    --secondary-foreground: 136 14% 30%;
+    --muted: 210 14% 93%;
+    --muted-foreground: 195 4% 37%;
+    --accent: 229 78% 87%;
+    --accent-foreground: 224 38% 24%;
+    --destructive: 349 52% 44%;
+    --destructive-foreground: 0 100% 98%;
+    --border: 195 5% 69%;
+    --input: 195 5% 69%;
+    --ring: 227 22% 42%;
+    --radius: 0.5rem;
 
-    --success: 158 50% 52%;
+    --success: 136 12% 35%;
     --success-foreground: 0 0% 100%;
 
-    --sidebar-bg: 245 25% 96%;
+    --sidebar-bg: 195 18% 95%;
 
-    --step-active: 225 60% 65%;
-    --step-complete: 158 50% 52%;
-    --step-pending: 240 10% 50%;
-    --step-error: 0 55% 60%;
+    --step-active: 227 22% 42%;
+    --step-complete: 136 12% 35%;
+    --step-pending: 195 4% 50%;
+    --step-error: 349 52% 44%;
   }
 
   .dark {
-    --background: 240 15% 8%;
-    --foreground: 40 10% 92%;
-    --card: 240 12% 10%;
-    --card-foreground: 40 10% 92%;
-    --popover: 240 12% 10%;
-    --popover-foreground: 40 10% 92%;
-    --primary: 245 40% 68%;
-    --primary-foreground: 240 15% 8%;
-    --secondary: 240 10% 15%;
-    --secondary-foreground: 40 10% 92%;
-    --muted: 240 10% 15%;
-    --muted-foreground: 240 10% 60%;
-    --accent: 240 10% 15%;
-    --accent-foreground: 40 10% 92%;
-    --destructive: 0 55% 45%;
-    --destructive-foreground: 40 10% 92%;
-    --border: 240 8% 18%;
-    --input: 240 8% 18%;
-    --ring: 245 40% 68%;
+    --background: 240 6% 7%;
+    --foreground: 220 9% 91%;
+    --card: 240 4% 11%;
+    --card-foreground: 220 9% 91%;
+    --popover: 240 4% 11%;
+    --popover-foreground: 220 9% 91%;
+    --primary: 229 55% 78%;
+    --primary-foreground: 240 27% 14%;
+    --secondary: 140 10% 18%;
+    --secondary-foreground: 130 30% 80%;
+    --muted: 240 4% 13%;
+    --muted-foreground: 220 6% 55%;
+    --accent: 229 20% 20%;
+    --accent-foreground: 229 70% 85%;
+    --destructive: 352 55% 65%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 240 4% 20%;
+    --input: 240 4% 20%;
+    --ring: 229 55% 78%;
 
-    --success: 158 50% 52%;
+    --success: 130 30% 55%;
     --success-foreground: 0 0% 100%;
 
-    --sidebar-bg: 240 15% 6%;
+    --sidebar-bg: 240 5% 9%;
 
-    --step-active: 225 60% 65%;
-    --step-complete: 158 50% 52%;
-    --step-pending: 240 10% 60%;
-    --step-error: 0 55% 50%;
+    --step-active: 229 55% 75%;
+    --step-complete: 130 30% 55%;
+    --step-pending: 220 6% 45%;
+    --step-error: 352 55% 65%;
   }
 }
 
 @layer base {
   * {
     @apply border-border;
+  }
+  html,
+  body,
+  #root {
+    @apply h-full;
   }
   body {
     @apply bg-background text-foreground antialiased;
@@ -109,9 +114,51 @@
   @apply outline-none ring-2 ring-ring ring-offset-2 ring-offset-background;
 }
 
+/* Chat composer: no inner focus ring — outer card uses focus-within:ring */
+textarea.composer-textarea:focus-visible {
+  outline: none !important;
+  box-shadow: none !important;
+  --tw-ring-shadow: 0 0 #0000;
+  --tw-ring-offset-shadow: 0 0 #0000;
+}
+
 /* Smooth transitions globally */
 * {
   @apply transition-colors duration-150;
+}
+
+/* Dot grid background */
+.dot-grid {
+  background-image: radial-gradient(circle, hsl(var(--muted-foreground) / 0.15) 1px, transparent 1px);
+  background-size: 24px 24px;
+}
+
+/* Thinking wave bars */
+@keyframes wave {
+  0%, 100% { transform: scaleY(0.3); opacity: 0.3; }
+  50% { transform: scaleY(1); opacity: 0.8; }
+}
+.animate-wave {
+  animation: wave 1.2s ease-in-out infinite;
+  transform-origin: bottom;
+}
+
+/* Phase marker entrance */
+@keyframes phaseIn {
+  from { opacity: 0; transform: scaleX(0.6); }
+  to { opacity: 1; transform: scaleX(1); }
+}
+.animate-phase-in {
+  animation: phaseIn 0.5s ease-out;
+}
+
+/* Phase icon spin-in */
+@keyframes spinIn {
+  from { opacity: 0; transform: rotate(-90deg) scale(0.5); }
+  to { opacity: 1; transform: rotate(0deg) scale(1); }
+}
+.animate-spin-in {
+  animation: spinIn 0.4s ease-out;
 }
 
 /* Step completion animation */
@@ -120,7 +167,6 @@
   60% { transform: scale(1.2); }
   100% { transform: scale(1); }
 }
-
 .animate-check-pop {
   animation: checkPop 0.3s ease-out;
 }
@@ -130,7 +176,6 @@
   from { opacity: 0; transform: translateY(4px); }
   to { opacity: 1; transform: translateY(0); }
 }
-
 .animate-count-up {
   animation: countUp 0.4s ease-out;
 }
@@ -140,7 +185,6 @@
   from { opacity: 0; transform: translateY(8px); }
   to { opacity: 1; transform: translateY(0); }
 }
-
 .animate-message-in {
   animation: messageIn 0.25s ease-out;
 }
@@ -149,7 +193,6 @@
 @keyframes progressFill {
   from { width: 0%; }
 }
-
 .animate-progress-fill {
   animation: progressFill 0.5s ease-out;
 }

@@ -1221,7 +1221,7 @@ function ReportDetail({ agentState }: { agentState: TrainingAgentState }) {
       <div className="bg-green-50 dark:bg-green-950/30 rounded-xl p-4">
         <div className="flex items-center gap-2">
           <CheckCircle2 className="h-5 w-5 text-green-600" />
-          <span className="font-medium text-green-700 dark:text-green-300">Training Pipeline Complete</span>
+          <span className="font-medium text-green-700 dark:text-green-300">Experiment complete</span>
         </div>
       </div>
 

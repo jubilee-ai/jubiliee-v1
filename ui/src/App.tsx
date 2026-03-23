@@ -2,18 +2,26 @@ import { useState, useEffect, useRef, useCallback } from "react"
 import { useRealAgent } from "@/hooks/useRealAgent"
 import { ProgressPanel } from "@/components/ProgressPanel"
 import { ChatPanel, ChatPanelRef } from "@/components/ChatPanel"
-import { ExperimentSidebar } from "@/components/ExperimentSidebar"
+import { AppSidebar, type AppTab } from "@/components/AppSidebar"
 import { FinalReport } from "@/components/FinalReport"
 import { Button } from "@/components/ui/button"
 import { TooltipProvider } from "@/components/ui/tooltip"
-import { Sparkles, RotateCcw, FileText, PanelLeftClose, PanelLeft } from "lucide-react"
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog"
+import { RotateCcw, FileText, Search, Bell } from "lucide-react"
 import type { StepInfo, TrainingAgentState, ConfirmationAction } from "@/types/agent"
 import { createExperiment, saveExperimentMessages } from "@/lib/api"
+import { cn } from "@/lib/utils"
 
 export default function App() {
   const [showReport, setShowReport] = useState(false)
   const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null)
-  const [sidebarOpen, setSidebarOpen] = useState(true)
+  const [activeTab, setActiveTab] = useState<AppTab>("experiment_lab")
   const chatPanelRef = useRef<ChatPanelRef>(null)
 
   const realAgent = useRealAgent()
@@ -66,7 +74,6 @@ export default function App() {
 
   const handleNewExperiment = useCallback(async () => {
     try {
-      // Save current experiment's messages before creating a new one
       if (realAgent.experimentId && realAgent.messages.length > 0) {
         await saveExperimentMessages(
           realAgent.experimentId,
@@ -86,29 +93,19 @@ export default function App() {
     }
   }, [realAgent])
 
+  const completedSteps = agent.steps.filter((s) => s.status === "completed").length
+  const totalSteps = agent.steps.length
+  const currentStep = agent.steps.find(s => s.status === "running" || s.status === "awaiting_confirmation")
+  const hasActivity = agent.isRunning || completedSteps > 0
+
   return (
     <TooltipProvider>
       <div className="h-screen bg-background flex flex-col overflow-hidden">
-        {/* Header */}
-        <header className="flex-shrink-0 h-14 px-4 flex items-center justify-between border-b border-border/25 bg-background/80 backdrop-blur-sm z-10">
-          <div className="flex items-center gap-3">
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => setSidebarOpen(!sidebarOpen)}
-              className="h-8 w-8 p-0 text-muted-foreground"
-            >
-              {sidebarOpen ? <PanelLeftClose className="h-4 w-4" /> : <PanelLeft className="h-4 w-4" />}
-            </Button>
-            <div className="flex items-center gap-2.5">
-              <div className="w-7 h-7 rounded-lg bg-primary flex items-center justify-center">
-                <Sparkles className="h-4 w-4 text-primary-foreground" />
-              </div>
-              <span className="font-semibold tracking-tight text-[15px]">Jubilee</span>
-            </div>
-          </div>
+        {/* Top Navigation Bar */}
+        <nav className="fixed top-0 w-full z-50 bg-background/80 backdrop-blur-xl shadow-[0_1px_0_hsl(var(--border)/0.3)] flex items-center justify-between px-6 h-14">
+          <div className="font-headline text-xl font-bold tracking-tight text-foreground">Jubilee</div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1.5">
             {isComplete && (
               <Button
                 variant="outline"
@@ -120,81 +117,120 @@ export default function App() {
                 Report
               </Button>
             )}
+            <Button variant="ghost" size="sm" className="h-8 w-8 p-0 text-muted-foreground hover:text-foreground">
+              <Search className="h-4 w-4" />
+            </Button>
+            <Button variant="ghost" size="sm" className="h-8 w-8 p-0 text-muted-foreground hover:text-foreground">
+              <Bell className="h-4 w-4" />
+            </Button>
             <Button
               variant="ghost"
               size="sm"
               onClick={agent.reset}
-              className="h-8 w-8 p-0 text-muted-foreground"
+              className="h-8 w-8 p-0 text-muted-foreground hover:text-foreground"
             >
               <RotateCcw className="h-4 w-4" />
             </Button>
+            <div className="h-7 w-7 rounded-full bg-primary/10 flex items-center justify-center ml-1">
+              <span className="text-[11px] font-semibold text-primary">U</span>
+            </div>
           </div>
-        </header>
+        </nav>
 
         {/* Backend offline banner */}
         {!realAgent.isBackendConnected && (
-          <div className="flex-shrink-0 px-5 py-2 text-sm text-muted-foreground bg-muted/40 border-b border-border/25">
-            Run <code className="bg-background px-2 py-0.5 rounded-md text-xs font-mono">docker compose up --build</code> to start
+          <div className="fixed top-14 left-0 right-0 z-40 px-5 py-1.5 text-xs text-muted-foreground bg-muted text-center">
+            Run <code className="bg-card px-1.5 py-0.5 rounded text-[11px] font-mono">docker compose up --build</code> to start
           </div>
         )}
 
-        {/* Main Content */}
-        <main className="flex-1 min-h-0 flex overflow-hidden">
-          {/* Experiment Sidebar */}
-          {sidebarOpen && (
-            <div className="w-[260px] flex-shrink-0 border-r border-border/25 hidden md:block">
-              <ExperimentSidebar
-                activeExperimentId={realAgent.experimentId}
-                onSelectExperiment={handleSelectExperiment}
-                onNewExperiment={handleNewExperiment}
-                isBackendConnected={realAgent.isBackendConnected}
-                switchingTo={switchingTo}
-              />
-            </div>
-          )}
+        {/* Main Layout — min-h-0 so inner chat can scroll instead of growing the page */}
+        <div className="flex flex-1 min-h-0 overflow-hidden pt-14">
+          {/* Fixed Sidebar */}
+          <aside className="hidden md:flex w-60 fixed left-0 top-14 bottom-0 flex-col z-40">
+            <AppSidebar
+              activeTab={activeTab}
+              onTabChange={setActiveTab}
+              activeExperimentId={realAgent.experimentId}
+              onSelectExperiment={handleSelectExperiment}
+              onNewExperiment={handleNewExperiment}
+              isBackendConnected={realAgent.isBackendConnected}
+              switchingTo={switchingTo}
+            />
+          </aside>
 
-          <div className="flex-1 min-w-0 flex h-full">
-            {/* Pipeline Progress Panel */}
-            <div className="w-[280px] flex-shrink-0 hidden lg:block h-full overflow-auto border-r border-border/25">
-              <ProgressPanel
-                steps={agent.steps}
-                currentStepId={agent.currentStepId}
-                agentState={agent.agentState}
-                isRunning={agent.isRunning}
-                onStepClick={handleStepClick}
-              />
-            </div>
+          {/* Main Content */}
+          <main className="flex-1 min-h-0 flex flex-col overflow-hidden md:ml-60">
+            {activeTab === "experiment_lab" ? (
+              <div className="flex flex-1 min-h-0 flex-col overflow-hidden relative">
+                {/* Floating experiment checklist */}
+                {hasActivity && (
+                  <div className="absolute top-3 left-1/2 -translate-x-1/2 z-10">
+                    <ExperimentChecklistIndicator
+                      steps={agent.steps}
+                      currentStep={currentStep ?? null}
+                      completedSteps={completedSteps}
+                      totalSteps={totalSteps}
+                      agentState={agent.agentState}
+                      isRunning={agent.isRunning}
+                      onStepClick={handleStepClick}
+                    />
+                  </div>
+                )}
 
-            {/* Chat Panel */}
-            <div className="flex-1 min-w-0 h-full">
-              <ChatPanel
-                ref={chatPanelRef}
-                messages={agent.messages}
-                confirmationRequest={agent.confirmationRequest}
-                isRunning={agent.isRunning}
-                onSendMessage={agent.sendMessage}
-                onConfirmation={agent.handleConfirmation as (action: ConfirmationAction, comment?: string) => void}
-                onStartAgent={agent.startAgent}
-                datasets={realAgent.datasets}
-                modelTypes={realAgent.modelTypes}
-                highlightedMessageId={highlightedMessageId}
-                onClearHighlight={handleClearHighlight}
-                onViewReport={() => setShowReport(true)}
-                agentState={agent.agentState}
-                steps={agent.steps}
-              />
-            </div>
-          </div>
-        </main>
-
-        {/* Mobile Progress Toggle */}
-        <div className="lg:hidden fixed bottom-4 left-4 z-50">
-          <MobileProgressButton
-            steps={agent.steps}
-            currentStepId={agent.currentStepId}
-            agentState={agent.agentState}
-            isRunning={agent.isRunning}
-          />
+                <ChatPanel
+                  ref={chatPanelRef}
+                  messages={agent.messages}
+                  confirmationRequest={agent.confirmationRequest}
+                  isRunning={agent.isRunning}
+                  onSendMessage={agent.sendMessage}
+                  onConfirmation={agent.handleConfirmation as (action: ConfirmationAction, comment?: string) => void}
+                  onStartAgent={agent.startAgent}
+                  datasets={realAgent.datasets}
+                  modelTypes={realAgent.modelTypes}
+                  highlightedMessageId={highlightedMessageId}
+                  onClearHighlight={handleClearHighlight}
+                  onViewReport={() => setShowReport(true)}
+                  agentState={agent.agentState}
+                  steps={agent.steps}
+                  hasExperimentChecklist={hasActivity}
+                />
+              </div>
+            ) : activeTab === "datasets" ? (
+              <div className="flex-1 overflow-auto">
+                <div className="max-w-5xl mx-auto px-8 py-10">
+                  <span className="text-[10px] font-bold text-muted-foreground tracking-widest uppercase">Data Management</span>
+                  <h1 className="font-headline text-3xl font-semibold text-foreground tracking-tight mt-1">Data Assets</h1>
+                  <p className="mt-3 text-muted-foreground text-sm leading-relaxed max-w-lg">Manage and explore your datasets for training and evaluation.</p>
+                  <div className="mt-10 rounded-xl bg-card p-8 text-center text-muted-foreground text-sm">
+                    Coming soon.
+                  </div>
+                </div>
+              </div>
+            ) : activeTab === "models" ? (
+              <div className="flex-1 overflow-auto">
+                <div className="max-w-5xl mx-auto px-8 py-10">
+                  <span className="text-[10px] font-bold text-muted-foreground tracking-widest uppercase">Model Management</span>
+                  <h1 className="font-headline text-3xl font-semibold text-foreground tracking-tight mt-1">Model Registry</h1>
+                  <p className="mt-3 text-muted-foreground text-sm leading-relaxed max-w-lg">Monitor deployments, track performance metrics, and manage your model lifecycle.</p>
+                  <div className="mt-10 rounded-xl bg-card p-8 text-center text-muted-foreground text-sm">
+                    Coming soon.
+                  </div>
+                </div>
+              </div>
+            ) : activeTab === "settings" ? (
+              <div className="flex-1 overflow-auto">
+                <div className="max-w-5xl mx-auto px-8 py-10">
+                  <span className="text-[10px] font-bold text-muted-foreground tracking-widest uppercase">Configuration</span>
+                  <h1 className="font-headline text-3xl font-semibold text-foreground tracking-tight mt-1">Settings & API</h1>
+                  <p className="mt-3 text-muted-foreground text-sm leading-relaxed max-w-lg">Account management, API keys, and MCP access configuration.</p>
+                  <div className="mt-10 rounded-xl bg-card p-8 text-center text-muted-foreground text-sm">
+                    Coming soon.
+                  </div>
+                </div>
+              </div>
+            ) : null}
+          </main>
         </div>
 
         {/* Final Report Modal */}
@@ -210,45 +246,66 @@ export default function App() {
   )
 }
 
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from "@/components/ui/dialog"
-
-function MobileProgressButton({
+function ExperimentChecklistIndicator({
   steps,
-  currentStepId,
+  currentStep,
+  completedSteps,
+  totalSteps,
   agentState,
   isRunning,
+  onStepClick,
 }: {
   steps: StepInfo[]
-  currentStepId: string | null
+  currentStep: StepInfo | null
+  completedSteps: number
+  totalSteps: number
   agentState: TrainingAgentState
   isRunning: boolean
+  onStepClick: (stepId: string) => void
 }) {
-  const completedSteps = steps.filter((s) => s.status === "completed").length
-
   return (
     <Dialog>
       <DialogTrigger asChild>
-        <Button variant="default" size="lg" className="rounded-full shadow-lg">
-          <Sparkles className="h-5 w-5 mr-2" />
-          {completedSteps}/{steps.length} Steps
-        </Button>
+        <button className="inline-flex items-center gap-2.5 h-8 px-3.5 rounded-full bg-card/95 backdrop-blur-md shadow-[0_2px_8px_rgba(0,0,0,0.06)] border border-border/40 hover:shadow-[0_4px_12px_rgba(0,0,0,0.1)] hover:border-border/60 transition-all cursor-pointer group">
+          <div className="flex items-center gap-[3px]">
+            {steps.map((s, i) => (
+              <div
+                key={i}
+                className={cn(
+                  "w-[5px] h-[5px] rounded-full transition-colors",
+                  s.status === "completed" && "bg-[hsl(var(--step-complete))]",
+                  (s.status === "running" || s.status === "awaiting_confirmation") && "bg-primary animate-pulse",
+                  (s.status === "pending" || s.status === "skipped") && "bg-muted-foreground/20",
+                  s.status === "error" && "bg-destructive",
+                  s.status === "stale" && "bg-amber-400",
+                )}
+              />
+            ))}
+          </div>
+          <span className="text-[11px] text-muted-foreground font-medium tabular-nums">
+            {completedSteps}/{totalSteps}
+          </span>
+          {currentStep && (
+            <>
+              <div className="w-px h-3 bg-border/40" />
+              <span className="text-[11px] text-muted-foreground truncate max-w-[140px] group-hover:text-foreground transition-colors">
+                {currentStep.name}
+              </span>
+            </>
+          )}
+        </button>
       </DialogTrigger>
-      <DialogContent className="max-w-[90vw] max-h-[80vh] overflow-hidden flex flex-col">
+      <DialogContent className="max-w-md max-h-[80vh] overflow-hidden flex flex-col">
         <DialogHeader>
-          <DialogTitle>Pipeline Progress</DialogTitle>
+          <DialogTitle className="font-headline">Experiment checklist</DialogTitle>
         </DialogHeader>
-        <div className="flex-1 overflow-auto">
+        <div className="flex-1 overflow-auto -mx-6 px-6">
           <ProgressPanel
             steps={steps}
-            currentStepId={currentStepId}
+            currentStepId={currentStep?.id ?? null}
             agentState={agentState}
             isRunning={isRunning}
+            onStepClick={onStepClick}
           />
         </div>
       </DialogContent>

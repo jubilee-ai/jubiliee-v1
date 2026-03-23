@@ -62,10 +62,10 @@ export function StepNode({ step, isActive: _isActive, onSelect }: StepNodeProps)
     <div
       className={cn(
         "rounded-lg transition-all",
-        isRunning && "bg-background shadow-sm ring-1 ring-border/60",
-        isAwaiting && "bg-amber-50/50 dark:bg-amber-950/20 ring-1 ring-amber-200/60 dark:ring-amber-800/40",
-        isStale && "bg-amber-50/30 dark:bg-amber-950/10",
-        isCompleted && expanded && "bg-muted/40",
+        isRunning && "bg-card shadow-sm ring-1 ring-primary/20",
+        isAwaiting && "bg-amber-50/60 ring-1 ring-amber-200/60",
+        isStale && "bg-amber-50/30",
+        isCompleted && expanded && "bg-muted/50",
       )}
     >
       <div
@@ -80,12 +80,12 @@ export function StepNode({ step, isActive: _isActive, onSelect }: StepNodeProps)
         <div
           className={cn(
             "w-7 h-7 rounded-md flex items-center justify-center flex-shrink-0 transition-all",
-            isCompleted && "bg-foreground/8 text-foreground",
-            isRunning && "bg-foreground/10 text-foreground",
-            isPending && "bg-muted text-muted-foreground/50",
+            isCompleted && "bg-[hsl(var(--step-complete))]/8 text-[hsl(var(--step-complete))]",
+            isRunning && "bg-primary/10 text-primary",
+            isPending && "bg-muted text-muted-foreground/40",
             isError && "bg-destructive/10 text-destructive",
-            isStale && "bg-amber-100 dark:bg-amber-900/30 text-amber-600 dark:text-amber-400",
-            isAwaiting && "bg-amber-100 dark:bg-amber-900/30 text-amber-600 dark:text-amber-400",
+            isStale && "bg-amber-100 text-amber-600",
+            isAwaiting && "bg-amber-100 text-amber-600",
           )}
         >
           <StepIcon className="h-3.5 w-3.5" />
@@ -97,7 +97,7 @@ export function StepNode({ step, isActive: _isActive, onSelect }: StepNodeProps)
             "text-[13px] leading-tight",
             (isCompleted || isRunning || isAwaiting) && "font-medium",
             isPending && "text-muted-foreground",
-            isStale && "text-amber-700 dark:text-amber-400",
+            isStale && "text-amber-700",
           )}>
             {step.name}
           </div>
@@ -105,10 +105,10 @@ export function StepNode({ step, isActive: _isActive, onSelect }: StepNodeProps)
             <div className="text-[11px] text-muted-foreground mt-0.5">Processing...</div>
           )}
           {isAwaiting && (
-            <div className="text-[11px] text-amber-600 dark:text-amber-400 mt-0.5">Awaiting review</div>
+            <div className="text-[11px] text-amber-600 mt-0.5">Awaiting review</div>
           )}
           {isStale && (
-            <div className="text-[11px] text-amber-600 dark:text-amber-400 mt-0.5">Needs re-run</div>
+            <div className="text-[11px] text-amber-600 mt-0.5">Needs re-run</div>
           )}
           {isCompleted && step.subtitle && !expanded && (
             <div className="text-[11px] text-muted-foreground mt-0.5 truncate">{step.subtitle}</div>

@@ -104,10 +104,10 @@ export function TrainingProgressCard({
       {/* Header */}
       <div className="flex items-center justify-between">
         <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-          Training Pipeline
+          Experiment checklist
         </span>
         <span className="text-xs font-mono text-muted-foreground">
-          Step {completedCount}/{steps.length}
+          {completedCount}/{steps.length} done
         </span>
       </div>
 
