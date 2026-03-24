@@ -9,7 +9,7 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from langchain.chat_models import init_chat_model
 from langgraph.types import interrupt
@@ -32,6 +32,12 @@ from .label_and_split import (apply_split, compute_split_indices,
                               run_label_split_definition)
 from .select_model import select_model as _select_model_impl
 from .training import run_training_agent as _run_training
+
+
+def _latest_audit_entry(audit_trace: list[dict[str, Any]] | None, step: str) -> dict[str, Any]:
+    """Most recent audit row for a step (planner/replans can append multiple rows)."""
+    matches = [t for t in (audit_trace or []) if t.get("step") == step]
+    return matches[-1] if matches else {}
 
 # =============================================================================
 # HELPER FUNCTIONS
@@ -152,9 +158,12 @@ def data_collection(state: TrainingAgentState) -> TrainingAgentState:
         return _data_collection_impl(s)
 
     def get_summary(r: TrainingAgentState) -> str:
-        audit = next((t for t in r.get("audit_trace", []) if t.get("step") == "data_collection"), {})
-        cols = len(audit.get("columns", [])) if audit.get("columns") else "?"
-        return f"Collected dataset: {r.get('collected_dataset_ref', 'unknown')}\nRows: {audit.get('rows', '?')}, Columns: {cols}"
+        audit = _latest_audit_entry(r.get("audit_trace"), "data_collection")
+        col_list = audit.get("columns") or []
+        cols = len(col_list) if isinstance(col_list, list) and col_list else "?"
+        rows = audit.get("rows")
+        rows_s = rows if rows is not None else "?"
+        return f"Collected dataset: {r.get('collected_dataset_ref', 'unknown')}\nRows: {rows_s}, Columns: {cols}"
 
     return run_with_hitl("data_collection", state, do_work, get_summary)
 
@@ -538,17 +547,22 @@ def training_approval(state: TrainingAgentState) -> TrainingAgentState:
     feedback = None
 
     while True:
-        train_ref, val_ref = state.get("transformed_train_ref"), state.get("transformed_val_ref")
+        train_ref = state.get("transformed_train_ref") or state.get("train_dataset_ref") or state.get("cleaned_dataset_ref") or state.get("collected_dataset_ref")
+        val_ref = state.get("transformed_val_ref") or state.get("val_dataset_ref")
         label_def, feature_spec = _get_label_def(state), state.get("feature_spec") or {}
         target_column = label_def.get("target_column", "")
         selected_model = state.get("selected_model", "supervised")
         goal = state.get("goal", "")
         unsupervised = selected_model == "unsupervised"
 
-        train_df = get_registered_dataset(train_ref)
+        train_df = get_registered_dataset(train_ref) if train_ref else None
         val_df = get_registered_dataset(val_ref) if val_ref else None
         if train_df is None:
-            raise ValueError(f"Training dataset not found: {train_ref}")
+            return {
+                **state,
+                "error": f"Training dataset not available (ref={train_ref}). Earlier pipeline steps may have failed.",
+                "current_step": "training_approval",
+            }
 
         n_rows, n_features = len(train_df), len([c for c in train_df.columns if c != target_column]) if target_column else len(train_df.columns)
         class_counts = train_df[target_column].value_counts().to_dict() if not unsupervised and target_column else {}
@@ -681,7 +695,9 @@ def training(state: TrainingAgentState) -> TrainingAgentState:
     """Step 7: Training with HITL approval."""
 
     def do_work(s: TrainingAgentState, feedback: Optional[str]) -> TrainingAgentState:
-        train_ref, val_ref, test_ref = s.get("transformed_train_ref"), s.get("transformed_val_ref"), s.get("transformed_test_ref")
+        train_ref = s.get("transformed_train_ref") or s.get("train_dataset_ref") or s.get("cleaned_dataset_ref") or s.get("collected_dataset_ref")
+        val_ref = s.get("transformed_val_ref") or s.get("val_dataset_ref")
+        test_ref = s.get("transformed_test_ref") or s.get("test_dataset_ref")
         label_def = _get_label_def(s)
         target_column = label_def.get("target_column", "")
         selected_model = s.get("selected_model", "supervised")
@@ -689,7 +705,7 @@ def training(state: TrainingAgentState) -> TrainingAgentState:
         unsupervised = selected_model == "unsupervised"
 
         if not train_ref:
-            raise ValueError("No transformed_train_ref in state - step 5 must complete first")
+            raise ValueError("No training dataset in state — data collection or feature engineering must complete first")
         task_type = s.get("task_type") or _infer_task_type(goal, selected_model)
         if not target_column and task_type != "unsupervised":
             raise ValueError("No target_column in label_definition")
@@ -761,7 +777,9 @@ def generate_report(state: TrainingAgentState) -> TrainingAgentState:
     """Step 8: Generate Report with HITL approval."""
 
     def do_work(s: TrainingAgentState, feedback: Optional[str]) -> TrainingAgentState:
-        training_metrics, label_def = s.get("training_metrics", {}), _get_label_def(s)
+        raw_metrics = s.get("training_metrics")
+        training_metrics = raw_metrics if isinstance(raw_metrics, dict) else {}
+        label_def = _get_label_def(s)
 
         report = {
             "generated_at": datetime.now().isoformat(),

@@ -261,6 +261,29 @@ def data_collection(state: "TrainingAgentState") -> "TrainingAgentState":
     3. If ``use_external_sources`` is enabled, also search Kaggle/HuggingFace
        via the Dataset Curator and keep whichever result is better.
     """
+    resolved = state.get("resolved_dataset_ref")
+    if resolved:
+        emit_graph_stream({"phase": "data_collection", "message": f"Using pre-selected dataset: {resolved}"})
+        audit_trace = list(state.get("audit_trace", []))
+        df = get_registered_dataset(resolved)
+        if df is not None:
+            audit_trace.append({
+                "step": "data_collection",
+                "action": "pre_resolved",
+                "dataset_ref": resolved,
+                "rows": len(df),
+                "columns": list(df.columns),
+                "source": "pre-resolved",
+            })
+        return {
+            **state,
+            "collected_dataset_ref": resolved,
+            "data_source": "pre-resolved",
+            "audit_trace": audit_trace,
+            "current_step": "data_collection",
+            "error": None,
+        }
+
     goal = state.get("goal", "")
     linked_datasets = state.get("linked_datasets")
     selected_model = state.get("selected_model")

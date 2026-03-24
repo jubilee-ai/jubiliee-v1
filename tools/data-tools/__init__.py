@@ -14,7 +14,7 @@ from .sql_query import (QueryResult, SQLWarehouse, describe_table, get_schema,
                         get_sql_schema_tool, list_tables, sql_query,
                         sql_query_tool, sql_tools)
 from .utils import (  # Text utilities; Fuzzy matching; Type conversions; ID and timestamp; Catalog access; Schema utilities; Paths; Dataset registry (shared across all tools); Unified dataset discovery
-    CATALOG_PATH, DATASETS_DIR, DERIVED_DATASETS_DIR, SQL_DIR,
+    CATALOG_PATH, DATASETS_DIR, SQL_DIR,
     build_schema_from_dataframe, clear_registry, cosine_similarity,
     fuzzy_suggest, generate_unique_id, get_all_available_datasets,
     get_catalog, get_dataset_info, get_openai_client, get_registered_dataset,
@@ -86,7 +86,6 @@ __all__ = [
     "DATASETS_DIR",
     "CATALOG_PATH",
     "SQL_DIR",
-    "DERIVED_DATASETS_DIR",
     # Utils - Dataset registry (shared infrastructure)
     "register_dataset",
     "get_registered_dataset",

@@ -6,13 +6,16 @@ const API_BASE = "" // Relative; proxied by nginx in Docker or same-origin in de
 
 export interface Dataset {
   id?: string
-  name?: string
-  description?: string
-  file: string
+  name: string
+  file?: string
+  storage_key?: string
+  source_type?: string
+  trainable?: boolean
   format?: string
   rows?: number
   columns?: string[]
-  trainable?: boolean
+  description?: string
+  use_case?: string
 }
 
 export interface ModelType {
@@ -24,67 +27,64 @@ export interface ModelType {
 /** Unified SSE payloads from POST /api/chat (orchestrator and/or training graph). */
 export interface AgentStreamEvent {
   type: string
-  thread_id?: string
+  experiment_id?: string
+  ts?: string
+
+  // Token streaming
   content?: string
+
+  // Tool events
   tool?: string
+  args?: Record<string, unknown>
+  result?: string
+  headline?: string
+
+  // Pipeline step events
   node?: string
   progress?: number
   summary?: unknown
   details?: unknown
   state?: Record<string, unknown>
+
+  // HITL
   state_snapshot?: Record<string, unknown>
-  dataset?: string
+  review_prompt?: string
+
+  // Prediction
+  model?: string
+  rows_predicted?: number
+  result_ref?: string
+
+  // Dataset
   ref?: string
-  error?: string
-  /** Graph pipeline: stable key for dedupe when the same step name runs again */
+  dataset?: string
+
+  // Dedup
   stream_step_key?: string
-  /** Graph custom stream: planner / evaluator / step progress */
+
+  // Legacy (keep during migration)
+  thread_id?: string
   phase?: string
   message?: string
-}
 
-/** @deprecated Use AgentStreamEvent */
-export type StreamEvent = AgentStreamEvent
-/** @deprecated Use AgentStreamEvent */
-export type ChatStreamEvent = AgentStreamEvent
+  // Pipeline completion flag
+  pipeline_completed?: boolean
+
+  // Error
+  error?: string
+}
 
 export interface AgentStreamRequest {
   message: string
-  thread_id?: string
   experiment_id?: string
-  training_context?: string
   linked_datasets?: string[] | null
-  user_model_preference?: string | null
-  mode?: "train" | "chat"
-  resume_training?: {
-    thread_id: string
+  model_preference?: string | null
+  resume?: {
     approved: boolean
     feedback?: string
   }
 }
 
-export interface TrainRequest {
-  goal: string
-  linked_datasets?: string[] | null
-  user_model_preference?: string | null
-}
-
-export interface TrainResponse {
-  job_id: string
-  status: string
-  message: string
-}
-
-export interface JobStatus {
-  job_id: string
-  status: string
-  progress: number
-  current_step?: string | null
-  state?: Record<string, unknown> | null
-  error?: string | null
-  started_at?: string | null
-  completed_at?: string | null
-}
 
 export async function checkHealth(): Promise<boolean> {
   try {
@@ -115,26 +115,6 @@ export async function getTrainedModels(): Promise<Record<string, unknown>> {
   return res.json()
 }
 
-export async function startTraining(req: TrainRequest): Promise<TrainResponse> {
-  const res = await fetch(`${API_BASE}/api/train`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      goal: req.goal,
-      linked_datasets: req.linked_datasets ?? null,
-      user_model_preference: req.user_model_preference ?? null,
-    }),
-  })
-  if (!res.ok) throw new Error(`Failed to start training: ${res.status}`)
-  return res.json()
-}
-
-export async function getTrainingStatus(jobId: string): Promise<JobStatus> {
-  const res = await fetch(`${API_BASE}/api/train/${jobId}`)
-  if (!res.ok) throw new Error(`Failed to get training status: ${res.status}`)
-  return res.json()
-}
-
 function parseSSELine(line: string): unknown {
   if (line.startsWith("data: ")) {
     const json = line.slice(6).trim()
@@ -146,45 +126,6 @@ function parseSSELine(line: string): unknown {
     }
   }
   return null
-}
-
-/** @deprecated Use streamChat with AgentStreamRequest (unified /api/chat). */
-export function streamTraining(
-  req: { goal: string; linked_datasets?: string[] | null; user_model_preference?: string | null; hitl?: boolean },
-  onEvent: (event: AgentStreamEvent) => void,
-  onError: (error: Error) => void
-): AbortController {
-  const hasDs = req.linked_datasets && req.linked_datasets.length > 0
-  return streamChat(
-    {
-      message: req.goal,
-      linked_datasets: req.linked_datasets ?? null,
-      user_model_preference: req.user_model_preference ?? null,
-      mode: hasDs ? undefined : "train",
-    },
-    onEvent,
-    onError
-  )
-}
-
-/** @deprecated Use streamChat with resume_training (unified /api/chat). */
-export function streamResumeTraining(
-  req: { thread_id: string; approved?: boolean; feedback?: string },
-  onEvent: (event: AgentStreamEvent) => void,
-  onError: (error: Error) => void
-): AbortController {
-  return streamChat(
-    {
-      message: "",
-      resume_training: {
-        thread_id: req.thread_id,
-        approved: req.approved ?? true,
-        feedback: req.feedback,
-      },
-    },
-    onEvent,
-    onError
-  )
 }
 
 // =========================================================================

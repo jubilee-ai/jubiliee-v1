@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react"
+import React, { useEffect, useMemo, useState } from "react"
 import { Textarea } from "@/components/ui/textarea"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -14,7 +14,8 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip"
-import { Send, Database, Cpu, X, ShieldCheck } from "lucide-react"
+import { Send, Database, Cpu, X, ShieldCheck, ChevronRight, Download } from "lucide-react"
+import { cn } from "@/lib/utils"
 import type { Dataset } from "@/types/agent"
 import type { Dataset as ApiDataset, ModelType } from "@/lib/api"
 
@@ -34,6 +35,7 @@ interface ChatInputProps {
   availableModels: ModelType[]
   useHitl: boolean
   onToggleHitl: () => void
+  experimentId?: string | null
 }
 
 export function ChatInput({
@@ -52,9 +54,33 @@ export function ChatInput({
   availableModels,
   useHitl,
   onToggleHitl,
+  experimentId,
 }: ChatInputProps) {
   const [showDatasetPicker, setShowDatasetPicker] = useState(false)
   const [showModelPicker, setShowModelPicker] = useState(false)
+  const [artifacts, setArtifacts] = useState<{ datasets: Array<{ id?: string; ref?: string; name?: string; role?: string; rows?: number }>; models: Array<{ name: string; metrics?: { accuracy?: number } }> }>({ datasets: [], models: [] })
+  const [showArtifacts, setShowArtifacts] = useState(false)
+
+  useEffect(() => {
+    if (experimentId) {
+      fetch(`/api/experiments/${experimentId}/artifacts`)
+        .then(r => r.json())
+        .then(setArtifacts)
+        .catch(() => {})
+    } else {
+      setArtifacts({ datasets: [], models: [] })
+    }
+  }, [experimentId])
+
+  const datasetChipLabel = useMemo(() => {
+    const lookup = new Map<string, string>()
+    for (const d of availableDatasets) {
+      if (d.file) lookup.set(d.file, d.name)
+      if (d.id) lookup.set(d.id, d.name)
+      if (d.name) lookup.set(d.name, d.name)
+    }
+    return (key: string) => lookup.get(key) ?? key.split("/").pop() ?? key
+  }, [availableDatasets])
 
   const modelChipLabel = useMemo(() => {
     if (!selectedModel) return null
@@ -92,7 +118,7 @@ export function ChatInput({
                 className="gap-1.5 h-7 text-xs font-normal rounded-full pl-3 pr-2"
               >
                 <Database className="h-3 w-3 text-muted-foreground" />
-                {ds.split("/").pop()}
+                {datasetChipLabel(ds)}
                 <button
                   type="button"
                   onClick={() => onDatasetRemove(ds)}
@@ -148,9 +174,9 @@ export function ChatInput({
                   <DialogTitle className="text-lg font-medium">Select Dataset</DialogTitle>
                 </DialogHeader>
                 <div className="space-y-1 max-h-[350px] overflow-y-auto -mx-2">
-                  {availableDatasets.map((ds) => (
+                  {availableDatasets.filter((ds) => ds.trainable !== false).map((ds) => (
                     <button
-                      key={ds.file}
+                      key={ds.id || ds.file || ds.name}
                       className="w-full text-left px-4 py-3 rounded-xl hover:bg-muted/60 transition-colors"
                       onClick={() => handleDatasetSelect(ds)}
                     >
@@ -160,6 +186,58 @@ export function ChatInput({
                       </div>
                     </button>
                   ))}
+
+                  {experimentId && (artifacts.datasets.length > 0 || artifacts.models.length > 0) && (
+                    <div className="border-t border-border/30 pt-2 mt-2 mx-2">
+                      <button
+                        onClick={() => setShowArtifacts(!showArtifacts)}
+                        className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
+                      >
+                        <ChevronRight className={cn("h-3 w-3 transition-transform", showArtifacts && "rotate-90")} />
+                        Experiment artifacts ({artifacts.datasets.length} datasets, {artifacts.models.length} models)
+                      </button>
+                      {showArtifacts && (
+                        <div className="mt-1 space-y-1">
+                          {artifacts.datasets.map(d => (
+                            <button
+                              key={d.ref || d.id}
+                              className="w-full text-left px-4 py-2.5 rounded-xl hover:bg-muted/60 transition-colors"
+                              onClick={() => handleDatasetSelect({ file: d.ref || d.id || "", name: d.name, rows: d.rows } as ApiDataset)}
+                            >
+                              <div className="flex items-center gap-2">
+                                <span className="font-medium text-sm">{d.name || d.ref}</span>
+                                {d.role && (
+                                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground">
+                                    {d.role}
+                                  </span>
+                                )}
+                              </div>
+                              {d.rows != null && (
+                                <div className="text-xs text-muted-foreground mt-0.5">
+                                  {d.rows.toLocaleString()} rows
+                                </div>
+                              )}
+                            </button>
+                          ))}
+
+                          {artifacts.models.map(m => (
+                            <div key={m.name} className="flex items-center justify-between px-4 py-2 text-sm">
+                              <span className="text-foreground">
+                                {m.name} — {m.metrics?.accuracy ? `acc: ${(m.metrics.accuracy * 100).toFixed(1)}%` : "No metrics"}
+                              </span>
+                              <a
+                                href={`/api/trained-models/${m.name}/download`}
+                                className="inline-flex items-center gap-1 text-xs text-primary hover:underline"
+                              >
+                                <Download className="h-3 w-3" />
+                                Download
+                              </a>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
               </DialogContent>
             </Dialog>

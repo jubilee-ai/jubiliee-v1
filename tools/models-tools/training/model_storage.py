@@ -3,13 +3,11 @@ Model Storage and Registry for Trained Models
 
 Provides utilities for saving, loading, listing, and managing trained models.
 Models are registered in Postgres (models + model_versions tables) and weights
-are stored in Cloudflare R2 via the ArtifactStore. Falls back to local
-filesystem + JSON registry when Postgres is unavailable.
+are stored in Cloudflare R2 via the ArtifactStore.
 """
 
-import json
 import os
-from datetime import datetime, timezone
+import tempfile
 from pathlib import Path
 from typing import Any, Literal, Optional
 
@@ -18,12 +16,11 @@ import pandas as pd
 from langchain.tools import tool
 from pydantic import BaseModel, ConfigDict, Field
 
-# Local staging / cache directory (also used as fallback when DB is down)
+# Local staging directory for model artifacts before R2 upload
 TRAINED_MODELS_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
     "trained_models"
 )
-REGISTRY_FILE = os.path.join(TRAINED_MODELS_DIR, "registry.json")
 
 
 def _ensure_storage_dir():
@@ -34,12 +31,8 @@ def _sanitize(name: str) -> str:
     return "".join(c if c.isalnum() or c in "-_" else "_" for c in name)
 
 
-def _db_available() -> bool:
-    try:
-        from backend.shared.database import get_db_session
-        return True
-    except Exception:
-        return False
+# ── In-memory model cache ────────────────────────────────────────────────────
+_model_cache: dict[str, Any] = {}
 
 
 # ── Postgres-backed helpers ──────────────────────────────────────────────────
@@ -47,13 +40,11 @@ def _db_available() -> bool:
 def _version_to_dict(
     model: "Model", version: "ModelVersion",  # noqa: F821 – forward refs
 ) -> dict:
-    """Convert DB rows to the legacy dict shape that LangChain tools expect."""
+    """Convert DB rows to the dict shape that LangChain tools expect."""
     props = model.properties or {}
     v_props = version.properties or {}
-    local_path = os.path.join(TRAINED_MODELS_DIR, f"{_sanitize(model.name)}.joblib")
     return {
         "model_name": model.name,
-        "model_path": local_path,
         "model_type": props.get("model_type", ""),
         "description": props.get("description", ""),
         "metrics": version.metrics or {},
@@ -67,22 +58,6 @@ def _version_to_dict(
         "version": version.version,
         "storage_key": version.storage_key,
     }
-
-
-# ── JSON file fallback (local dev without Postgres) ─────────────────────────
-
-def _load_registry() -> dict:
-    _ensure_storage_dir()
-    if os.path.exists(REGISTRY_FILE):
-        with open(REGISTRY_FILE, "r") as f:
-            return json.load(f)
-    return {"models": {}}
-
-
-def _save_registry(registry: dict):
-    _ensure_storage_dir()
-    with open(REGISTRY_FILE, "w") as f:
-        json.dump(registry, f, indent=2)
 
 
 # ── Public API (used by training skills + LangChain tools) ──────────────────
@@ -107,12 +82,6 @@ def register_model(
     training_run_id: Optional[str] = None,
 ) -> dict:
     """Register a trained model, upload weights to R2, and persist to Postgres."""
-    if not _db_available():
-        return _register_model_fallback(
-            model_name, model_path, model_type, description, metrics,
-            feature_names, target_column, hyperparameters, training_samples, classes,
-        )
-
     from backend.shared.artifact_store import get_artifact_store
     from backend.shared.database import get_db_session
     from backend.shared.models import Model, ModelVersion
@@ -184,39 +153,8 @@ def register_model(
         return _version_to_dict(model, mv)
 
 
-def _register_model_fallback(
-    model_name, model_path, model_type, description, metrics,
-    feature_names, target_column, hyperparameters, training_samples, classes,
-) -> dict:
-    """JSON-file fallback for local dev without Postgres."""
-    registry = _load_registry()
-    entry = {
-        "model_name": model_name,
-        "model_path": model_path,
-        "model_type": model_type,
-        "description": description,
-        "metrics": metrics,
-        "feature_names": feature_names,
-        "target_column": target_column,
-        "hyperparameters": hyperparameters,
-        "training_samples": training_samples,
-        "classes": classes,
-        "created_at": datetime.now(timezone.utc).isoformat(),
-        "updated_at": datetime.now(timezone.utc).isoformat(),
-    }
-    if model_name in registry["models"]:
-        entry["created_at"] = registry["models"][model_name]["created_at"]
-    registry["models"][model_name] = entry
-    _save_registry(registry)
-    return entry
-
-
 def get_model_info(model_name: str) -> Optional[dict]:
     """Get registry info for a model by name (current version)."""
-    if not _db_available():
-        registry = _load_registry()
-        return registry["models"].get(model_name)
-
     from backend.shared.database import get_db_session
     from backend.shared.models import Model, ModelVersion
 
@@ -243,10 +181,6 @@ def get_model_info(model_name: str) -> Optional[dict]:
 
 def list_models() -> list[dict]:
     """List all registered models (current versions only)."""
-    if not _db_available():
-        registry = _load_registry()
-        return list(registry["models"].values())
-
     from backend.shared.database import get_db_session
     from backend.shared.models import Model, ModelVersion
 
@@ -269,44 +203,46 @@ def list_models() -> list[dict]:
 
 
 def load_model(model_name: str) -> Any:
-    """Load a trained model by name. Downloads from R2 if not cached locally."""
+    """Load a trained model by name. Downloads from R2 on first access, then cached in memory."""
+    if model_name in _model_cache:
+        return _model_cache[model_name]
+
     info = get_model_info(model_name)
     if info is None:
         raise ValueError(f"Model '{model_name}' not found in registry")
 
-    local_path = info["model_path"]
+    storage_key = info.get("storage_key")
+    if not storage_key:
+        raise ValueError(f"Model '{model_name}' has no storage_key in registry")
 
-    # If file doesn't exist locally, try downloading from R2
-    if not os.path.exists(local_path) and info.get("storage_key"):
-        from backend.shared.artifact_store import get_artifact_store
-        store = get_artifact_store()
-        store.download(info["storage_key"], Path(local_path))
+    from backend.shared.artifact_store import get_artifact_store
+    store = get_artifact_store()
 
-    if not os.path.exists(local_path):
-        raise FileNotFoundError(
-            f"Model file not found locally or in R2: {local_path}"
-        )
+    suffix = ".pkl" if info.get("model_type") == "pytorch_nn" else ".joblib"
+    tmp = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
+    tmp_path = tmp.name
+    tmp.close()
 
-    if info.get("model_type") == "pytorch_nn":
-        import pickle
-        with open(local_path, "rb") as f:
-            return pickle.load(f)
+    try:
+        store.download(storage_key, Path(tmp_path))
 
-    return joblib.load(local_path)
+        if info.get("model_type") == "pytorch_nn":
+            import pickle
+            with open(tmp_path, "rb") as f:
+                loaded = pickle.load(f)
+        else:
+            loaded = joblib.load(tmp_path)
+
+        _model_cache[model_name] = loaded
+        return loaded
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
 
 
 def delete_model(model_name: str) -> bool:
     """Delete a model from registry, R2, and local cache."""
-    if not _db_available():
-        registry = _load_registry()
-        if model_name not in registry["models"]:
-            return False
-        model_path = registry["models"][model_name]["model_path"]
-        if os.path.exists(model_path):
-            os.remove(model_path)
-        del registry["models"][model_name]
-        _save_registry(registry)
-        return True
+    _model_cache.pop(model_name, None)
 
     from backend.shared.artifact_store import get_artifact_store
     from backend.shared.database import get_db_session
@@ -624,7 +560,7 @@ def get_model_info_tool(
         "📋 BASIC INFO",
         f"  Type: {info['model_type']}",
         f"  Description: {info.get('description', 'N/A')}",
-        f"  Path: {info['model_path']}",
+        f"  Storage: {info.get('storage_key', 'N/A')}",
         f"  Created: {info.get('created_at', 'N/A')}",
         f"  Updated: {info.get('updated_at', 'N/A')}",
         "",

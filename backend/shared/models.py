@@ -135,7 +135,7 @@ class AgentCheckpoint(Base):
 
 
 class Dataset(Base):
-    """Metadata-only dataset registry. Files stay local; nothing uploaded to R2."""
+    """Dataset registry. Metadata stored here; data files persisted to R2."""
     __tablename__ = "datasets"
 
     id: Mapped[uuid.UUID] = _uuid_pk()

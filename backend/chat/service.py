@@ -1,14 +1,15 @@
 import json
-import threading
 import uuid
 from typing import Optional
 
-from agents.training.utils.streaming import build_node_update
 from backend.chat import repository
+from backend.chat.events import format_sse, stream_start, stream_end, token as token_event, tool_start, tool_end, error_event, predict_start, predict_complete
 from backend.chat.intent_router import should_route_to_training_graph
 from backend.chat.schemas import ChatRequest
 from backend.shared.serialization import serialize_state
 from backend.training import repository as training_repo
+
+_PREDICT_TOOLS = frozenset({"predict_with_model"})
 
 
 def _build_training_context_message(ctx: dict) -> str:
@@ -72,31 +73,6 @@ def _stable_tool_call_id(tc) -> str:
     return f"{name}:{hash(args_key)}"
 
 
-def _emit_training_step_events(thread_id: str, experiment_id: Optional[str] = None):
-    """Retroactive step events (fallback when progress queue was not used)."""
-    from agents.training.core.state import STEP_ORDER
-
-    mod = repository.get_orchestrator_module()
-    state = None
-    if experiment_id:
-        states = getattr(mod, "_training_states", {})
-        state = states.get(experiment_id)
-    if not state:
-        state = getattr(mod, "_last_training_state", None)
-    if not state:
-        return
-
-    yield _sse({"type": "training_started", "thread_id": thread_id})
-    for step_name in STEP_ORDER:
-        try:
-            update = build_node_update(step_name, state)
-            update["thread_id"] = thread_id
-            yield _sse(serialize_state(update))
-        except Exception:
-            pass
-    yield _sse({"type": "training_completed", "thread_id": thread_id})
-
-
 def generate_chat_sse(
     thread_id: str,
     message: str,
@@ -105,12 +81,6 @@ def generate_chat_sse(
 ):
     orchestrator_agent = repository.get_orchestrator_agent()
     config = {"configurable": {"thread_id": thread_id}}
-
-    # Set experiment context on agent module so train_model tool can find it
-    if experiment_id:
-        mod = repository.get_orchestrator_module()
-        thread_exp_map = getattr(mod, "_thread_to_experiment", {})
-        thread_exp_map[threading.current_thread().name] = experiment_id
 
     context_block = training_context or ""
     if not context_block:
@@ -126,10 +96,10 @@ def generate_chat_sse(
         augmented_message = message
 
     agent_input = {"messages": [{"role": "user", "content": augmented_message}]}
-    yield _sse({"type": "start", "thread_id": thread_id})
+    yield format_sse(stream_start(experiment_id), experiment_id)
 
-    pending_train_model = False
     seen_tool_call_ids: set[str] = set()
+    pending_predict_args: dict[str, dict] = {}
     accumulated_response = []
 
     try:
@@ -150,11 +120,7 @@ def generate_chat_sse(
                 content = getattr(msg_chunk, "content", "")
                 if content:
                     accumulated_response.append(content)
-                    yield _sse({
-                        "type": "token",
-                        "content": content,
-                        "thread_id": thread_id,
-                    })
+                    yield format_sse(token_event(content, experiment_id), experiment_id)
 
                 tc_chunks = getattr(msg_chunk, "tool_call_chunks", [])
                 for tc in tc_chunks:
@@ -166,14 +132,22 @@ def generate_chat_sse(
                         continue
                     seen_tool_call_ids.add(tc_id)
                     args = tc.get("args", {}) if isinstance(tc, dict) else getattr(tc, "args", {})
-                    yield _sse({
-                        "type": "tool_call",
-                        "tool": name,
-                        "args": serialize_state(args if isinstance(args, dict) else {}),
-                        "thread_id": thread_id,
-                    })
-                    if name == "train_model" and experiment_id:
-                        pending_train_model = True
+                    safe_args = serialize_state(args if isinstance(args, dict) else {})
+                    if name in _PREDICT_TOOLS:
+                        pending_predict_args[name] = safe_args
+                        yield format_sse(predict_start(
+                            model=safe_args.get("model_name", "unknown"),
+                            dataset=safe_args.get("dataset_ref", "unknown"),
+                            headline="Running predictions...",
+                            experiment_id=experiment_id,
+                        ), experiment_id)
+                    else:
+                        yield format_sse(tool_start(
+                            name,
+                            safe_args,
+                            headline=f"Running {name}...",
+                            experiment_id=experiment_id,
+                        ), experiment_id)
 
             # --- Node-level updates from "updates" mode ---
             elif stream_type == "updates" and isinstance(payload, dict):
@@ -185,19 +159,28 @@ def generate_chat_sse(
                                 tc_name = tc["name"] if isinstance(tc, dict) else getattr(tc, "name", None)
                                 if not tc_name:
                                     continue
+                                args = tc.get("args", {}) if isinstance(tc, dict) else getattr(tc, "args", {})
+                                safe_args = serialize_state(args if isinstance(args, dict) else {})
+                                if tc_name in _PREDICT_TOOLS:
+                                    pending_predict_args[tc_name] = safe_args
                                 tc_id = _stable_tool_call_id(tc)
                                 if tc_id in seen_tool_call_ids:
                                     continue
                                 seen_tool_call_ids.add(tc_id)
-                                args = tc.get("args", {}) if isinstance(tc, dict) else getattr(tc, "args", {})
-                                yield _sse({
-                                    "type": "tool_call",
-                                    "tool": tc_name,
-                                    "args": serialize_state(args if isinstance(args, dict) else {}),
-                                    "thread_id": thread_id,
-                                })
-                                if tc_name == "train_model" and experiment_id:
-                                    pending_train_model = True
+                                if tc_name in _PREDICT_TOOLS:
+                                    yield format_sse(predict_start(
+                                        model=safe_args.get("model_name", "unknown"),
+                                        dataset=safe_args.get("dataset_ref", "unknown"),
+                                        headline="Running predictions...",
+                                        experiment_id=experiment_id,
+                                    ), experiment_id)
+                                else:
+                                    yield format_sse(tool_start(
+                                        tc_name,
+                                        safe_args,
+                                        headline=f"Running {tc_name}...",
+                                        experiment_id=experiment_id,
+                                    ), experiment_id)
 
                 if "tools" in payload:
                     tool_msgs = payload["tools"].get("messages", [])
@@ -206,15 +189,22 @@ def generate_chat_sse(
                         snippet = getattr(tm, "content", "")
                         if len(snippet) > 2000:
                             snippet = snippet[:2000] + "…"
-                        yield _sse({
-                            "type": "tool_result",
-                            "tool": name,
-                            "result": snippet,
-                            "thread_id": thread_id,
-                        })
-                        if name == "train_model":
-                            yield from _emit_training_step_events(thread_id, experiment_id)
-                            pending_train_model = False
+                        if name in _PREDICT_TOOLS:
+                            stored = pending_predict_args.pop(name, {})
+                            try:
+                                result_data = json.loads(snippet) if snippet.strip().startswith("{") else {}
+                            except (json.JSONDecodeError, TypeError):
+                                result_data = {}
+                            rows = result_data.get("rows_predicted") or snippet.count("\nRow ")
+                            yield format_sse(predict_complete(
+                                model=stored.get("model_name", "unknown"),
+                                rows_predicted=rows,
+                                headline=f"Predicted {rows} rows",
+                                result_ref=result_data.get("result_ref"),
+                                experiment_id=experiment_id,
+                            ), experiment_id)
+                        else:
+                            yield format_sse(tool_end(name, snippet, experiment_id), experiment_id)
 
         # Persist the exchange to the experiment's chat_history
         if experiment_id and accumulated_response:
@@ -233,23 +223,26 @@ def generate_chat_sse(
             except Exception:
                 pass
 
-        yield _sse({"type": "end", "thread_id": thread_id})
+        yield format_sse(stream_end(experiment_id), experiment_id)
     except Exception as exc:
-        yield _sse({"type": "error", "error": str(exc), "thread_id": thread_id})
+        yield format_sse(error_event(str(exc), experiment_id), experiment_id)
 
 
 def chat(request: ChatRequest) -> tuple[str, object]:
     """Route unified /api/chat body to graph training or orchestrator SSE."""
     from backend.training import service as training_service
 
-    if request.resume_training:
-        rt = request.resume_training
+    if request.resume:
+        if not request.experiment_id:
+            raise ValueError("experiment_id required for resume")
+        exp = training_repo.get_experiment(request.experiment_id)
+        if not exp or not exp.get("training_state", {}).get("graph_thread_id"):
+            raise ValueError("No active training graph found for this experiment")
+        graph_thread = exp["training_state"]["graph_thread_id"]
         gen = training_service.generate_graph_resume_sse_events(
-            rt.thread_id,
-            rt.approved,
-            rt.feedback,
+            graph_thread, request.resume.approved, request.resume.feedback,
         )
-        return rt.thread_id, gen
+        return graph_thread, gen
 
     train_branch = should_route_to_training_graph(request)
     if train_branch:
@@ -259,23 +252,25 @@ def chat(request: ChatRequest) -> tuple[str, object]:
         gen = training_service.generate_graph_sse_events(
             goal,
             request.linked_datasets,
-            request.user_model_preference,
+            request.model_preference,
             experiment_id=request.experiment_id,
         )
         return "", gen
 
     if request.experiment_id:
         exp = training_repo.get_experiment(request.experiment_id)
-        if exp:
-            resolved_thread_id = exp["chat_thread_id"]
-        else:
-            resolved_thread_id = request.thread_id or f"chat-{uuid.uuid4().hex[:8]}"
+        resolved_thread_id = exp["chat_thread_id"] if exp else f"chat-{uuid.uuid4().hex[:8]}"
     else:
-        resolved_thread_id = request.thread_id or f"chat-{uuid.uuid4().hex[:8]}"
+        resolved_thread_id = f"chat-{uuid.uuid4().hex[:8]}"
+
+    training_context = None
+    ctx = training_repo.get_latest_training_context(experiment_id=request.experiment_id)
+    if ctx:
+        training_context = _build_training_context_message(ctx)
 
     return resolved_thread_id, generate_chat_sse(
         resolved_thread_id,
         request.message,
-        request.training_context,
+        training_context,
         experiment_id=request.experiment_id,
     )

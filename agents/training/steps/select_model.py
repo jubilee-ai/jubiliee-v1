@@ -12,7 +12,10 @@ from pydantic import BaseModel, Field
 
 load_dotenv(Path(__file__).parent.parent.parent.parent / ".env")
 
-from agents.training.utils.graph_stream_hooks import emit_graph_stream
+from agents.training.utils.graph_stream_hooks import (
+    GraphTokenStreamHandler,
+    emit_graph_stream,
+)
 
 if TYPE_CHECKING:
     from ..core.state import TrainingAgentState
@@ -206,6 +209,17 @@ def select_model(state: "TrainingAgentState") -> "TrainingAgentState":
     - User can comment and regenerate (3 total regens)
     - Sets task_type: "classification" | "regression" | "unsupervised"
     """
+    resolved = state.get("resolved_model_type")
+    if resolved:
+        emit_graph_stream({"phase": "select_model", "message": f"Using pre-selected model type: {resolved}"})
+        return {
+            **state,
+            "selected_model": resolved,
+            "model_explanation": f"Pre-selected by user: {resolved}",
+            "task_type": state.get("task_type", "classification"),
+            "current_step": "select_model",
+        }
+
     explicit_pref = state.get("user_model_preference") or _extract_family_from_goal(
         state.get("goal", "")
     )
@@ -243,7 +257,8 @@ def select_model(state: "TrainingAgentState") -> "TrainingAgentState":
             "current_step": "select_model",
         }
 
-    llm = init_chat_model(model="gpt-5.1", temperature=0)
+    token_handler = GraphTokenStreamHandler(phase="select_model")
+    llm = init_chat_model(model="gpt-5.1", temperature=0, streaming=True)
     structured_llm = llm.with_structured_output(ModelFamilySelectionOutput)
 
     redo_hint = state.get("_select_model_redo_hint", "")
@@ -266,7 +281,9 @@ def select_model(state: "TrainingAgentState") -> "TrainingAgentState":
         "phase": "select_model",
         "message": "Choosing model family (supervised / unsupervised / neural)…",
     })
-    result: ModelFamilySelectionOutput = structured_llm.invoke(prompt)
+    result: ModelFamilySelectionOutput = structured_llm.invoke(
+        prompt, config={"callbacks": [token_handler]}
+    )
     task_type = _derive_task_type(result.selected_family, state.get("goal", ""))
 
     return {

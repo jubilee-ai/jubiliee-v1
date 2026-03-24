@@ -16,7 +16,10 @@ from dotenv import load_dotenv
 from langchain.chat_models import init_chat_model
 from pydantic import BaseModel, Field
 
-from agents.training.utils.graph_stream_hooks import emit_graph_stream
+from agents.training.utils.graph_stream_hooks import (
+    GraphTokenStreamHandler,
+    emit_graph_stream,
+)
 
 from .hitl import run_with_hitl
 
@@ -187,19 +190,30 @@ def _build_state_summary(state: "TrainingAgentState") -> str:
     return "\n".join(parts) if parts else "- (first run — no prior context)"
 
 
-def _validate_plan(plan: Plan) -> Plan:
+def _validate_plan(plan: Plan, state: "TrainingAgentState | None" = None) -> Plan:
     """Enforce hard constraints on the plan.
 
     Silently fixes issues rather than rejecting the whole plan — the LLM is
     usually close but occasionally forgets a constraint.
     """
+    state = state or {}
+
+    skip_steps: set[str] = set()
+    if state.get("resolved_dataset_ref"):
+        skip_steps.add("data_collection")
+    if state.get("resolved_model_type"):
+        skip_steps.add("select_model")
+
+    if skip_steps:
+        plan.steps = [s for s in plan.steps if s.step not in skip_steps]
+
     step_names = [s.step for s in plan.steps]
 
     for s in plan.steps:
         if s.step not in ALL_STEP_NAMES:
             raise ValueError(f"Unknown step in plan: {s.step}")
 
-    required = {"data_collection", "training", "generate_report"}
+    required = {"data_collection", "training", "generate_report"} - skip_steps
     for req in required:
         if req not in step_names:
             if req == "data_collection":
@@ -259,14 +273,28 @@ def planner_node(state: "TrainingAgentState") -> "TrainingAgentState":
             replan_context=replan_context,
         )
 
+        resolved_lines: list[str] = []
+        if s.get("resolved_dataset_ref"):
+            resolved_lines.append(f"- Dataset already loaded: {s['resolved_dataset_ref']}")
+        if s.get("resolved_model_type"):
+            resolved_lines.append(f"- Model type already selected: {s['resolved_model_type']}")
+        if resolved_lines:
+            prompt += (
+                "\n\nPre-resolved inputs (already done, do NOT include these steps in the plan):\n"
+                + "\n".join(resolved_lines)
+            )
+
         emit_graph_stream({
             "phase": "planner",
             "message": "Planning: drafting execution steps…",
         })
-        llm = init_chat_model(model="gpt-5.4-mini", temperature=0)
+        token_handler = GraphTokenStreamHandler(phase="planner")
+        llm = init_chat_model(model="gpt-5.4-mini", temperature=0, streaming=True)
         structured_llm = llm.with_structured_output(Plan)
-        plan: Plan = structured_llm.invoke(prompt)
-        plan = _validate_plan(plan)
+        plan: Plan = structured_llm.invoke(
+            prompt, config={"callbacks": [token_handler]}
+        )
+        plan = _validate_plan(plan, s)
         emit_graph_stream({
             "phase": "planner",
             "message": f"Plan ready — {len(plan.steps)} step(s); review when prompted.",

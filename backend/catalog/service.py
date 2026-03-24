@@ -1,8 +1,8 @@
 from backend.catalog import repository
 
 
-def get_datasets() -> list[dict[str, object]]:
-    return repository.get_datasets()
+def get_datasets(include_derived: bool = False) -> list[dict[str, object]]:
+    return repository.get_datasets(include_derived=include_derived)
 
 
 def get_models() -> list[dict[str, str]]:

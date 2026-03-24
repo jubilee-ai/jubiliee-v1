@@ -315,6 +315,14 @@ export interface StepInfo {
   endTime?: number
 }
 
+export interface PredictionResult {
+  model: string
+  dataset?: string
+  rows_predicted: number
+  headline: string
+  result_ref?: string
+}
+
 export interface ChatMessage {
   id: string
   role: "user" | "agent" | "system"
@@ -322,6 +330,8 @@ export interface ChatMessage {
   timestamp: number
   /** True while the message is still receiving streamed tokens */
   _streaming?: boolean
+  /** Populated for prediction-complete events rendered as a card */
+  prediction?: PredictionResult
   links?: Array<{
     type: "dataset" | "model" | "step"
     id: string
@@ -332,11 +342,14 @@ export interface ChatMessage {
 export interface Dataset {
   id?: string
   name: string
-  description: string
-  file: string
+  description?: string
+  file?: string
+  storage_key?: string
+  source_type?: string
   rows?: number
   columns?: string[]
-  format: string
+  format?: string
+  use_case?: string
   trainable?: boolean
 }
 

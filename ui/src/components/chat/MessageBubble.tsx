@@ -1,11 +1,37 @@
 import { useState, useRef, useEffect, forwardRef } from "react"
 import type { Ref, MutableRefObject } from "react"
 import ReactMarkdown from "react-markdown"
+import remarkGfm from "remark-gfm"
 import { cn } from "@/lib/utils"
 import { FileText, ChevronRight, Check, RotateCcw, Info } from "lucide-react"
 import type { ChatMessage } from "@/types/agent"
+import { ThinkingBlock } from "./ThinkingBlock"
 
 const MAX_CONTENT_LENGTH = 400
+
+function sanitizeAgentContent(content: string): string {
+  const trimmed = content.trim()
+
+  if ((trimmed.startsWith("{") || trimmed.startsWith("[")) && trimmed.length > 20) {
+    try {
+      const obj = JSON.parse(trimmed)
+      if (obj.headline) return obj.headline
+      if (obj.summary && typeof obj.summary === "string") return obj.summary
+      if (obj.message && typeof obj.message === "string") return obj.message
+      if (obj.node) return `**${obj.node}** completed`
+      return "Step completed"
+    } catch {
+      // Not valid JSON — check for Python-dict-style dumps
+    }
+  }
+
+  // Filter out graph state keys leaked into messages (e.g. 'plan': ..., 'steps': ...)
+  if (/^\s*\{?\s*'(plan|steps|status|goal|current_step|resolved_)/.test(trimmed)) {
+    return "Processing..."
+  }
+
+  return content
+}
 
 interface MessageBubbleProps {
   message: ChatMessage
@@ -56,6 +82,14 @@ export const MessageBubble = forwardRef<HTMLDivElement, MessageBubbleProps>(
     }, [isExpanded, shouldTruncate])
 
     if (isSystem) {
+      if (message.id === "__graph_thinking__") {
+        const isActive = message._streaming === true
+        return (
+          <div ref={(node) => { rootRef.current = node; assignRef(ref, node) }}>
+            <ThinkingBlock content={message.content} isActive={isActive} />
+          </div>
+        )
+      }
       const isStepAccepted = message.content.includes("Step accepted")
       const isRedo = message.content.includes("Requested redo")
       return (
@@ -114,7 +148,7 @@ export const MessageBubble = forwardRef<HTMLDivElement, MessageBubbleProps>(
             <p className="text-[14px] leading-6 whitespace-pre-wrap">{displayContent}</p>
           ) : (
             <div className="text-[14px] leading-relaxed prose prose-sm dark:prose-invert max-w-none prose-p:my-1 prose-p:leading-relaxed prose-headings:my-2 prose-headings:font-medium prose-ul:my-1 prose-ol:my-1 prose-li:my-0 prose-a:text-primary prose-a:no-underline hover:prose-a:underline prose-code:bg-primary/10 prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded-md prose-code:text-[13px] prose-code:font-normal prose-code:before:content-none prose-code:after:content-none prose-strong:font-semibold">
-              <ReactMarkdown>{displayContent}</ReactMarkdown>
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>{sanitizeAgentContent(displayContent)}</ReactMarkdown>
             </div>
           )}
           

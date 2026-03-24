@@ -98,14 +98,6 @@ class Settings(BaseSettings):
         return self.project_root / "datasets"
 
     @property
-    def datasets_catalog_path(self) -> Path:
-        return self.datasets_dir / "catalog.json"
-
-    @property
-    def models_registry_path(self) -> Path:
-        return self.project_root / "trained_models" / "registry.json"
-
-    @property
     def cors_origins(self) -> list[str]:
         return self.CORS_ORIGINS
 

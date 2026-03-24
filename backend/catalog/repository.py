@@ -1,52 +1,41 @@
-import json
+import logging
 from typing import Any
 
-from backend.shared.settings import get_settings
+log = logging.getLogger(__name__)
 
 
-def get_datasets() -> list[dict[str, object]]:
-    """Return datasets from Postgres if available, else fall back to catalog.json."""
+def get_datasets(include_derived: bool = False) -> list[dict[str, object]]:
+    """Return datasets from Postgres."""
     try:
-        return _get_datasets_from_db()
+        return _get_datasets_from_db(include_derived=include_derived)
     except Exception:
-        pass
-
-    settings = get_settings()
-    if not settings.datasets_catalog_path.exists():
+        log.exception("Failed to fetch datasets from database")
         return []
 
-    with open(settings.datasets_catalog_path) as f:
-        catalog = json.load(f)
 
-    datasets = catalog.get("datasets", [])
-    return [
-        ds
-        for ds in datasets
-        if ds.get("format", "").upper() in ("CSV", "PARQUET")
-        or ds.get("file", "").endswith(".csv")
-        or ds.get("file", "").endswith(".parquet")
-    ]
-
-
-def _get_datasets_from_db() -> list[dict[str, object]]:
+def _get_datasets_from_db(include_derived: bool = False) -> list[dict[str, object]]:
     from backend.shared.database import get_db_session
     from backend.shared.models import Dataset
 
     with get_db_session() as session:
-        rows = session.query(Dataset).order_by(Dataset.created_at.desc()).all()
-        if not rows:
-            raise LookupError("no rows")
+        query = session.query(Dataset).order_by(Dataset.created_at.desc())
+        if not include_derived:
+            query = query.filter(Dataset.source_type != "derived")
+        rows = query.all()
         return [_dataset_to_dict(r) for r in rows]
 
 
 def _dataset_to_dict(row: Any) -> dict[str, object]:
     props = row.properties or {}
     file_path = props.get("file") or None
+    storage_key = props.get("storage_key") or None
+    has_data = bool(file_path or storage_key)
     return {
         "id": str(row.id),
         "name": row.name,
         "file": file_path,
-        "trainable": bool(file_path),
+        "storage_key": storage_key,
+        "trainable": has_data,
         "source_type": row.source_type,
         "format": props.get("format", ""),
         "rows": props.get("row_count"),
@@ -92,19 +81,12 @@ def get_models() -> list[dict[str, str]]:
 
 
 def get_trained_models() -> dict[str, object]:
-    """Return trained models from Postgres if available, else fall back to registry.json."""
+    """Return trained models from Postgres."""
     try:
         return _get_trained_models_from_db()
     except Exception:
-        pass
-
-    settings = get_settings()
-    if not settings.models_registry_path.exists():
+        log.exception("Failed to fetch trained models from database")
         return {}
-
-    with open(settings.models_registry_path) as f:
-        registry = json.load(f)
-    return registry.get("models", {})
 
 
 def _get_trained_models_from_db() -> dict[str, object]:
@@ -113,8 +95,6 @@ def _get_trained_models_from_db() -> dict[str, object]:
 
     with get_db_session() as session:
         models = session.query(Model).all()
-        if not models:
-            raise LookupError("no rows")
         result = {}
         for model in models:
             version = (

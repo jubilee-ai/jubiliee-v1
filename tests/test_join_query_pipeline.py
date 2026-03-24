@@ -118,7 +118,7 @@ def test_join_then_query():
 
     # Cleanup
     print("\n7. Cleaning up...")
-    utils.clear_registry(clear_disk=True, clear_sql=True)
+    utils.clear_registry(clear_sql=True)
     print("   Done!")
 
     print("\n" + "=" * 60)

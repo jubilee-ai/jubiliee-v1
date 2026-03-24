@@ -15,6 +15,7 @@ import {
   detectStepFromMessage,
   STEP_KEYWORDS,
 } from "./chat"
+import { PredictionResultCard } from "./chat/PredictionResultCard"
 import type { ResolvedConfirmation } from "./chat"
 
 const STEP_TO_PHASE: Record<string, string> = {
@@ -47,6 +48,7 @@ interface ChatPanelProps {
   agentState?: TrainingAgentState
   steps?: StepInfo[]
   hasExperimentChecklist?: boolean
+  experimentId?: string | null
 }
 
 export interface ChatPanelRef {
@@ -72,6 +74,7 @@ export const ChatPanel = forwardRef<ChatPanelRef, ChatPanelProps>(function ChatP
   agentState,
   steps,
   hasExperimentChecklist,
+  experimentId,
 }, ref) {
   const availableDatasets = propDatasets && propDatasets.length > 0 
     ? propDatasets 
@@ -173,13 +176,9 @@ export const ChatPanel = forwardRef<ChatPanelRef, ChatPanelProps>(function ChatP
   }, [draft, onSendMessage])
 
   const handleDatasetSelect = useCallback((dataset: Dataset) => {
-    if (dataset.trainable === false) {
-      console.warn("Dataset is not trainable, skipping:", dataset.name)
-      return
-    }
-    const key = dataset.file || dataset.id
+    const key = dataset.name || dataset.file || dataset.id
     if (!key) {
-      console.warn("Dataset has no file path or id, skipping:", dataset.name)
+      console.warn("Dataset has no usable identifier, skipping")
       return
     }
     if (!linkedDatasets.includes(key)) {
@@ -239,18 +238,25 @@ export const ChatPanel = forwardRef<ChatPanelRef, ChatPanelProps>(function ChatP
             return (
               <React.Fragment key={msg.id}>
                 {phaseMarker && <PhaseMarker phase={phaseMarker} />}
-                <MessageBubble 
-                  message={msg} 
-                  isHighlighted={highlightedMessageId === msg.id}
-                  onViewReport={onViewReport}
-                  stepId={detectedStep}
-                  isClickable={isClickable}
-                  onStepClick={isClickable ? () => setSelectedStepId(detectedStep) : undefined}
-                  ref={(el) => {
-                    if (el) messageRefs.current.set(msg.id, el)
-                    else messageRefs.current.delete(msg.id)
-                  }}
-                />
+                {msg.prediction ? (
+                  <PredictionResultCard
+                    result={msg.prediction}
+                    onEvaluate={(model) => onSendMessage(`Evaluate model ${model}`)}
+                  />
+                ) : (
+                  <MessageBubble 
+                    message={msg} 
+                    isHighlighted={highlightedMessageId === msg.id}
+                    onViewReport={onViewReport}
+                    stepId={detectedStep}
+                    isClickable={isClickable}
+                    onStepClick={isClickable ? () => setSelectedStepId(detectedStep) : undefined}
+                    ref={(el) => {
+                      if (el) messageRefs.current.set(msg.id, el)
+                      else messageRefs.current.delete(msg.id)
+                    }}
+                  />
+                )}
                 
                 {confsAfterThis.map((conf, index) => (
                   <PastConfirmation
@@ -299,6 +305,7 @@ export const ChatPanel = forwardRef<ChatPanelRef, ChatPanelProps>(function ChatP
         availableModels={availableModels}
         useHitl={useHitl}
         onToggleHitl={() => setUseHitl(v => !v)}
+        experimentId={experimentId}
       />
 
       {selectedStepId && agentState && steps && (

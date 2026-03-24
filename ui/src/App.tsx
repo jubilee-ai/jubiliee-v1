@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from "react"
+import { useState, useEffect, useRef, useCallback, type CSSProperties, type MouseEvent as ReactMouseEvent } from "react"
 import { useRealAgent } from "@/hooks/useRealAgent"
 import { ProgressPanel } from "@/components/ProgressPanel"
 import { ChatPanel, ChatPanelRef } from "@/components/ChatPanel"
@@ -130,6 +130,10 @@ function SignInGate() {
 }
 
 function AuthenticatedApp() {
+  const SIDEBAR_MIN_WIDTH = 224
+  const SIDEBAR_MAX_WIDTH = 420
+  const [sidebarWidth, setSidebarWidth] = useState(240)
+  const [isResizingSidebar, setIsResizingSidebar] = useState(false)
   const [showReport, setShowReport] = useState(false)
   const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null)
   const [activeTab, setActiveTab] = useState<AppTab>("experiment_lab")
@@ -216,11 +220,42 @@ function AuthenticatedApp() {
     }
   }, [realAgent, bumpExperimentsList])
 
+  const handleSidebarResizeStart = useCallback((event: ReactMouseEvent<HTMLButtonElement>) => {
+    event.preventDefault()
+    setIsResizingSidebar(true)
+  }, [])
+
+  useEffect(() => {
+    if (!isResizingSidebar) return
+
+    const onMouseMove = (event: MouseEvent) => {
+      const next = Math.max(SIDEBAR_MIN_WIDTH, Math.min(SIDEBAR_MAX_WIDTH, event.clientX))
+      setSidebarWidth(next)
+    }
+
+    const onMouseUp = () => {
+      setIsResizingSidebar(false)
+    }
+
+    document.body.style.cursor = "col-resize"
+    document.body.style.userSelect = "none"
+    window.addEventListener("mousemove", onMouseMove)
+    window.addEventListener("mouseup", onMouseUp)
+
+    return () => {
+      document.body.style.cursor = ""
+      document.body.style.userSelect = ""
+      window.removeEventListener("mousemove", onMouseMove)
+      window.removeEventListener("mouseup", onMouseUp)
+    }
+  }, [isResizingSidebar, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH])
+
   const completedSteps = agent.steps.filter((s) => s.status === "completed").length
   const totalSteps = agent.steps.length
   const currentStep = agent.steps.find(s => s.status === "running" || s.status === "awaiting_confirmation")
   const hasActivity =
     !!realAgent.experimentId && (agent.isRunning || completedSteps > 0)
+  const layoutStyle = { "--sidebar-width": `${sidebarWidth}px` } as CSSProperties
 
   return (
     <TooltipProvider>
@@ -279,9 +314,9 @@ function AuthenticatedApp() {
         )}
 
         {/* Main Layout — min-h-0 so inner chat can scroll instead of growing the page */}
-        <div className="flex flex-1 min-h-0 overflow-hidden pt-14">
+        <div className="flex flex-1 min-h-0 overflow-hidden pt-14" style={layoutStyle}>
           {/* Fixed Sidebar */}
-          <aside className="hidden md:flex w-60 fixed left-0 top-14 bottom-0 flex-col z-40">
+          <aside className="hidden md:flex w-[var(--sidebar-width)] fixed left-0 top-14 bottom-0 flex-col z-40">
             <AppSidebar
               activeTab={activeTab}
               onTabChange={setActiveTab}
@@ -297,10 +332,29 @@ function AuthenticatedApp() {
                 bumpExperimentsList()
               }}
             />
+            <div className="absolute inset-y-0 -right-2 z-50 hidden md:flex w-4 items-center justify-center">
+              <button
+                type="button"
+                aria-label="Resize sidebar"
+                className={cn(
+                  "group flex h-full w-full cursor-col-resize items-center justify-center",
+                  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-0"
+                )}
+                onMouseDown={handleSidebarResizeStart}
+              >
+                <span
+                  className={cn(
+                    "h-10 w-1 rounded-full bg-border/70 transition-colors",
+                    "group-hover:bg-primary/70",
+                    isResizingSidebar && "bg-primary"
+                  )}
+                />
+              </button>
+            </div>
           </aside>
 
           {/* Main Content */}
-          <main className="flex-1 min-h-0 flex flex-col overflow-hidden md:ml-60">
+          <main className="flex-1 min-h-0 flex flex-col overflow-hidden md:ml-[var(--sidebar-width)]">
             {activeTab === "experiment_lab" ? (
               <div className="flex flex-1 min-h-0 flex-col overflow-hidden relative">
                 {realAgent.experimentId ? (
@@ -350,6 +404,7 @@ function AuthenticatedApp() {
                     agentState={agent.agentState}
                     steps={agent.steps}
                     hasExperimentChecklist={hasActivity}
+                    experimentId={realAgent.experimentId}
                   />
                 </div>
               </div>

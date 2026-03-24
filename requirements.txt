@@ -11,6 +11,7 @@ langgraph
 pydantic
 pydantic-settings
 pandas
+pyarrow>=14.0.0
 numpy
 scikit-learn
 joblib

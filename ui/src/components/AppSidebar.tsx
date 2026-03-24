@@ -122,7 +122,7 @@ function EditableExperimentTitle({
   return (
     <span
       className={cn(
-        "text-[13px] leading-snug line-clamp-2 break-words min-w-0 flex-1",
+        "text-[13px] leading-snug line-clamp-2 break-all overflow-hidden min-w-0 flex-1",
         isActive ? "font-medium text-foreground" : "text-foreground/85",
         !disabled && "cursor-text",
       )}
@@ -224,7 +224,7 @@ export function AppSidebar({
   }
 
   return (
-    <div className="h-full flex flex-col border-r border-border/50 bg-background">
+    <div className="h-full min-w-0 flex flex-col border-r border-border/50 bg-background">
       {/* Section Navigation */}
       <nav className="flex flex-col gap-0.5 px-3 pt-3">
         {navItems.map((item) => (
@@ -280,7 +280,7 @@ export function AppSidebar({
               <div
                 key={exp.id}
                 className={cn(
-                  "w-full min-w-0 rounded-lg border border-transparent transition-colors",
+                  "w-full min-w-0 overflow-hidden rounded-lg border border-transparent transition-colors",
                   "hover:bg-muted/50 hover:border-border/30",
                   isSwitching && "opacity-50 pointer-events-none",
                   isActive && "bg-muted border-border/40"
@@ -319,7 +319,7 @@ export function AppSidebar({
                       </span>
                     </div>
                     {preview ? (
-                      <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground/70 line-clamp-2 break-words overflow-hidden">
+                      <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground/70 line-clamp-2 break-all overflow-hidden">
                         {preview}
                       </p>
                     ) : null}

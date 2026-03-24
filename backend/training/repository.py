@@ -142,7 +142,8 @@ def save_interrupt_ids(thread_id: str, interrupt_ids: list[str]) -> None:
 # --- Training summaries (for chat) ---
 
 def _build_context_dict(shared_state: dict[str, object]) -> dict[str, object]:
-    metrics = shared_state.get("training_metrics", {})
+    raw_metrics = shared_state.get("training_metrics")
+    metrics = raw_metrics if isinstance(raw_metrics, dict) else {}
     label_def = shared_state.get("label_definition") or {}
     return {
         "model_name": metrics.get("model_name") or shared_state.get("model_weights_path"),

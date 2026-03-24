@@ -1,11 +1,10 @@
 """
 HTTP-layer intent: training graph SSE vs orchestrator chat SSE for POST /api/chat.
 
-Hard signals (no LLM): linked_datasets, mode=train / mode=chat, resume_training (handled in chat()).
+Hard signals (no LLM): linked_datasets, resume (handled in chat() before this is called).
 
-When the user did not force a mode and did not link datasets, an LLM picks training_graph vs
-orchestrator_chat from the natural-language message. Falls back to orchestrator if no API key
-or the model call fails.
+When the user did not link datasets, an LLM picks training_graph vs orchestrator_chat from
+the natural-language message. Falls back to orchestrator if no API key or the model call fails.
 """
 
 from __future__ import annotations
@@ -32,14 +31,10 @@ def should_route_to_training_graph(request: ChatRequest) -> bool:
     """
     Return True to stream generate_graph_sse_events; False for generate_chat_sse.
 
-    resume_training is handled before this function is called.
+    resume is handled before this function is called.
     """
     if request.linked_datasets and len(request.linked_datasets) > 0:
         return True
-    if request.mode == "train":
-        return True
-    if request.mode == "chat":
-        return False
 
     message = (request.message or "").strip()
     if not message:
@@ -65,13 +60,8 @@ def _classify_via_llm(message: str, request: ChatRequest) -> bool:
     structured = llm.with_structured_output(_IntentResult)
 
     ctx_bits = []
-    if request.user_model_preference:
-        ctx_bits.append(f"User preferred model type id: {request.user_model_preference}")
-    if request.training_context:
-        tc = request.training_context.strip()
-        if len(tc) > 800:
-            tc = tc[:800] + "…"
-        ctx_bits.append(f"Training context excerpt:\n{tc}")
+    if request.model_preference:
+        ctx_bits.append(f"User preferred model type id: {request.model_preference}")
     ctx = "\n".join(ctx_bits) if ctx_bits else "(none)"
 
     sys = SystemMessage(
