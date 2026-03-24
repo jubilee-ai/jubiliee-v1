@@ -41,10 +41,12 @@ def _get_datasets_from_db() -> list[dict[str, object]]:
 
 def _dataset_to_dict(row: Any) -> dict[str, object]:
     props = row.properties or {}
+    file_path = props.get("file") or None
     return {
         "id": str(row.id),
         "name": row.name,
-        "file": props.get("file", row.name),
+        "file": file_path,
+        "trainable": bool(file_path),
         "source_type": row.source_type,
         "format": props.get("format", ""),
         "rows": props.get("row_count"),

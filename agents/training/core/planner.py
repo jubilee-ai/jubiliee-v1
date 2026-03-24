@@ -16,6 +16,8 @@ from dotenv import load_dotenv
 from langchain.chat_models import init_chat_model
 from pydantic import BaseModel, Field
 
+from agents.training.utils.graph_stream_hooks import emit_graph_stream
+
 from .hitl import run_with_hitl
 
 load_dotenv(Path(__file__).parent.parent.parent.parent / ".env")
@@ -34,7 +36,12 @@ class PlanStep(BaseModel):
         "cleaning, label_split_definition, feature_selection_specification, "
         "feature_engineering_executor, training_approval, training, generate_report"
     )
-    rationale: str = Field(description="Why this step is included and what it should achieve")
+    rationale: str = Field(
+        description=(
+            "Ultra-brief note for this step only: max ~12 words / 90 characters. "
+            "No bullet lists or step-by-step prose — the user sees this in a small review card."
+        )
+    )
 
 
 class Plan(BaseModel):
@@ -45,14 +52,33 @@ class Plan(BaseModel):
     )
     skip_rationale: str = Field(
         default="",
-        description="Explanation for why the skipped steps are unnecessary",
+        description=(
+            "If skipped_steps non-empty: one short sentence (~150 chars) why those steps are omitted; "
+            "otherwise empty string."
+        ),
     )
-    strategy: str = Field(description="One-paragraph summary of the overall approach")
+    strategy: str = Field(
+        description=(
+            "Very short overall approach for human review: max 2 sentences or ~220 characters total. "
+            "No markdown headings, no numbered lists — plain, scannable text only."
+        )
+    )
 
 
 # ---------------------------------------------------------------------------
 # Valid step names (used for validation)
 # ---------------------------------------------------------------------------
+
+def _clamp_review_text(text: str, max_len: int) -> str:
+    """Trim text for HITL / compact UI; break on last space when possible."""
+    t = (text or "").strip()
+    if len(t) <= max_len:
+        return t
+    cut = t[: max_len - 1]
+    if " " in cut:
+        cut = cut.rsplit(" ", 1)[0]
+    return cut + "…"
+
 
 ALL_STEP_NAMES: set[str] = {
     "data_collection",
@@ -128,8 +154,15 @@ to run, along with steps to skip and why.
 
 ## Instructions
 
-Produce a Plan JSON object.  Be decisive — include only the steps that are
+Produce a Plan JSON object. Be decisive — include only the steps that are
 genuinely needed for this particular goal and dataset.
+
+## Brevity (required — shown in the human approval card)
+
+The user sees `strategy`, each step's `rationale`, and `skip_rationale` in a **compact** UI.
+- **strategy**: At most **two short sentences** OR **220 characters** total (whichever is tighter). No headings, no bullets, no pipeline essay.
+- **rationale** (each step): **One short phrase** — max **~12 words / 90 characters**. State purpose in a glance (e.g. "Load user CSV" / "Approve hyperparams before fit"). No multi-sentence explanations.
+- **skip_rationale**: Only if `skipped_steps` is non-empty: **one sentence**, max **~150 characters**. Otherwise use `""`.
 """
 
 
@@ -189,6 +222,12 @@ def _validate_plan(plan: Plan) -> Plan:
         plan.steps.remove(gr)
         plan.steps.append(gr)
 
+    # Keep planner output short for the HITL card even if the model drifts.
+    plan.strategy = _clamp_review_text(plan.strategy, 220)
+    plan.skip_rationale = _clamp_review_text(plan.skip_rationale, 150)
+    for ps in plan.steps:
+        ps.rationale = _clamp_review_text(ps.rationale, 90)
+
     return plan
 
 
@@ -220,10 +259,18 @@ def planner_node(state: "TrainingAgentState") -> "TrainingAgentState":
             replan_context=replan_context,
         )
 
-        llm = init_chat_model(model="gpt-5.1", temperature=0)
+        emit_graph_stream({
+            "phase": "planner",
+            "message": "Planning: drafting execution steps…",
+        })
+        llm = init_chat_model(model="gpt-5.4-mini", temperature=0)
         structured_llm = llm.with_structured_output(Plan)
         plan: Plan = structured_llm.invoke(prompt)
         plan = _validate_plan(plan)
+        emit_graph_stream({
+            "phase": "planner",
+            "message": f"Plan ready — {len(plan.steps)} step(s); review when prompted.",
+        })
 
         new_history = list(prev_plans)
         if s.get("plan"):
@@ -253,15 +300,17 @@ def planner_node(state: "TrainingAgentState") -> "TrainingAgentState":
 
     def get_summary(result: "TrainingAgentState") -> str:
         plan_steps = result.get("plan") or []
-        lines = [f"**Strategy:** {result.get('plan_strategy', 'N/A')}\n", "**Planned steps:**"]
-        for i, step in enumerate(plan_steps, 1):
+        strategy = result.get("plan_strategy", "N/A")
+        lines = [f"**Plan:** {strategy}"]
+        names: list[str] = []
+        for step in plan_steps:
             name = step["step"] if isinstance(step, dict) else step.step
-            rationale = step.get("rationale", "") if isinstance(step, dict) else step.rationale
-            lines.append(f"  {i}. `{name}` — {rationale}")
-
+            names.append(str(name).replace("_", " "))
+        if names:
+            lines.append("**Steps:** " + " → ".join(f"`{n}`" for n in names))
         history = result.get("plan_history") or []
         if history:
-            lines.append(f"\n(This is replan #{len(history)})")
+            lines.append(f"_(Replan #{len(history)})_")
         return "\n".join(lines)
 
     return run_with_hitl("planner", state, do_work, get_summary)

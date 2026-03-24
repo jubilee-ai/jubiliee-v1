@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from agents.training.utils.graph_stream_hooks import emit_graph_stream
+
 if TYPE_CHECKING:
     from .state import TrainingAgentState
 
@@ -30,5 +32,9 @@ def dispatcher_node(state: "TrainingAgentState") -> "TrainingAgentState":
     step_name = next_step["step"] if isinstance(next_step, dict) else next_step.step
 
     print(f"[dispatcher] Step {plan_index + 1}/{len(plan)}: {step_name}")
+    emit_graph_stream({
+        "phase": "dispatch",
+        "message": f"Next step {plan_index + 1}/{len(plan)}: {step_name.replace('_', ' ')}",
+    })
 
     return {**state, "current_step": step_name}

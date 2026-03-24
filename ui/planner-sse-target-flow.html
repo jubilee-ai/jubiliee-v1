@@ -1,0 +1,597 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Target flow — UI → SSE → Graph agent</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Syne:wght@500;600;700;800&display=swap" rel="stylesheet">
+  <script type="module">
+    import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+    mermaid.initialize({
+      startOnLoad: true,
+      theme: "dark",
+      securityLevel: "loose",
+      themeVariables: {
+        darkMode: true,
+        background: "#0d0f14",
+        primaryColor: "#2d2438",
+        primaryTextColor: "#e6e2eb",
+        primaryBorderColor: "#5c4d6e",
+        lineColor: "#8b7a9e",
+        secondaryColor: "#1f232c",
+        tertiaryColor: "#151820",
+        fontFamily: "JetBrains Mono, monospace"
+      },
+      flowchart: { curve: "basis", padding: 12 },
+      sequence: { actorMargin: 48, boxMargin: 8, messageMargin: 28 }
+    });
+  </script>
+  <style>
+    :root {
+      --bg: #0d0f14;
+      --bg-elevated: #12151c;
+      --border: #2a3040;
+      --text: #b8b4c0;
+      --text-bright: #f0ecf5;
+      --accent: #e8a598;
+      --accent-dim: rgba(232, 165, 152, 0.14);
+      --violet: #a78bfa;
+      --violet-dim: rgba(167, 139, 250, 0.12);
+      --teal: #5eead4;
+      --teal-dim: rgba(94, 234, 212, 0.1);
+      --amber: #fcd34d;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: "JetBrains Mono", ui-monospace, monospace;
+      font-size: 13px;
+      line-height: 1.55;
+      color: var(--text);
+      background: var(--bg);
+      min-height: 100vh;
+      background-image:
+        radial-gradient(ellipse 120% 80% at 100% -20%, rgba(167, 139, 250, 0.08), transparent 50%),
+        radial-gradient(ellipse 80% 60% at 0% 100%, rgba(232, 165, 152, 0.06), transparent 45%);
+    }
+    .wrap {
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 40px 24px 72px;
+    }
+    header {
+      margin-bottom: 40px;
+    }
+    h1 {
+      font-family: Syne, system-ui, sans-serif;
+      font-weight: 800;
+      font-size: clamp(1.75rem, 4vw, 2.35rem);
+      color: var(--text-bright);
+      letter-spacing: -0.03em;
+      line-height: 1.15;
+    }
+    h1 em {
+      font-style: normal;
+      color: var(--accent);
+    }
+    .lede {
+      margin-top: 12px;
+      max-width: 72ch;
+      color: var(--text);
+      opacity: 0.92;
+    }
+    .pill-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 20px;
+    }
+    .pill {
+      font-size: 11px;
+      font-weight: 500;
+      padding: 6px 12px;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      background: var(--bg-elevated);
+      color: var(--text-bright);
+    }
+    .pill.target { border-color: var(--accent); background: var(--accent-dim); color: var(--accent); }
+    .pill.path { border-color: var(--violet); background: var(--violet-dim); color: #c4b5fd; }
+
+    section {
+      margin-bottom: 48px;
+    }
+    h2 {
+      font-family: Syne, sans-serif;
+      font-weight: 700;
+      font-size: 1.05rem;
+      color: var(--text-bright);
+      margin-bottom: 16px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    h2::before {
+      content: "";
+      width: 4px;
+      height: 1.1em;
+      border-radius: 2px;
+      background: linear-gradient(180deg, var(--accent), var(--violet));
+    }
+
+    .layer-stack {
+      display: grid;
+      gap: 0;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      overflow: hidden;
+      background: var(--bg-elevated);
+    }
+    .layer {
+      display: grid;
+      grid-template-columns: 140px 1fr;
+      gap: 16px;
+      padding: 18px 20px;
+      border-bottom: 1px solid var(--border);
+      align-items: start;
+    }
+    .layer:last-child { border-bottom: none; }
+    .layer-tag {
+      font-family: Syne, sans-serif;
+      font-weight: 700;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      color: var(--teal);
+      padding-top: 2px;
+    }
+    .layer:nth-child(2) .layer-tag { color: var(--violet); }
+    .layer:nth-child(3) .layer-tag { color: var(--amber); }
+    .layer-body strong { color: var(--text-bright); font-weight: 600; }
+    .layer-body ul { margin: 10px 0 0 1.1em; }
+    .layer-body li { margin: 4px 0; }
+
+    .arrow-down {
+      text-align: center;
+      padding: 8px 0;
+      color: var(--text);
+      opacity: 0.45;
+      font-size: 18px;
+      user-select: none;
+    }
+
+    .mermaid {
+      background: var(--bg-elevated);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 20px 12px;
+      overflow-x: auto;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12px;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow: hidden;
+    }
+    th, td {
+      padding: 10px 12px;
+      text-align: left;
+      border-bottom: 1px solid var(--border);
+    }
+    th {
+      background: #181c26;
+      color: var(--text-bright);
+      font-family: Syne, sans-serif;
+      font-weight: 600;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+    tr:last-child td { border-bottom: none; }
+    tr:nth-child(even) td { background: rgba(255,255,255,0.02); }
+    code {
+      font-size: 11px;
+      background: rgba(167, 139, 250, 0.12);
+      color: #ddd6fe;
+      padding: 2px 6px;
+      border-radius: 4px;
+    }
+
+    .note {
+      margin-top: 14px;
+      padding: 12px 14px;
+      border-left: 3px solid var(--accent);
+      background: var(--accent-dim);
+      border-radius: 0 8px 8px 0;
+      font-size: 12px;
+      color: var(--text-bright);
+    }
+    .note strong { color: var(--accent); }
+
+    .hook-card {
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      background: linear-gradient(165deg, #151820 0%, #10131a 100%);
+      padding: 22px 24px;
+      margin-bottom: 28px;
+      box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
+    }
+    .hook-card-top {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 14px;
+    }
+    .hook-card h3 {
+      font-family: Syne, sans-serif;
+      font-weight: 800;
+      font-size: 1.15rem;
+      color: var(--text-bright);
+      letter-spacing: -0.02em;
+    }
+    .hook-card .file-path {
+      font-size: 11px;
+      color: var(--text);
+      opacity: 0.75;
+    }
+    .hook-card .file-path code {
+      background: rgba(94, 234, 212, 0.1);
+      color: var(--teal);
+    }
+    .hook-card .arch-line {
+      font-size: 12px;
+      color: var(--text-bright);
+      margin-bottom: 14px;
+      line-height: 1.5;
+    }
+    .hook-card .arch-line strong { color: var(--teal); }
+    .hook-card .field-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+      gap: 8px 16px;
+      margin: 14px 0 16px;
+      padding: 12px 14px;
+      background: rgba(0, 0, 0, 0.25);
+      border-radius: 10px;
+      border: 1px solid var(--border);
+    }
+    .hook-card .field-grid span {
+      font-size: 11px;
+      color: var(--text);
+    }
+    .hook-card .field-grid code {
+      color: #c4b5fd;
+      background: transparent;
+      padding: 0;
+    }
+    .hook-card .handlers-label {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--text);
+      opacity: 0.8;
+      margin-bottom: 8px;
+    }
+    .handler-row {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 10px;
+    }
+    .handler-pill {
+      font-size: 11px;
+      font-weight: 600;
+      padding: 8px 14px;
+      border-radius: 8px;
+      border: 2px solid var(--teal);
+      color: var(--teal);
+      background: var(--teal-dim);
+    }
+    .handler-pill.sub {
+      border-color: var(--text);
+      color: var(--text);
+      background: transparent;
+      opacity: 0.85;
+      font-weight: 500;
+    }
+    .handler-arrow {
+      color: var(--text);
+      opacity: 0.5;
+      font-size: 12px;
+    }
+    .hook-card .plan-ref {
+      margin-top: 14px;
+      font-size: 11px;
+      color: var(--text);
+      opacity: 0.7;
+    }
+
+    footer {
+      margin-top: 40px;
+      font-size: 11px;
+      color: var(--text);
+      opacity: 0.65;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <h1>Target architecture: <em>frontend</em> → <em>SSE</em> → <em>graph agent</em></h1>
+      <p class="lede">
+        Ideal end state from the graph migration plan: graph training SSE matches the rich <code>node_complete</code> shape; the client
+        applies updates through one shared training-pipeline reducer so standalone and chat-bridged runs stay in sync; experiment-scoped
+        context prevents patches from landing on the wrong session.
+      </p>
+      <div class="pill-row">
+        <span class="pill target">Target: POST /api/chat — body: linked_datasets, resume_training, …</span>
+        <span class="pill path">SSE: fetch + ReadableStream (not EventSource)</span>
+        <span class="pill">HTTP intent: LLM (structured) + hard overrides</span>
+        <span class="pill">Graph planner: structured Plan (not bind_tools)</span>
+      </div>
+      <p class="lede" style="margin-top: 14px;">
+        <strong>Single public stream entry:</strong> clients use <code>POST /api/chat</code> only. Deprecated routes
+        <code>POST /api/train-graph</code> / <code>POST /api/train-graph-resume</code> are thin wrappers for backward compatibility.
+      </p>
+      <p class="lede" style="margin-top: 10px;">
+        <strong>Two different “routers”:</strong> (1) <em>HTTP intent router</em> in
+        <code>backend/chat/intent_router.py</code> — small LLM (e.g. <code>CHAT_INTENT_ROUTER_MODEL=openai:gpt-5.4-mini</code>)
+        chooses <strong>training graph SSE</strong> vs <strong>orchestrator chat SSE</strong> when the user did not set
+        <code>mode</code> or link datasets; hard overrides apply for <code>linked_datasets</code>, <code>mode=train</code>,
+        <code>mode=chat</code>, and <code>resume_training</code>. (2) <em>Graph internal planner</em> inside LangGraph —
+        LLM emits a validated <code>Plan</code> for step dispatch; that is not the HTTP router.
+      </p>
+    </header>
+
+    <section aria-labelledby="h-intent">
+      <h2 id="h-intent">HTTP intent router (final target)</h2>
+      <div class="layer-stack" style="margin-bottom: 20px;">
+        <div class="layer">
+          <div class="layer-tag">Hard rules</div>
+          <div class="layer-body">
+            Evaluated first in <code>backend/chat/service.py</code> → <code>should_route_to_training_graph(request)</code>.
+            <ul>
+              <li><code>resume_training</code> set → graph resume stream (separate branch).</li>
+              <li><code>linked_datasets</code> non-empty → <strong>training graph</strong> (user explicitly attached data).</li>
+              <li><code>mode: "train"</code> → <strong>training graph</strong>.</li>
+              <li><code>mode: "chat"</code> → <strong>orchestrator chat</strong> (skip LLM).</li>
+            </ul>
+          </div>
+        </div>
+        <div class="layer">
+          <div class="layer-tag">LLM</div>
+          <div class="layer-body">
+            If none of the above forced a path, <code>backend/chat/intent_router.py</code> calls
+            <code>init_chat_model(CHAT_INTENT_ROUTER_MODEL).with_structured_output(IntentResult)</code>
+            with a short system policy: pipeline run vs Q&amp;A. On missing <code>OPENAI_API_KEY</code> or model failure,
+            default is <strong>orchestrator chat</strong> (safe; avoids accidental graph runs).
+          </div>
+        </div>
+        <div class="layer">
+          <div class="layer-tag">Downstream</div>
+          <div class="layer-body">
+            <code>True</code> → <code>training_service.generate_graph_sse_events(...)</code>.
+            <code>False</code> → <code>generate_chat_sse(...)</code> (tokens, tools, optional <code>train_model</code> bridge).
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section aria-labelledby="h-hook" class="hook-section">
+      <h2 id="h-hook">useRealAgent — ideal (plan Phase 3 + §3 + §6)</h2>
+      <div class="hook-card">
+        <div class="hook-card-top">
+          <h3>useRealAgent <span style="color: var(--accent); font-weight: 700;">(target)</span></h3>
+          <p class="file-path"><code>ui/src/hooks/useRealAgent.ts</code></p>
+        </div>
+        <p class="arch-line">
+          <strong>Experiment-scoped slices</strong> — state keyed by <code>experimentId</code> (or <code>chatThreadId</code>): each slice holds
+          <code>agentState</code>, <code>steps</code>, <code>messages</code>, <code>progress</code>, training <code>threadId</code>, HITL
+          <code>confirmationRequest</code>, and stream dedupe refs. Only the <strong>active</strong> experiment’s slice is rendered (plan §3.1).
+          Alternative: a thin <strong>React context</strong> scoped to the current experiment route (same isolation goal).
+        </p>
+        <div class="field-grid" aria-label="Per-experiment slice fields">
+          <span><code>agentState</code></span>
+          <span><code>steps[]</code></span>
+          <span><code>messages[]</code></span>
+          <span><code>progress</code></span>
+          <span><code>threadId</code> (training resume)</span>
+          <span><code>chatThreadId</code></span>
+          <span><code>experimentId</code></span>
+          <span><code>confirmationRequest</code></span>
+        </div>
+        <p class="handlers-label">Pipeline events (ideal)</p>
+        <div class="handler-row">
+          <span class="handler-pill">applyTrainingPipelineEvent(ctx, event)</span>
+          <span class="handler-arrow">←</span>
+          <span class="handler-pill sub">graph stream adapter</span>
+          <span class="handler-pill sub">chat stream adapter</span>
+        </div>
+        <p class="plan-ref">
+          Plan Phase 3: unify <code>handleStreamEvent</code> / <code>handleChatEvent</code> step logic into one reducer; handle
+          <code>node_complete</code>, <code>node_skipped</code>, <code>interrupt</code> + <code>state_snapshot</code>. Plan §6: same reducer drives
+          “next step running” for both paths; <code>training_started</code> / <code>tool_call(train_model)</code> can mark the first pipeline step
+          <code>running</code>. Plan §3.4 + Phase 6: pass <strong>ExperimentSessionContext</strong> into that reducer —
+          <code>(sessionCtx, event) → patch</code> with e.g. <code>experimentId</code>, <code>chatThreadId</code>, <code>trainingThreadId</code>,
+          <code>goal</code>, <code>linkedDatasets</code>, <code>lastNode</code>, <code>planSummary</code>. Optional: handle <code>training_heartbeat</code> (§3.5).
+        </p>
+      </div>
+    </section>
+
+    <section aria-labelledby="h-stack">
+      <h2 id="h-stack">Vertical stack (who talks to whom)</h2>
+      <div class="layer-stack">
+        <div class="layer">
+          <div class="layer-tag">Frontend</div>
+          <div class="layer-body">
+            <strong>useRealAgent</strong> — holds the <strong>active experiment slice</strong> (or reads from a per-experiment map); wires
+            <strong>api.ts</strong> (<code>fetch</code> + reader, not <code>EventSource</code>).
+            <ul>
+              <li>Both <strong>standalone graph stream</strong> and <strong>chat SSE</strong> normalize into the same event union where pipeline
+                progress is concerned, then call <strong>one reducer</strong> so checklist / progress / skip visuals stay aligned (Phase 3, §6).</li>
+              <li>Reducer merges <code>event.state</code> or interrupt <code>state_snapshot</code>; handles <code>node_skipped</code> and preserves
+                skipped status on completion (Phase 3).</li>
+            </ul>
+          </div>
+        </div>
+        <div class="arrow-down">↓ SSE chunks (JSON)</div>
+        <div class="layer">
+          <div class="layer-tag">Backend</div>
+          <div class="layer-body">
+            <strong>backend/training/service.py</strong> — <code>generate_graph_sse_events</code> (target): <code>build_node_update</code>, full <code>state</code> on <code>node_complete</code>, progress %, summary/details, <code>state_snapshot</code> on interrupt, <code>node_skipped</code>, <code>emitted_steps</code> dedup, persistence hooks.
+            <ul>
+              <li><strong>backend/chat/service.py</strong> — unified <code>chat()</code>: intent router → graph or orchestrator generator.</li>
+              <li><strong>backend/chat/intent_router.py</strong> — structured LLM route + hard overrides (see § HTTP intent router).</li>
+              <li><strong>serialization</strong> — training state embedded in events for UI merge.</li>
+            </ul>
+          </div>
+        </div>
+        <div class="arrow-down">↓ LangGraph stream / callbacks</div>
+        <div class="layer">
+          <div class="layer-tag">Agent graph</div>
+          <div class="layer-body">
+            <strong>Planner</strong> — LLM <code>with_structured_output(Plan)</code>; steps validated against <code>ALL_STEP_NAMES</code>.
+            <strong>Dispatcher</strong> — deterministic: <code>plan[plan_index] → current_step</code> (no LLM).
+            <strong>Step nodes</strong> — <code>data_collection</code> … <code>generate_report</code>; tools may live inside step impls, not on planner.
+            <strong>Evaluator</strong> — advances plan / replan / done.
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section aria-labelledby="h-seq">
+      <h2 id="h-seq">SSE sequence (target)</h2>
+      <div class="mermaid">
+sequenceDiagram
+  participant Hook as useRealAgent
+  participant API as api.ts SSE
+  participant BE as training / chat SSE
+  participant G as LangGraph
+
+  Note over Hook: ExperimentSessionContext for active experiment
+  Hook->>API: streamPipeline → POST /api/chat (linked_datasets, resume_training, …)
+  Hook->>API: same endpoint for tokens + bridged training SSE
+  API->>BE: POST body + abort
+  BE->>BE: intent_router: graph vs orchestrator
+  BE->>G: LangGraph when route is training graph
+  loop SSE chunks
+    BE-->>API: data: JSON (graph or chat)
+    API-->>Hook: normalized events
+    Hook->>Hook: applyTrainingPipelineEvent(ctx, event)
+  end
+      </div>
+      <p class="note"><strong>Interrupt:</strong> events carry <code>state_snapshot</code> so the UI can resume with another <code>POST /api/chat</code> (e.g. <code>resume_training</code> in the body) without losing context.</p>
+    </section>
+
+    <section aria-labelledby="h-graph">
+      <h2 id="h-graph">Graph control flow (planner / dispatcher / steps)</h2>
+      <div class="mermaid">
+flowchart TB
+  subgraph entry["HTTP entry"]
+    API["POST /api/chat"]
+    Intent["intent_router: overrides + LLM → graph or orchestrator SSE"]
+  end
+  API --> Intent
+  Intent -->|orchestrator| OrchSSE["generate_chat_sse"]
+  Intent -->|training graph| GraphEntry["generate_graph_sse_events"]
+  OrchSSE --> ChatEnd([orchestrator SSE end])
+  GraphEntry --> Planner
+  Planner["planner_node: LLM → Plan + HITL"]
+  Planner --> Dispatcher
+  Dispatcher["dispatcher_node: plan[plan_index] → current_step"]
+  Dispatcher --> Route{"route_to_step"}
+  Route --> Steps["Step nodes: data_collection … generate_report"]
+  Steps --> Evaluator["evaluator_node: plan_index++, decision"]
+  Evaluator --> Decision{"evaluator_decision"}
+  Decision -->|continue| Dispatcher
+  Decision -->|replan| Planner
+  Decision -->|done| END([END])
+  Route -->|current_step done| END
+      </div>
+    </section>
+
+    <section aria-labelledby="h-events">
+      <h2 id="h-events">Graph SSE — current vs target</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Capability</th>
+            <th>Simple stream (today)</th>
+            <th>Graph SSE target</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Primary step event</td>
+            <td><code>node_complete</code></td>
+            <td><code>node_complete</code> (not thin <code>node_update</code>)</td>
+          </tr>
+          <tr>
+            <td>Full <code>state</code></td>
+            <td>Yes</td>
+            <td>Yes</td>
+          </tr>
+          <tr>
+            <td>summary / details / progress %</td>
+            <td>via <code>build_node_update</code></td>
+            <td>Same builder path</td>
+          </tr>
+          <tr>
+            <td>Interrupt</td>
+            <td><code>state_snapshot</code></td>
+            <td><code>state_snapshot</code></td>
+          </tr>
+          <tr>
+            <td>Skipped steps</td>
+            <td>N/A</td>
+            <td><code>node_skipped</code> forwarded to UI</td>
+          </tr>
+          <tr>
+            <td>Dedup</td>
+            <td><code>emitted_steps</code></td>
+            <td>Same</td>
+          </tr>
+          <tr>
+            <td>After run</td>
+            <td>save context + dataset links</td>
+            <td>Same hooks on completion</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section aria-labelledby="h-steps">
+      <h2 id="h-steps">Planner step registry (closed set)</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Step id</th>
+            <th>Role</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td><code>data_collection</code></td><td>Load dataset</td></tr>
+          <tr><td><code>select_model</code></td><td>Model family</td></tr>
+          <tr><td><code>cleaning</code></td><td>Clean data</td></tr>
+          <tr><td><code>label_split_definition</code></td><td>Target + splits</td></tr>
+          <tr><td><code>feature_selection_specification</code></td><td>Feature spec</td></tr>
+          <tr><td><code>feature_engineering_executor</code></td><td>Apply features</td></tr>
+          <tr><td><code>training_approval</code></td><td>Config / HITL</td></tr>
+          <tr><td><code>training</code></td><td>Train + metrics</td></tr>
+          <tr><td><code>generate_report</code></td><td>Final report</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <footer>
+      Derived from planner_sse_visualization plan — target wiring only; open <code>ui/planner-sse-target-flow.html</code> in a browser (network needed for Mermaid CDN).
+    </footer>
+  </div>
+</body>
+</html>

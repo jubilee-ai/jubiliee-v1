@@ -15,6 +15,8 @@ from dotenv import load_dotenv
 from langchain.chat_models import init_chat_model
 from pydantic import BaseModel, Field
 
+from agents.training.utils.graph_stream_hooks import emit_graph_stream
+
 load_dotenv(Path(__file__).parent.parent.parent.parent / ".env")
 
 if TYPE_CHECKING:
@@ -87,16 +89,27 @@ Remaining steps in plan: {remaining_steps}
 
 ## Rules
 
-- If the step failed with a recoverable error, prefer **amend** to retry it.
+- **STRONGLY prefer `continue`** when the step succeeded and produced a valid
+  result.  Most steps that run without error should just continue.
+- Only use **amend** when the result *concretely* indicates the remaining plan
+  is wrong (e.g. a step that should have been skipped is still in the plan,
+  or a prerequisite was missed).
+- **NEVER** re-add a step that just completed successfully.  If `data_collection`
+  just succeeded, the amended plan must NOT start with `data_collection` again.
+  Similarly for any other step — do not duplicate a step that already produced
+  a valid result.
+- If the step failed with a recoverable error, prefer **amend** to retry it
+  (this is the one case where repeating the same step name is allowed).
 - If training metrics are very poor (e.g. accuracy near random, R² < 0.05),
   consider **replan** with a different model family.
 - If the completed step is `generate_report` and the report was saved
   successfully, return **done**.
-- Default to **continue** when the step succeeded and nothing unexpected
-  was found.
 - When amending, only supply the *remaining* steps (not the ones already done).
   All amended steps must be valid step names.
 """
+
+MAX_PLAN_LENGTH = 15
+MAX_CONSECUTIVE_AMENDS = 3
 
 
 def _summarise_completed_step(state: "TrainingAgentState") -> str:
@@ -195,6 +208,15 @@ def evaluator_node(state: "TrainingAgentState") -> "TrainingAgentState":
             "plan_index": plan_index + 1,
         }
 
+    # Count consecutive amends from audit_trace to enforce the safety cap
+    audit = state.get("audit_trace", [])
+    consecutive_amends = 0
+    for entry in reversed(audit):
+        if entry.get("step") == "evaluator" and entry.get("decision") == "amend":
+            consecutive_amends += 1
+        else:
+            break
+
     step_summary = _summarise_completed_step(state)
     ctx = _state_context(state)
 
@@ -206,17 +228,42 @@ def evaluator_node(state: "TrainingAgentState") -> "TrainingAgentState":
         state_context=ctx,
     )
 
+    emit_graph_stream({
+        "phase": "evaluator",
+        "message": f"Reviewing `{completed_step}` — deciding next move…",
+    })
     llm = init_chat_model(model="gpt-5.1", temperature=0)
     structured_llm = llm.with_structured_output(EvaluatorDecision)
     decision: EvaluatorDecision = structured_llm.invoke(prompt)
+    reason_snip = (decision.reasoning or "").strip()
+    if len(reason_snip) > 120:
+        reason_snip = reason_snip[:120] + "…"
+    emit_graph_stream({
+        "phase": "evaluator",
+        "message": f"Evaluator: {decision.decision}" + (f" — {reason_snip}" if reason_snip else ""),
+    })
 
     new_plan = list(plan)
     new_index = plan_index + 1
 
     if decision.decision == "amend" and decision.amended_remaining_steps:
-        amended = [{"step": s.step, "rationale": s.rationale} for s in decision.amended_remaining_steps]
-        new_plan = list(plan[:plan_index + 1]) + amended
-        new_index = plan_index + 1
+        # Safety: force continue if we hit the consecutive amend cap
+        if consecutive_amends >= MAX_CONSECUTIVE_AMENDS:
+            decision.decision = "continue"
+            decision.reasoning = (
+                f"Forced continue — {MAX_CONSECUTIVE_AMENDS} consecutive amends reached. "
+                + (decision.reasoning or "")
+            )
+        else:
+            amended = [{"step": s.step, "rationale": s.rationale} for s in decision.amended_remaining_steps]
+            # Strip any leading step that duplicates the just-completed step
+            while amended and amended[0]["step"] == completed_step:
+                amended.pop(0)
+            new_plan = list(plan[:plan_index + 1]) + amended
+            # Safety: cap total plan length
+            if len(new_plan) > MAX_PLAN_LENGTH:
+                new_plan = new_plan[:MAX_PLAN_LENGTH]
+            new_index = plan_index + 1
 
     replan_reason = decision.replan_reason or decision.reasoning if decision.decision == "replan" else None
 

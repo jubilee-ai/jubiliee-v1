@@ -1,0 +1,958 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Jubilee Architecture Reference</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,600;0,9..144,800;1,9..144,400&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #0c0e12;
+  --surface: #14171e;
+  --surface2: #1a1e28;
+  --border: #262b38;
+  --border-accent: #3a4260;
+  --text: #c8cdd8;
+  --text-dim: #6b7394;
+  --text-bright: #e8ecf4;
+  --accent: #6c8aff;
+  --accent-glow: rgba(108,138,255,0.15);
+  --red: #ff6b6b;
+  --red-glow: rgba(255,107,107,0.12);
+  --amber: #f0b429;
+  --amber-glow: rgba(240,180,41,0.12);
+  --green: #5ae6a6;
+  --green-glow: rgba(90,230,166,0.1);
+  --teal: #38d9c4;
+  --teal-glow: rgba(56,217,196,0.08);
+  --purple: #b18cff;
+  --purple-glow: rgba(177,140,255,0.08);
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'DM Mono', monospace;
+  font-size: 13px;
+  line-height: 1.6;
+  overflow-x: hidden;
+}
+
+.page {
+  max-width: 1340px;
+  margin: 0 auto;
+  padding: 48px 32px 80px;
+}
+
+h1 {
+  font-family: 'Fraunces', serif;
+  font-weight: 800;
+  font-size: 32px;
+  color: var(--text-bright);
+  letter-spacing: -0.5px;
+  margin-bottom: 6px;
+}
+h1 span { color: var(--accent); }
+
+.subtitle {
+  color: var(--text-dim);
+  font-size: 12px;
+  margin-bottom: 48px;
+}
+
+section {
+  margin-bottom: 56px;
+}
+
+h2 {
+  font-family: 'Fraunces', serif;
+  font-weight: 600;
+  font-size: 18px;
+  color: var(--text-bright);
+  margin-bottom: 20px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+h2 .num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px; height: 26px;
+  border-radius: 6px;
+  background: var(--accent-glow);
+  color: var(--accent);
+  font-family: 'DM Mono', monospace;
+  font-size: 12px;
+  font-weight: 500;
+}
+h3 {
+  font-family: 'Fraunces', serif;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-bright);
+  margin-bottom: 10px;
+}
+
+/* -- flow diagrams -- */
+.flow {
+  display: flex;
+  align-items: stretch;
+  gap: 0;
+  overflow-x: auto;
+  padding: 20px 0;
+}
+.flow-node {
+  position: relative;
+  min-width: 110px;
+  padding: 14px 16px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  text-align: center;
+  transition: all 0.2s;
+  flex-shrink: 0;
+}
+.flow-node:hover {
+  border-color: var(--accent);
+  box-shadow: 0 0 20px var(--accent-glow);
+  transform: translateY(-2px);
+}
+.flow-node .label {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-bright);
+}
+.flow-node .sub {
+  font-size: 10px;
+  color: var(--text-dim);
+  margin-top: 3px;
+}
+.flow-arrow {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 4px;
+  color: var(--text-dim);
+  font-size: 16px;
+  flex-shrink: 0;
+}
+.flow-node.planner { border-color: var(--purple); background: var(--purple-glow); }
+.flow-node.dispatcher { border-color: var(--teal); background: var(--teal-glow); }
+.flow-node.evaluator { border-color: var(--amber); background: var(--amber-glow); }
+.flow-node.step { border-color: var(--accent); }
+.flow-node.api { border-color: var(--text-dim); }
+
+/* -- grids -- */
+.steps-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 10px;
+}
+.step-card {
+  padding: 12px 14px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  transition: all 0.2s;
+}
+.step-card:hover {
+  border-color: var(--accent);
+  background: var(--surface2);
+}
+.step-card .id {
+  font-size: 11px;
+  color: var(--accent);
+  margin-bottom: 2px;
+}
+.step-card .role {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+.step-card .detail {
+  font-size: 10px;
+  color: var(--text-dim);
+  margin-top: 4px;
+  opacity: 0.7;
+}
+
+/* -- SSE columns -- */
+.sse-flow {
+  display: grid;
+  grid-template-columns: 1fr 60px 1fr 60px 1fr;
+  gap: 0;
+  align-items: start;
+}
+.sse-col {
+  padding: 16px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+.sse-col .file {
+  font-size: 10px;
+  color: var(--text-dim);
+  margin-bottom: 8px;
+}
+.sse-arrow {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-dim);
+  font-size: 14px;
+  padding-top: 40px;
+}
+.event-tag {
+  display: inline-block;
+  padding: 2px 7px;
+  border-radius: 4px;
+  font-size: 10px;
+  margin: 2px 3px 2px 0;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+}
+.event-tag.hot { border-color: var(--red); color: var(--red); background: var(--red-glow); }
+.event-tag.warn { border-color: var(--amber); color: var(--amber); background: var(--amber-glow); }
+.event-tag.ok { border-color: var(--green); color: var(--green); background: var(--green-glow); }
+.event-tag.info { border-color: var(--accent); color: var(--accent); background: var(--accent-glow); }
+.event-tag.purple { border-color: var(--purple); color: var(--purple); background: var(--purple-glow); }
+.event-tag.teal { border-color: var(--teal); color: var(--teal); background: var(--teal-glow); }
+
+/* -- tables -- */
+.ref-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+  margin-top: 10px;
+}
+.ref-table th {
+  text-align: left;
+  padding: 6px 10px;
+  color: var(--text-dim);
+  border-bottom: 1px solid var(--border);
+  font-weight: 500;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.ref-table td {
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+  vertical-align: top;
+}
+.ref-table tr:last-child td { border-bottom: none; }
+.ref-table code {
+  background: var(--bg);
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 10px;
+}
+
+/* -- info boxes -- */
+.info-box {
+  padding: 16px 20px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  margin-bottom: 14px;
+}
+.info-box.accent { border-left: 3px solid var(--accent); }
+.info-box.purple { border-left: 3px solid var(--purple); }
+.info-box.teal { border-left: 3px solid var(--teal); }
+.info-box.amber { border-left: 3px solid var(--amber); }
+.info-box.green { border-left: 3px solid var(--green); }
+.info-box h4 {
+  font-family: 'Fraunces', serif;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-bright);
+  margin-bottom: 6px;
+}
+.info-box p, .info-box ul {
+  font-size: 11px;
+  color: var(--text-dim);
+  line-height: 1.6;
+}
+.info-box ul { padding-left: 16px; }
+.info-box li { margin-bottom: 3px; }
+.info-box .file-ref {
+  margin-top: 6px;
+  font-size: 10px;
+  color: var(--accent);
+  opacity: 0.7;
+}
+
+/* -- two-col grid -- */
+.two-col {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+}
+@media (max-width: 860px) { .two-col { grid-template-columns: 1fr; } }
+
+/* -- reveal animation -- */
+.reveal {
+  opacity: 0;
+  transform: translateY(16px);
+  transition: opacity 0.5s ease, transform 0.5s ease;
+}
+.reveal.visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+</style>
+</head>
+<body>
+<div class="page">
+
+  <h1>Jubilee <span>Architecture Reference</span></h1>
+  <p class="subtitle">Complete flow documentation &mdash; entry points, graph nodes, SSE events, HITL, dataset resolution, UI state</p>
+
+  <!-- ═══ 1. ENTRY POINTS & INTENT ROUTING ═══ -->
+  <section class="reveal">
+    <h2><span class="num">1</span> Entry Points &amp; Intent Routing</h2>
+
+    <div class="info-box accent">
+      <h4>Unified entry: POST /api/chat</h4>
+      <p>All UI interactions (chat messages, training starts, HITL resumes) go through a single endpoint.
+         The <code>chat(request)</code> function in <code>backend/chat/service.py</code> decides which SSE generator to use.</p>
+      <div class="file-ref">backend/chat/routes.py &rarr; backend/chat/service.py</div>
+    </div>
+
+    <div class="info-box purple">
+      <h4>ChatRequest schema (backend/chat/schemas.py)</h4>
+      <table class="ref-table">
+        <tr><th>Field</th><th>Type</th><th>Purpose</th></tr>
+        <tr><td><code>message</code></td><td>str</td><td>User's natural-language message</td></tr>
+        <tr><td><code>thread_id</code></td><td>str?</td><td>Existing chat thread id</td></tr>
+        <tr><td><code>experiment_id</code></td><td>str?</td><td>Links chat to an experiment</td></tr>
+        <tr><td><code>training_context</code></td><td>str?</td><td>Pre-built context block (recent training results)</td></tr>
+        <tr><td><code>linked_datasets</code></td><td>list[str]?</td><td>Dataset paths/UUIDs/names to attach</td></tr>
+        <tr><td><code>user_model_preference</code></td><td>str?</td><td>Preferred ML model type</td></tr>
+        <tr><td><code>resume_training</code></td><td>{thread_id, approved, feedback?}?</td><td>HITL resume payload</td></tr>
+        <tr><td><code>mode</code></td><td>"train" | "chat"?</td><td>Hard-signal mode override</td></tr>
+      </table>
+    </div>
+
+    <div class="info-box teal">
+      <h4>Routing cascade in chat() (backend/chat/service.py)</h4>
+      <table class="ref-table">
+        <tr><th>Priority</th><th>Condition</th><th>Generator</th></tr>
+        <tr><td>1</td><td><code>resume_training</code> is set</td><td><code>generate_graph_resume_sse_events()</code></td></tr>
+        <tr><td>2</td><td><code>should_route_to_training_graph()</code> returns True</td><td><code>generate_graph_sse_events()</code></td></tr>
+        <tr><td>3</td><td>Otherwise</td><td><code>generate_chat_sse()</code> (orchestrator agent)</td></tr>
+      </table>
+    </div>
+
+    <div class="info-box amber">
+      <h4>Intent router: should_route_to_training_graph() (backend/chat/intent_router.py)</h4>
+      <p>Deterministic signals checked first (no LLM cost), then LLM fallback:</p>
+      <table class="ref-table">
+        <tr><th>#</th><th>Signal</th><th>Type</th><th>Result</th></tr>
+        <tr><td>1</td><td><code>linked_datasets</code> non-empty</td><td>Deterministic</td><td>True</td></tr>
+        <tr><td>2</td><td><code>mode == "train"</code></td><td>Deterministic</td><td>True</td></tr>
+        <tr><td>3</td><td><code>mode == "chat"</code></td><td>Deterministic</td><td>False</td></tr>
+        <tr><td>4</td><td>Empty message</td><td>Deterministic</td><td>False</td></tr>
+        <tr><td>5</td><td>No API key in settings</td><td>Deterministic</td><td>False</td></tr>
+        <tr><td>6</td><td>LLM classification (CHAT_INTENT_ROUTER_MODEL)</td><td>LLM</td><td>True/False</td></tr>
+        <tr><td>7</td><td>LLM call fails</td><td>Fallback</td><td>False</td></tr>
+      </table>
+    </div>
+
+    <p style="font-size:11px; color:var(--text-dim); margin-top:12px;">
+      <strong>Additional direct routes</strong> (not through /api/chat):
+      <code>POST /api/train-graph</code>,
+      <code>POST /api/train-graph-resume</code>,
+      <code>POST /api/train-stream</code> (simple agent),
+      <code>POST /api/train-resume</code> (simple resume),
+      <code>POST /api/train</code> (async job),
+      <code>POST /api/train-sync</code> (blocking).
+      All defined in <code>backend/training/routes.py</code>.
+    </p>
+  </section>
+
+  <!-- ═══ 2. GRAPH ARCHITECTURE ═══ -->
+  <section class="reveal">
+    <h2><span class="num">2</span> Graph Architecture: Planner &rarr; Dispatcher &rarr; Steps &rarr; Evaluator</h2>
+
+    <div class="flow">
+      <div class="flow-node api">
+        <div class="label">POST /api/chat</div>
+        <div class="sub">chat() routes</div>
+      </div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node planner">
+        <div class="label">Planner</div>
+        <div class="sub">LLM &rarr; Plan + HITL</div>
+      </div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node dispatcher">
+        <div class="label">Dispatcher</div>
+        <div class="sub">plan[i] &rarr; current_step</div>
+      </div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node step">
+        <div class="label">Step Node</div>
+        <div class="sub">e.g. data_collection</div>
+      </div>
+      <div class="flow-arrow">&rarr;</div>
+      <div class="flow-node evaluator">
+        <div class="label">Evaluator</div>
+        <div class="sub">LLM review &rarr; decision</div>
+      </div>
+    </div>
+    <p style="font-size:11px; color:var(--text-dim); margin-top:4px;">
+      Evaluator edges:
+      <span style="color:var(--teal)">continue</span> &rarr; Dispatcher (next step),
+      <span style="color:var(--purple)">replan</span> &rarr; Planner (new plan),
+      <span style="color:var(--amber)">amend</span> &rarr; Dispatcher (modified remaining steps, mapped to "continue"),
+      <span style="color:var(--green)">done</span> &rarr; END.
+      Built in <code>agents/training/core/graph.py</code> via <code>StateGraph[TrainingAgentState]</code>.
+    </p>
+
+    <div class="two-col" style="margin-top: 20px;">
+      <div class="info-box purple">
+        <h4>Planner Node (core/planner.py)</h4>
+        <ul>
+          <li>Wrapped by <code>run_with_hitl("planner", ...)</code></li>
+          <li>Formats <code>PLANNER_PROMPT</code> with goal, datasets, preference, state summary, replan context</li>
+          <li>Calls <code>gpt-5.1</code> with structured output &rarr; <code>Plan</code> (steps + skipped + strategy)</li>
+          <li><code>_validate_plan()</code> enforces constraints: data_collection first, generate_report last, training_approval before training, auto-inserts missing required steps</li>
+          <li>Clamps text: strategy &le;220 chars, rationale &le;90 chars, skip_rationale &le;150 chars</li>
+          <li>Produces: <code>plan</code>, <code>plan_index: 0</code>, <code>plan_strategy</code>, <code>plan_history</code></li>
+        </ul>
+        <div class="file-ref">agents/training/core/planner.py</div>
+      </div>
+
+      <div class="info-box amber">
+        <h4>Evaluator Node (core/evaluator.py)</h4>
+        <ul>
+          <li><strong>Fast-path 1:</strong> completed step == generate_report &rarr; done (no LLM)</li>
+          <li><strong>Fast-path 2:</strong> no remaining steps &rarr; done (no LLM)</li>
+          <li>Otherwise: formats <code>EVALUATOR_PROMPT</code>, calls <code>gpt-5.1</code> &rarr; <code>EvaluatorDecision</code></li>
+          <li>Decisions: continue, amend (modifies remaining plan), replan (back to planner), done</li>
+          <li>"amend" stores new plan but maps to evaluator_decision="continue" for routing</li>
+          <li>On "replan": appends current plan to <code>plan_history</code></li>
+        </ul>
+        <div class="file-ref">agents/training/core/evaluator.py</div>
+      </div>
+
+      <div class="info-box teal">
+        <h4>Dispatcher Node (core/dispatcher.py)</h4>
+        <ul>
+          <li>Pure routing &mdash; no LLM call, no HITL</li>
+          <li>Reads <code>plan[plan_index]</code>, sets <code>current_step</code> to step name</li>
+          <li>If <code>plan_index &ge; len(plan)</code> &rarr; sets <code>current_step = "done"</code></li>
+          <li>Conditional edge <code>route_to_step()</code> returns <code>state["current_step"]</code></li>
+        </ul>
+        <div class="file-ref">agents/training/core/dispatcher.py + edges.py</div>
+      </div>
+
+      <div class="info-box green">
+        <h4>HITL: run_with_hitl() (core/hitl.py)</h4>
+        <ul>
+          <li>Wraps every step node (except dispatcher, evaluator)</li>
+          <li>Calls <code>work_fn(state, feedback)</code> &rarr; sanitizes via <code>make_serializable()</code></li>
+          <li>Calls <code>get_summary_fn(result)</code> for the review card</li>
+          <li>Extracts <code>state_snapshot</code> (only STATE_SNAPSHOT_KEYS: 18 fields)</li>
+          <li><strong><code>interrupt({node, summary, message, state_snapshot})</code></strong> &mdash; pauses graph</li>
+          <li><code>parse_decision()</code>: bool, "yes"/"ok"/etc &rarr; approved; other string &rarr; feedback; dict &rarr; {approved, feedback}</li>
+          <li>If rejected: loops back to work_fn with feedback</li>
+        </ul>
+        <div class="file-ref">agents/training/core/hitl.py</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══ 3. PIPELINE STEPS ═══ -->
+  <section class="reveal">
+    <h2><span class="num">3</span> Pipeline Steps (9 nodes, all HITL-gated)</h2>
+    <div class="steps-grid">
+      <div class="step-card">
+        <div class="id">data_collection</div>
+        <div class="role">Load or retrieve dataset(s)</div>
+        <div class="detail">Linked &rarr; local retrieval agent &rarr; optional external (Kaggle/HF). Scores &amp; picks best. No LLM.</div>
+      </div>
+      <div class="step-card">
+        <div class="id">select_model</div>
+        <div class="role">Choose model family</div>
+        <div class="detail">supervised / unsupervised / neural_networks. Explicit pref skips LLM. gpt-5.1 structured output.</div>
+      </div>
+      <div class="step-card">
+        <div class="id">cleaning</div>
+        <div class="role">Clean &amp; standardize data</div>
+        <div class="detail">Delegates to run_cleaning_simple(). Target-aware if target column inferred.</div>
+      </div>
+      <div class="step-card">
+        <div class="id">label_split_definition</div>
+        <div class="role">Target column + train/val/test splits</div>
+        <div class="detail">Delegates to run_label_split_definition(). Random/time/entity split.</div>
+      </div>
+      <div class="step-card">
+        <div class="id">feature_selection_specification</div>
+        <div class="role">Analyze data &amp; specify features</div>
+        <div class="detail">Delegates to run_feature_engineering_simple(). Produces FeatureSpec. Resets redo state.</div>
+      </div>
+      <div class="step-card">
+        <div class="id">feature_engineering_executor</div>
+        <div class="role">Apply feature transformations</div>
+        <div class="detail">Delegates to execute_feature_spec_split(). Validates results.</div>
+      </div>
+      <div class="step-card">
+        <div class="id">training_approval</div>
+        <div class="role">Propose config (HITL gate)</div>
+        <div class="detail">Manual interrupt() loop (not run_with_hitl). LLM proposes hyperparameters.</div>
+      </div>
+      <div class="step-card">
+        <div class="id">training</div>
+        <div class="role">Train model + evaluate metrics</div>
+        <div class="detail">Delegates to _run_training(). May request feature redo.</div>
+      </div>
+      <div class="step-card">
+        <div class="id">generate_report</div>
+        <div class="role">Save final training report</div>
+        <div class="detail">Builds report dict, writes JSON. No LLM. Evaluator fast-paths to "done" after.</div>
+      </div>
+    </div>
+    <p style="font-size:10px; color:var(--text-dim); margin-top:12px;">
+      All steps defined in <code>agents/training/steps/orchestrator.py</code>, delegating to impl files in <code>agents/training/steps/</code>.
+      Constraint order enforced by planner's <code>_validate_plan()</code>: data_collection &rarr; ... &rarr; generate_report (last).
+      Required steps (never skipped): data_collection, training, generate_report.
+    </p>
+  </section>
+
+  <!-- ═══ 4. LINKED DATASET RESOLUTION ═══ -->
+  <section class="reveal">
+    <h2><span class="num">4</span> Linked Dataset Resolution</h2>
+
+    <div class="info-box accent">
+      <h4>resolve_linked_dataset(entry) &mdash; 4-strategy resolver</h4>
+      <p>Called in every SSE generator before the graph/agent runs. Tries strategies in order; returns registered ref name or None.</p>
+      <table class="ref-table">
+        <tr><th>#</th><th>Strategy</th><th>When it matches</th></tr>
+        <tr><td>1</td><td><code>get_registered_dataset(entry)</code></td><td>Already in the in-memory registry (e.g. from a prior step)</td></tr>
+        <tr><td>2</td><td><code>load_and_register_dataset(entry)</code></td><td>Entry is a real file path under datasets_dir (csv/foo.csv)</td></tr>
+        <tr><td>3</td><td>DB name lookup (case-insensitive) &rarr; <code>properties["file"]</code> &rarr; load</td><td>Entry is a display name like "Health Insurance Charges Dataset"</td></tr>
+        <tr><td>4</td><td>DB UUID lookup &rarr; <code>properties["file"]</code> &rarr; load</td><td>Entry is a UUID string</td></tr>
+      </table>
+      <div class="file-ref">backend/training/service.py &middot; resolve_linked_dataset()</div>
+    </div>
+
+    <div class="two-col">
+      <div class="info-box teal">
+        <h4>UI guard: ChatPanel.handleDatasetSelect</h4>
+        <ul>
+          <li>Checks <code>dataset.trainable !== false</code> &mdash; rejects explicitly non-trainable datasets</li>
+          <li>Key = <code>dataset.file || dataset.id</code> &mdash; never sends display name alone</li>
+          <li>If neither file nor id exists &rarr; skips with console.warn</li>
+        </ul>
+        <div class="file-ref">ui/src/components/ChatPanel.tsx</div>
+      </div>
+
+      <div class="info-box teal">
+        <h4>Catalog: _dataset_to_dict (DB rows)</h4>
+        <ul>
+          <li><code>file = props.get("file") or None</code> &mdash; no fallback to row.name</li>
+          <li><code>trainable = bool(file_path)</code> &mdash; True only when a real path exists</li>
+          <li>JSON catalog fallback unaffected (those entries already have real paths)</li>
+        </ul>
+        <div class="file-ref">backend/catalog/repository.py</div>
+      </div>
+    </div>
+
+    <p style="font-size:11px; color:var(--text-dim); margin-top:8px;">
+      When resolution fails, the SSE generator emits <code>dataset_error</code>.
+      When ALL entries fail, <code>final_linked = None</code> (not the raw strings).
+      Downstream <code>data_collection</code> falls through to the retrieval agent instead of silently looping.
+    </p>
+  </section>
+
+  <!-- ═══ 5. CUSTOM STREAM: "THINKING" LINES ═══ -->
+  <section class="reveal">
+    <h2><span class="num">5</span> Custom Stream: Live "Thinking" Lines</h2>
+
+    <div class="info-box purple">
+      <h4>emit_graph_stream() (agents/training/utils/graph_stream_hooks.py)</h4>
+      <p>
+        Calls <code>get_stream_writer()</code> from LangGraph config. If the graph is being streamed with
+        <code>stream_mode=["updates", "custom"]</code>, it writes the payload dict as a custom event.
+        Safe no-op outside a streamed run (<code>except RuntimeError: pass</code>).
+      </p>
+    </div>
+
+    <p style="font-size:12px; color:var(--text-bright); margin-bottom:10px;">All emit sites (11 calls across 4 files):</p>
+    <table class="ref-table">
+      <tr><th>Location</th><th>Phase</th><th>Message</th></tr>
+      <tr><td>planner (before LLM)</td><td><code>"planner"</code></td><td>"Planning: drafting execution steps&hellip;"</td></tr>
+      <tr><td>planner (after LLM)</td><td><code>"planner"</code></td><td>"Plan ready &mdash; N step(s); review when prompted."</td></tr>
+      <tr><td>dispatcher</td><td><code>"dispatch"</code></td><td>"Next step i/n: step_name"</td></tr>
+      <tr><td>evaluator (before LLM)</td><td><code>"evaluator"</code></td><td>"Reviewing 'step' &mdash; deciding next move&hellip;"</td></tr>
+      <tr><td>evaluator (after LLM)</td><td><code>"evaluator"</code></td><td>"Evaluator: decision &mdash; reasoning snippet"</td></tr>
+      <tr><td>select_model</td><td><code>"select_model"</code></td><td>"Choosing model family (supervised / unsupervised / neural)&hellip;"</td></tr>
+      <tr><td>data_collection (linked)</td><td><code>"data_collection"</code></td><td>"Using linked dataset 'ref' (N rows)."</td></tr>
+      <tr><td>data_collection (search)</td><td><code>"data_collection"</code></td><td>"Searching locally and via retrieval agent&hellip;"</td></tr>
+      <tr><td>data_collection (external)</td><td><code>"data_collection"</code></td><td>"Searching external sources (Kaggle + Hugging Face)&hellip;"</td></tr>
+      <tr><td>data_collection (found)</td><td><code>"data_collection"</code></td><td>"Selected dataset 'ref' (R&times;C) from source."</td></tr>
+      <tr><td>data_collection (none)</td><td><code>"data_collection"</code></td><td>"No suitable dataset found yet &mdash; will surface for review."</td></tr>
+    </table>
+
+    <p style="font-size:11px; color:var(--text-dim); margin-top:10px;">
+      Backend <code>_iter_graph_sse_lines()</code> forwards custom events as <code>type: "thinking"</code> SSE with <code>phase</code> and <code>message</code> fields.
+      The UI accumulates them into a single system message (id = <code>__graph_thinking__</code>) with lines prefixed by "&ctdot;".
+      Cleared on each new <code>started</code> event.
+    </p>
+  </section>
+
+  <!-- ═══ 6. SSE EVENT INVENTORY ═══ -->
+  <section class="reveal">
+    <h2><span class="num">6</span> Complete SSE Event Inventory</h2>
+
+    <div class="sse-flow">
+      <div class="sse-col">
+        <h3>Backend Generators</h3>
+        <div class="file">backend/training/service.py</div>
+        <p style="margin-bottom:6px; font-size:10px; color:var(--text-dim);">
+          Graph pipeline events (stream_mode=["updates","custom"]):
+        </p>
+        <div>
+          <span class="event-tag ok">started</span>
+          <span class="event-tag purple">thinking</span>
+          <span class="event-tag info">node_complete</span>
+          <span class="event-tag">node_skipped</span>
+          <span class="event-tag warn">interrupt</span>
+          <span class="event-tag teal">dataset_loaded</span>
+          <span class="event-tag hot">dataset_error</span>
+          <span class="event-tag ok">completed</span>
+          <span class="event-tag hot">error</span>
+        </div>
+        <div style="margin-top:10px; padding-top:8px; border-top:1px solid var(--border);">
+          <div class="file">backend/chat/service.py</div>
+          <p style="font-size:10px; color:var(--text-dim); margin-bottom:4px;">
+            Chat orchestrator events (stream_mode=["messages","updates"]):
+          </p>
+          <span class="event-tag ok">start</span>
+          <span class="event-tag hot">token</span>
+          <span class="event-tag warn">tool_call</span>
+          <span class="event-tag">tool_result</span>
+          <span class="event-tag">training_started</span>
+          <span class="event-tag">training_completed</span>
+          <span class="event-tag ok">end</span>
+          <span class="event-tag hot">error</span>
+        </div>
+      </div>
+      <div class="sse-arrow">&xrarr;</div>
+      <div class="sse-col">
+        <h3>api.ts Parser</h3>
+        <div class="file">ui/src/lib/api.ts</div>
+        <p style="font-size:11px; color:var(--text-dim);">
+          <code>streamChat()</code>: POST /api/chat &rarr; ReadableStream &rarr; TextDecoder &rarr; split on <code>\n</code>
+          &rarr; strip <code>data:</code> prefix &rarr; JSON.parse &rarr; <code>AgentStreamEvent</code>
+        </p>
+        <div style="margin-top:10px;">
+          <span class="event-tag info">AgentStreamEvent</span>
+        </div>
+        <p style="font-size:10px; color:var(--text-dim); margin-top:8px;">
+          Key fields: <code>type</code>, <code>thread_id</code>, <code>content</code>, <code>tool</code>,
+          <code>node</code>, <code>progress</code>, <code>summary</code>, <code>details</code>,
+          <code>state</code>, <code>state_snapshot</code>, <code>stream_step_key</code>,
+          <code>phase</code>, <code>message</code>, <code>dataset</code>, <code>ref</code>, <code>error</code>
+        </p>
+      </div>
+      <div class="sse-arrow">&xrarr;</div>
+      <div class="sse-col">
+        <h3>useRealAgent Hook</h3>
+        <div class="file">ui/src/hooks/useRealAgent.ts</div>
+        <p style="font-size:11px; color:var(--text-dim); margin-bottom:6px;">
+          Unified <code>applyAgentStreamEvent</code> callback handles all event types
+        </p>
+        <div style="font-size:10px; color:var(--text-dim); line-height:1.8;">
+          <code>agentState</code> &middot; <code>steps[]</code> &middot; <code>messages[]</code><br>
+          <code>progress</code> &middot; <code>threadId</code> &middot; <code>chatThreadId</code><br>
+          <code>experimentId</code> &middot; <code>confirmationRequest</code><br>
+          <code>linkedDatasets</code> &middot; <code>linkedModelId</code><br>
+          <code>acceptAllMode</code> &middot; <code>isRunning</code>
+        </div>
+      </div>
+    </div>
+
+    <p style="font-size:12px; color:var(--text-bright); margin:20px 0 10px;">Full event dispatch table (applyAgentStreamEvent):</p>
+
+    <table class="ref-table">
+      <tr><th>event.type</th><th>UI state mutations</th><th>Chat message?</th></tr>
+      <tr><td><code>start</code></td><td><code>isRunning = true</code></td><td>No</td></tr>
+      <tr><td><code>token</code></td><td>Appends <code>content</code> to last streaming agent message (or creates one with <code>_streaming: true</code>)</td><td>Yes (agent, streaming)</td></tr>
+      <tr><td><code>tool_call</code></td><td>No state change</td><td>Yes (system, e.g. "Running analysis&hellip;")</td></tr>
+      <tr><td><code>tool_result</code></td><td>No-op (returns immediately)</td><td>No</td></tr>
+      <tr><td><code>training_started</code></td><td>Clears emittedStepsRef, progress=0, resets steps (first=running)</td><td>No</td></tr>
+      <tr><td><code>training_completed</code></td><td>progress=100, marks all steps done</td><td>No</td></tr>
+      <tr><td><code>end</code></td><td>Strips _streaming flags, isRunning=false, saves messages</td><td>No</td></tr>
+      <tr><td><code>thinking</code></td><td>Appends "&ctdot; message" line to GRAPH_THINKING_MSG_ID message</td><td>Yes (system, ephemeral)</td></tr>
+      <tr><td><code>started</code></td><td>Clears thinking msg, progress=0. First step=running unless node=="planner"</td><td>Yes (system, "Training stream started&hellip;")</td></tr>
+      <tr><td><code>interrupt</code></td><td>Step &rarr; awaiting_confirmation. Prior pending &rarr; completed. Merges state_snapshot. If acceptAllMode: auto-resumes. Else: sets confirmationRequest, isRunning=false</td><td>No (confirmation panel instead)</td></tr>
+      <tr><td><code>dataset_loaded</code></td><td>No state change</td><td>Yes (system, "Dataset loaded: &hellip;")</td></tr>
+      <tr><td><code>dataset_error</code></td><td>No state change</td><td>Yes (system, "Could not load dataset: &hellip;")</td></tr>
+      <tr><td><code>node_complete</code></td><td>Dedup via emittedStepsRef (stream_step_key or node). Updates progress, steps (applyNodeCompleteToSteps), subtitle, agentState. Planner/dispatcher: silent (no chat)</td><td>Yes (agent) for pipeline steps except planner/dispatcher</td></tr>
+      <tr><td><code>node_skipped</code></td><td>Dedup via "skipped:"+node. Marks step as skipped, sets subtitle</td><td>No</td></tr>
+      <tr><td><code>completed</code></td><td>progress=100, isRunning=false, all steps done</td><td>Yes (agent, "Training completed!")</td></tr>
+      <tr><td><code>error</code></td><td>isRunning=false, running steps &rarr; error</td><td>Yes (system, error message)</td></tr>
+    </table>
+  </section>
+
+  <!-- ═══ 7. DEDUP: stream_step_key ═══ -->
+  <section class="reveal">
+    <h2><span class="num">7</span> Deduplication: stream_step_key</h2>
+
+    <div class="two-col">
+      <div class="info-box accent">
+        <h4>Backend: _pipeline_emit_key()</h4>
+        <p>
+          Format: <code>{len(plan_history)}:{plan_index}:{node_name}</code><br>
+          After a replan, <code>plan_history</code> grows, so the same <code>data_collection</code> gets a different key
+          (e.g. <code>"0:0:data_collection"</code> vs <code>"1:0:data_collection"</code>).
+          This allows the second execution to emit a new <code>node_complete</code> SSE event.
+        </p>
+        <div class="file-ref">backend/training/service.py</div>
+      </div>
+
+      <div class="info-box accent">
+        <h4>UI: emittedStepsRef</h4>
+        <p>
+          <code>Set&lt;string&gt;</code> ref. On <code>node_complete</code>: checks
+          <code>event.stream_step_key ?? event.node</code>. If already in set &rarr; skip.
+          On <code>node_skipped</code>: key is <code>"skipped:" + node</code>.
+          Cleared on every new <code>startAgentStreaming</code>, <code>sendMessage</code> (with datasets),
+          and <code>training_started</code>.
+        </p>
+        <div class="file-ref">ui/src/hooks/useRealAgent.ts</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══ 8. STATE: TrainingAgentState ═══ -->
+  <section class="reveal">
+    <h2><span class="num">8</span> State: TrainingAgentState (40+ fields)</h2>
+
+    <table class="ref-table">
+      <tr><th>Group</th><th>Fields</th></tr>
+      <tr><td>Inputs</td><td><code>goal</code>, <code>linked_datasets</code>, <code>user_model_preference</code></td></tr>
+      <tr><td>Model Selection</td><td><code>selected_model</code>, <code>model_explanation</code>, <code>model_regen_count</code>, <code>task_type</code></td></tr>
+      <tr><td>Data Collection</td><td><code>collected_dataset_ref</code>, <code>data_source</code>, <code>use_external_sources</code></td></tr>
+      <tr><td>Cleaning</td><td><code>cleaned_dataset_ref</code>, <code>cleaning_transformations</code>, <code>cleaning_summary</code></td></tr>
+      <tr><td>Label/Split</td><td><code>label_definition</code> (TypedDict), <code>split_indices</code>, <code>train_dataset_ref</code>, <code>val_dataset_ref</code>, <code>test_dataset_ref</code></td></tr>
+      <tr><td>Feature Spec</td><td><code>feature_spec</code> (TypedDict), <code>analysis_trace</code></td></tr>
+      <tr><td>Feature Eng.</td><td><code>transformed_dataset_ref</code>, <code>transformed_train_ref</code>, <code>transformed_val_ref</code>, <code>transformed_test_ref</code>, <code>feature_validation_passed</code></td></tr>
+      <tr><td>Confirmation</td><td><code>human_confirmed</code></td></tr>
+      <tr><td>Training Approval</td><td><code>training_plan</code>, <code>training_plan_approved</code></td></tr>
+      <tr><td>Training</td><td><code>training_params</code>, <code>model_weights_path</code>, <code>training_metrics</code>, <code>training_iteration</code></td></tr>
+      <tr><td>Feature Redo</td><td><code>feature_redo_requested</code>, <code>feature_redo_recommendation</code>, <code>feature_redo_reason</code>, <code>feature_redo_iteration</code></td></tr>
+      <tr><td>Report</td><td><code>report_path</code></td></tr>
+      <tr><td>Audit</td><td><code>audit_trace</code>, <code>explanations</code></td></tr>
+      <tr><td>Planner</td><td><code>plan</code>, <code>plan_index</code>, <code>plan_history</code>, <code>plan_strategy</code>, <code>evaluator_decision</code></td></tr>
+      <tr><td>Control</td><td><code>current_step</code>, <code>error</code></td></tr>
+    </table>
+
+    <p style="font-size:10px; color:var(--text-dim); margin-top:10px;">
+      Defined in <code>agents/training/core/state.py</code>. Factory: <code>create_initial_state(goal, linked_datasets, user_model_preference, use_external_sources)</code> returns all-zeroed dict with <code>current_step: "planner"</code>.
+      <code>STATE_SNAPSHOT_KEYS</code> (18 keys) controls which fields are sent to HITL review cards via <code>extract_state_snapshot()</code>.
+    </p>
+  </section>
+
+  <!-- ═══ 9. UI HOOK: useRealAgent ═══ -->
+  <section class="reveal">
+    <h2><span class="num">9</span> UI Hook: useRealAgent (1664 lines)</h2>
+
+    <div class="two-col">
+      <div class="info-box accent">
+        <h4>Key useState</h4>
+        <table class="ref-table">
+          <tr><td><code>agentState</code></td><td>TrainingAgentState (full pipeline state)</td></tr>
+          <tr><td><code>steps</code></td><td>StepInfo[] (9 entries, status/subtitle/timing)</td></tr>
+          <tr><td><code>messages</code></td><td>ChatMessage[] (user/agent/system)</td></tr>
+          <tr><td><code>isRunning</code></td><td>boolean</td></tr>
+          <tr><td><code>progress</code></td><td>number (0-100)</td></tr>
+          <tr><td><code>threadId</code></td><td>string | null (graph thread)</td></tr>
+          <tr><td><code>chatThreadId</code></td><td>string | null (non-graph thread)</td></tr>
+          <tr><td><code>experimentId</code></td><td>string | null</td></tr>
+          <tr><td><code>confirmationRequest</code></td><td>ConfirmationRequest | null</td></tr>
+          <tr><td><code>acceptAllMode</code></td><td>boolean</td></tr>
+          <tr><td><code>linkedDatasets</code></td><td>string[]</td></tr>
+          <tr><td><code>linkedModelId</code></td><td>string | null</td></tr>
+        </table>
+      </div>
+
+      <div class="info-box accent">
+        <h4>Key useRef</h4>
+        <table class="ref-table">
+          <tr><td><code>streamControllerRef</code></td><td>AbortController for active SSE</td></tr>
+          <tr><td><code>emittedStepsRef</code></td><td>Set&lt;string&gt; for node_complete/skipped dedup</td></tr>
+          <tr><td><code>experimentIdRef</code></td><td>Mirror for async callbacks</td></tr>
+          <tr><td><code>chatThreadIdRef</code></td><td>Mirror for async callbacks</td></tr>
+          <tr><td><code>linkedDatasetsRef</code></td><td>Mirror for async callbacks</td></tr>
+          <tr><td><code>messagesRef</code></td><td>Mirror for save without stale reads</td></tr>
+          <tr><td><code>acceptAllModeRef</code></td><td>Avoids stale closure in SSE handler</td></tr>
+        </table>
+      </div>
+    </div>
+
+    <div class="info-box purple" style="margin-top:14px;">
+      <h4>Core actions</h4>
+      <table class="ref-table">
+        <tr><th>Function</th><th>What it does</th></tr>
+        <tr><td><code>startAgentStreaming(goal, linkedDatasets?, modelPreference?, hitl?)</code></td><td>Health check &rarr; ensureExperimentId &rarr; reset steps/progress &rarr; set agentState &rarr; streamChat() with mode/datasets</td></tr>
+        <tr><td><code>sendMessage(content, opts?)</code></td><td>Add user msg &rarr; ensureExperimentId &rarr; abort prior stream &rarr; streamChat() with chatThreadId and training_context</td></tr>
+        <tr><td><code>handleConfirmation(action, comment?)</code></td><td>"accept": complete step + resume(approved:true). "accept_all": same + enable auto-accept. "redo": resume(approved:false, feedback)</td></tr>
+        <tr><td><code>updateLinkedDatasets(ids)</code></td><td>Set state. Create experiment if needed (title from dataset names). Debounce-PATCH to backend (400ms).</td></tr>
+        <tr><td><code>loadExperiment(id)</code></td><td>Save current msgs &rarr; fetch experiment &rarr; restore messages/state/datasets/model/thread &rarr; reset steps/running/confirmation</td></tr>
+        <tr><td><code>ensureExperimentId(name?)</code></td><td>If no experiment yet: POST /api/experiments, store id, call onExperimentEnsured callback</td></tr>
+        <tr><td><code>reset()</code></td><td>Abort everything, zero all state, clear all refs</td></tr>
+        <tr><td><code>leaveLabSession()</code></td><td>reset() + null experimentId</td></tr>
+      </table>
+    </div>
+  </section>
+
+  <!-- ═══ 10. GRAPH SSE GENERATORS (DETAILED) ═══ -->
+  <section class="reveal">
+    <h2><span class="num">10</span> Graph SSE Generators (detailed flow)</h2>
+
+    <div class="info-box green">
+      <h4>generate_graph_sse_events(goal, linked_datasets, model_pref, thread_id?, experiment_id?)</h4>
+      <p>Primary SSE generator for the agentic graph pipeline.</p>
+      <ul>
+        <li><strong>1.</strong> Generate or use provided <code>thread_id</code> (prefix: <code>graph-</code>)</li>
+        <li><strong>2.</strong> If experiment_id: update experiment's <code>training_state.graph_thread_id</code></li>
+        <li><strong>3.</strong> Resolve linked_datasets via <code>resolve_linked_dataset()</code> per entry:
+          <ul>
+            <li>Success &rarr; emit <code>dataset_loaded</code></li>
+            <li>Failure &rarr; emit <code>dataset_error</code></li>
+          </ul>
+          <code>final_linked = registered_refs or None</code>
+        </li>
+        <li><strong>4.</strong> Create agent (MemorySaver checkpointer), initial state, store in repository</li>
+        <li><strong>5.</strong> Emit <code>started</code> (node="planner", progress=0)</li>
+        <li><strong>6.</strong> Delegate to <code>_iter_graph_sse_lines()</code> (see below)</li>
+        <li><strong>7.</strong> If interrupted: return (no completed event)</li>
+        <li><strong>8.</strong> Otherwise: save training context + dataset links, emit <code>completed</code></li>
+        <li><strong>Exception:</strong> emit <code>error</code></li>
+      </ul>
+      <div class="file-ref">backend/training/service.py</div>
+    </div>
+
+    <div class="info-box purple">
+      <h4>_iter_graph_sse_lines(agent, config, thread_id, stream_input)</h4>
+      <p>Inner loop shared by both start and resume generators. Streams with <code>stream_mode=["updates", "custom"]</code>.</p>
+      <ul>
+        <li><strong>Custom events:</strong> forwarded as <code>type: "thinking"</code> SSE with <code>phase</code> and <code>message</code></li>
+        <li><strong>__interrupt__:</strong> extracts interrupt info, snapshots state, emits <code>interrupt</code> SSE, sets <code>_graph_sse_interrupted</code> flag, <strong>returns</strong> (terminates generator)</li>
+        <li><strong>Pipeline step nodes:</strong> deduped by <code>_pipeline_emit_key()</code>. Emits <code>build_node_update()</code> with <code>stream_step_key</code></li>
+        <li><strong>Non-pipeline nodes (planner, dispatcher, evaluator):</strong> always emitted via <code>build_node_update()</code></li>
+        <li><strong>Planner node:</strong> additionally emits <code>node_skipped</code> for each skipped step (deduped)</li>
+      </ul>
+      <div class="file-ref">backend/training/service.py</div>
+    </div>
+
+    <div class="info-box teal">
+      <h4>generate_graph_resume_sse_events(thread_id, approved, feedback)</h4>
+      <p>Resumes the graph after HITL interrupt.</p>
+      <ul>
+        <li>Looks up agent from repository store by thread_id</li>
+        <li>Builds <code>Command(resume=resume_value)</code>. If multiple interrupts: maps each interrupt id to the same decision dict</li>
+        <li>Delegates to same <code>_iter_graph_sse_lines()</code></li>
+        <li>Same post-loop logic (check interrupted flag, save context, emit completed/error)</li>
+      </ul>
+      <div class="file-ref">backend/training/service.py</div>
+    </div>
+  </section>
+
+  <!-- ═══ 11. CHAT ORCHESTRATOR SSE ═══ -->
+  <section class="reveal">
+    <h2><span class="num">11</span> Chat Orchestrator SSE (non-training path)</h2>
+
+    <div class="info-box accent">
+      <h4>generate_chat_sse(thread_id, message, training_context?, experiment_id?)</h4>
+      <p>Orchestrator agent stream for Q&amp;A, analysis, and tool-based interactions. Uses <code>stream_mode=["messages", "updates"]</code>.</p>
+      <ul>
+        <li><strong>Messages stream:</strong> yields <code>token</code> events (incremental LLM text) and <code>tool_call</code> events (deduplicated via <code>_stable_tool_call_id()</code>)</li>
+        <li><strong>Updates stream:</strong> yields <code>tool_result</code> events (content truncated to 2000 chars). If tool is <code>train_model</code>: yields retroactive step events via <code>_emit_training_step_events()</code></li>
+        <li><strong>Bookends:</strong> <code>start</code> at beginning, <code>end</code> at end</li>
+        <li><strong>Persistence:</strong> saves accumulated response to experiment's <code>chat_history</code></li>
+        <li>Training context: if provided, prepends a <code>[SYSTEM CONTEXT ... END CONTEXT]</code> block to the user message so the LLM can answer questions about prior training results</li>
+      </ul>
+      <div class="file-ref">backend/chat/service.py</div>
+    </div>
+  </section>
+
+  <!-- ═══ 12. UI COMPONENTS ═══ -->
+  <section class="reveal">
+    <h2><span class="num">12</span> UI Component Architecture</h2>
+
+    <div class="two-col">
+      <div class="info-box accent">
+        <h4>ChatPanel (ChatPanel.tsx)</h4>
+        <ul>
+          <li><strong>Chips:</strong> linked datasets + model rendered as removable badges in ChatInput</li>
+          <li><strong>Phase markers:</strong> scans messages for step keywords, inserts visual dividers (Setup, Preparation, Features, Training, Output)</li>
+          <li><strong>Past confirmations:</strong> archived after resolution, shown inline after the triggering message</li>
+          <li><strong>Imperative ref:</strong> <code>scrollToMessage(id)</code>, <code>findMessageByStepName(name)</code></li>
+          <li><strong>Step detail modal:</strong> clicking a completed step's message opens StepDetailModal</li>
+        </ul>
+        <div class="file-ref">ui/src/components/ChatPanel.tsx</div>
+      </div>
+
+      <div class="info-box accent">
+        <h4>MessageBubble (chat/MessageBubble.tsx)</h4>
+        <ul>
+          <li>User: right-aligned, agent: left-aligned with markdown rendering</li>
+          <li>System: centered, muted, with icons (check for accepted, rotate for redo, info for others)</li>
+          <li>Truncation: content &gt;400 chars collapsed with "Show more"</li>
+          <li>Report detection: shows "View Report" button on training-complete messages</li>
+        </ul>
+        <div class="file-ref">ui/src/components/chat/MessageBubble.tsx</div>
+      </div>
+    </div>
+
+    <div class="info-box purple" style="margin-top:14px;">
+      <h4>Key types (ui/src/types/agent.ts)</h4>
+      <table class="ref-table">
+        <tr><th>Type</th><th>Key fields</th></tr>
+        <tr><td><code>ChatMessage</code></td><td><code>id</code>, <code>role</code> ("user"|"agent"|"system"), <code>content</code>, <code>timestamp</code>, <code>_streaming?</code>, <code>links?</code></td></tr>
+        <tr><td><code>StepInfo</code></td><td><code>id</code>, <code>name</code>, <code>description</code>, <code>status</code> (StepStatus), <code>subtitle?</code>, <code>details?</code>, <code>startTime?</code>, <code>endTime?</code></td></tr>
+        <tr><td><code>StepStatus</code></td><td>"pending" | "running" | "awaiting_confirmation" | "completed" | "error" | "skipped" | "stale"</td></tr>
+        <tr><td><code>ConfirmationRequest</code></td><td><code>step</code>, <code>stepName</code>, <code>summary</code> (markdown), <code>details</code> (state snapshot)</td></tr>
+        <tr><td><code>ConfirmationAction</code></td><td>"accept" | "redo" | "accept_all"</td></tr>
+        <tr><td><code>Dataset</code></td><td><code>id?</code>, <code>name</code>, <code>file</code>, <code>trainable?</code>, <code>format</code>, <code>rows?</code>, <code>columns?</code></td></tr>
+      </table>
+    </div>
+  </section>
+
+</div>
+
+<script>
+const sections = document.querySelectorAll('.reveal');
+const observer = new IntersectionObserver((entries) => {
+  entries.forEach((entry) => {
+    if (entry.isIntersecting) {
+      entry.target.classList.add('visible');
+      observer.unobserve(entry.target);
+    }
+  });
+}, { threshold: 0.05, rootMargin: '200px' });
+
+sections.forEach(el => observer.observe(el));
+
+requestAnimationFrame(() => {
+  sections.forEach((el, i) => {
+    const rect = el.getBoundingClientRect();
+    if (rect.top < window.innerHeight + 100) {
+      setTimeout(() => el.classList.add('visible'), i * 120);
+    }
+  });
+});
+</script>
+</body>
+</html>

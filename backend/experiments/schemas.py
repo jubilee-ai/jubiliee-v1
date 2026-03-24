@@ -12,6 +12,7 @@ class UpdateExperimentRequest(BaseModel):
     name: Optional[str] = None
     goal: Optional[str] = None
     status: Optional[str] = None
+    linked_datasets: Optional[list[str]] = None
 
 
 class ExperimentSummary(BaseModel):

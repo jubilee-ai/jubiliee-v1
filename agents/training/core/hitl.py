@@ -131,16 +131,23 @@ def run_with_hitl(
     feedback = None
 
     while True:
-        # Run the actual work (passing feedback if this is a redo)
-        result = work_fn(state, feedback)
+        try:
+            result = work_fn(state, feedback)
+        except Exception as e:
+            # Merge into state so the graph can route to the evaluator with error set
+            result = {**state, "error": str(e), "hitl_error_node": node_name}
 
         # Sanitize the entire result to ensure all values are serializable
         # This is critical for LangGraph's checkpointer (msgpack)
         result = {k: make_serializable(v) for k, v in result.items()}
 
-        # Create summary for human review
         if get_summary_fn:
-            summary = get_summary_fn(result)
+            try:
+                summary = get_summary_fn(result)
+            except Exception as e:
+                summary = (
+                    f"Node '{node_name}': could not build summary ({type(e).__name__}: {e})"
+                )
         else:
             summary = f"Node '{node_name}' completed successfully."
 

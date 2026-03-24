@@ -1,11 +1,13 @@
 import { useState, useEffect, useCallback, useRef } from "react"
 import { Plus, MessageSquare, Loader2, CheckCircle2, AlertCircle, Trash2, FlaskConical, Database, Box, Settings } from "lucide-react"
 import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import {
   listExperiments,
   createExperiment,
   deleteExperiment,
+  updateExperiment,
   type ExperimentSummary,
 } from "@/lib/api"
 import { cn } from "@/lib/utils"
@@ -20,6 +22,12 @@ interface AppSidebarProps {
   onNewExperiment: () => void
   isBackendConnected: boolean
   switchingTo?: string | null
+  /** Increment from parent after any experiment list mutation outside this component. */
+  experimentsListNonce?: number
+  /** Call after creating an experiment from the sidebar (+ button). */
+  onExperimentsChanged?: () => void
+  /** When the user deletes the currently open experiment, return to lab home instead of creating a new one. */
+  onActiveExperimentDeleted?: () => void
 }
 
 const navItems: { id: AppTab; label: string; icon: React.ReactNode }[] = [
@@ -55,6 +63,80 @@ function stripMarkdown(text: string): string {
     .trim()
 }
 
+function EditableExperimentTitle({
+  experimentId,
+  name,
+  isActive,
+  disabled,
+  onRenamed,
+}: {
+  experimentId: string
+  name: string
+  isActive: boolean
+  disabled?: boolean
+  onRenamed: (id: string, nextName: string) => void
+}) {
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState(name)
+
+  useEffect(() => {
+    setDraft(name)
+  }, [name])
+
+  const commit = useCallback(async () => {
+    setEditing(false)
+    const t = draft.trim()
+    if (!t || t === name) {
+      setDraft(name)
+      return
+    }
+    try {
+      await updateExperiment(experimentId, { name: t })
+      onRenamed(experimentId, t)
+    } catch {
+      setDraft(name)
+    }
+  }, [draft, name, experimentId, onRenamed])
+
+  if (editing) {
+    return (
+      <Input
+        autoFocus
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={() => void commit()}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") (e.target as HTMLInputElement).blur()
+          if (e.key === "Escape") {
+            setDraft(name)
+            setEditing(false)
+          }
+        }}
+        className="h-7 text-[13px] px-2 py-0"
+        onClick={(e) => e.stopPropagation()}
+        onMouseDown={(e) => e.stopPropagation()}
+      />
+    )
+  }
+
+  return (
+    <span
+      className={cn(
+        "text-[13px] leading-snug line-clamp-2 break-words min-w-0 flex-1",
+        isActive ? "font-medium text-foreground" : "text-foreground/85",
+        !disabled && "cursor-text",
+      )}
+      title="Double-click to rename"
+      onDoubleClick={(e) => {
+        e.stopPropagation()
+        if (!disabled) setEditing(true)
+      }}
+    >
+      {name}
+    </span>
+  )
+}
+
 function relativeTime(dateStr: string | null | undefined): string {
   if (!dateStr) return ""
   const diff = Date.now() - new Date(dateStr).getTime()
@@ -75,6 +157,9 @@ export function AppSidebar({
   onNewExperiment,
   isBackendConnected,
   switchingTo,
+  experimentsListNonce = 0,
+  onExperimentsChanged,
+  onActiveExperimentDeleted,
 }: AppSidebarProps) {
   const [experiments, setExperiments] = useState<ExperimentSummary[]>([])
   const [isLoading, setIsLoading] = useState(false)
@@ -98,11 +183,21 @@ export function AppSidebar({
     refresh()
   }, [refresh])
 
+  useEffect(() => {
+    if (experimentsListNonce <= 0) return
+    void refresh()
+  }, [experimentsListNonce, refresh])
+
+  const handleRename = useCallback((id: string, nextName: string) => {
+    setExperiments((prev) => prev.map((ex) => (ex.id === id ? { ...ex, name: nextName } : ex)))
+  }, [])
+
   const handleNew = async () => {
     onTabChange("experiment_lab")
     try {
       const exp = await createExperiment()
       setExperiments((prev) => [exp, ...prev])
+      onExperimentsChanged?.()
       onSelectExperiment(exp.id)
     } catch {
       onNewExperiment()
@@ -115,7 +210,7 @@ export function AppSidebar({
     try {
       await deleteExperiment(id)
       if (activeExperimentId === id) {
-        onNewExperiment()
+        onActiveExperimentDeleted?.()
       }
     } catch {
       refresh()
@@ -199,20 +294,26 @@ export function AppSidebar({
                       statusIcon(exp.status)
                     )}
                   </div>
-                  <button
-                    type="button"
+                  <div
+                    role="button"
+                    tabIndex={0}
                     onClick={() => handleSelect(exp.id)}
-                    className="min-w-0 flex-1 text-left rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault()
+                        handleSelect(exp.id)
+                      }
+                    }}
+                    className="min-w-0 flex-1 text-left rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background cursor-pointer"
                   >
                     <div className="flex items-start justify-between gap-2 min-w-0">
-                      <span
-                        className={cn(
-                          "text-[13px] leading-snug line-clamp-2 break-words min-w-0 flex-1",
-                          isActive ? "font-medium text-foreground" : "text-foreground/85"
-                        )}
-                      >
-                        {exp.name}
-                      </span>
+                      <EditableExperimentTitle
+                        experimentId={exp.id}
+                        name={exp.name}
+                        isActive={isActive}
+                        disabled={isSwitching || !isBackendConnected}
+                        onRenamed={handleRename}
+                      />
                       <span className="text-[10px] text-muted-foreground/50 shrink-0 tabular-nums pt-0.5">
                         {relativeTime(exp.updated_at || exp.created_at)}
                       </span>
@@ -222,7 +323,7 @@ export function AppSidebar({
                         {preview}
                       </p>
                     ) : null}
-                  </button>
+                  </div>
                   <Button
                     type="button"
                     variant="ghost"

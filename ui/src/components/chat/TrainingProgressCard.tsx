@@ -1,4 +1,4 @@
-import { Check, Loader2, Circle } from "lucide-react"
+import { Check, Loader2, Circle, SkipForward } from "lucide-react"
 import type { StepInfo } from "@/types/agent"
 import { cn } from "@/lib/utils"
 
@@ -28,6 +28,12 @@ function StepStatusIcon({ status }: { status: string }) {
       )
     case "running":
       return <Loader2 className="h-4 w-4 text-[hsl(var(--step-active))] animate-spin" />
+    case "skipped":
+      return (
+        <div className="w-4 h-4 rounded-full bg-muted/50 flex items-center justify-center border border-dashed border-muted-foreground/30">
+          <SkipForward className="h-2.5 w-2.5 text-muted-foreground/70" />
+        </div>
+      )
     default:
       return <Circle className="h-3 w-3 text-muted-foreground/40" />
   }
@@ -134,6 +140,7 @@ export function TrainingProgressCard({
               "flex-1",
               step.status === "running" && "text-[hsl(var(--step-active))] font-medium",
               step.status === "completed" && "text-muted-foreground",
+              step.status === "skipped" && "text-muted-foreground/80",
             )}>
               {step.name}
             </span>

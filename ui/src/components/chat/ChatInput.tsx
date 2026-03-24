@@ -1,4 +1,4 @@
-import React, { useState } from "react"
+import React, { useMemo, useState } from "react"
 import { Textarea } from "@/components/ui/textarea"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -56,6 +56,12 @@ export function ChatInput({
   const [showDatasetPicker, setShowDatasetPicker] = useState(false)
   const [showModelPicker, setShowModelPicker] = useState(false)
 
+  const modelChipLabel = useMemo(() => {
+    if (!selectedModel) return null
+    const m = availableModels.find((x) => x.id === selectedModel)
+    return m?.name ?? selectedModel
+  }, [selectedModel, availableModels])
+
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
       e.preventDefault()
@@ -76,9 +82,9 @@ export function ChatInput({
   return (
     <div className="flex-shrink-0 z-10 border-t border-border/20 bg-background/95 backdrop-blur-md px-5 pt-3 pb-5 max-w-3xl mx-auto w-full supports-[backdrop-filter]:bg-background/80">
       <div className="rounded-2xl bg-card/95 backdrop-blur-sm border border-border/25 shadow-[0_2px_20px_-4px_rgba(0,0,0,0.06),0_0_0_1px_hsl(var(--border)/0.25)] transition-shadow duration-300 ease-out focus-within:border-border/40 focus-within:shadow-[0_0_0_1px_hsl(var(--primary)/0.18),0_0_24px_-4px_hsl(var(--primary)/0.14),0_12px_40px_-12px_rgba(0,0,0,0.08)]">
-        {/* Selected items */}
+        {/* Linked datasets + model: pinned above the reply field for the session */}
         {(selectedDatasets.length > 0 || selectedModel) && (
-          <div className="flex items-center gap-2 px-3 pt-2.5 pb-1 flex-wrap">
+          <div className="flex items-center gap-2 px-4 py-2 flex-wrap border-b border-border/20 bg-muted/5">
             {selectedDatasets.filter(Boolean).map((ds) => (
               <Badge 
                 key={ds} 
@@ -88,6 +94,7 @@ export function ChatInput({
                 <Database className="h-3 w-3 text-muted-foreground" />
                 {ds.split("/").pop()}
                 <button
+                  type="button"
                   onClick={() => onDatasetRemove(ds)}
                   className="ml-0.5 hover:text-foreground text-muted-foreground"
                 >
@@ -95,14 +102,15 @@ export function ChatInput({
                 </button>
               </Badge>
             ))}
-            {selectedModel && (
+            {selectedModel && modelChipLabel && (
               <Badge 
                 variant="secondary" 
                 className="gap-1.5 h-7 text-xs font-normal rounded-full pl-3 pr-2"
               >
                 <Cpu className="h-3 w-3 text-muted-foreground" />
-                {selectedModel}
+                {modelChipLabel}
                 <button
+                  type="button"
                   onClick={onModelRemove}
                   className="ml-0.5 hover:text-foreground text-muted-foreground"
                 >
@@ -113,7 +121,6 @@ export function ChatInput({
           </div>
         )}
 
-        {/* Textarea */}
         <Textarea
           value={draft}
           onChange={(e) => onDraftChange(e.target.value)}

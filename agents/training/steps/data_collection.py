@@ -25,6 +25,8 @@ if str(_DATA_RETRIEVAL_DIR) not in sys.path:
 from agent import DataRetrievalResult, retrieve_data
 from utils import get_registered_dataset, register_dataset
 
+from agents.training.utils.graph_stream_hooks import emit_graph_stream
+
 if TYPE_CHECKING:
     from ..core.state import TrainingAgentState
 
@@ -285,17 +287,29 @@ def data_collection(state: "TrainingAgentState") -> "TrainingAgentState":
                 explanations.append(
                     f"Using pre-registered dataset '{ref}' "
                     f"({len(df):,} rows, {len(df.columns)} columns).")
+                emit_graph_stream({
+                    "phase": "data_collection",
+                    "message": f"Using linked dataset `{ref}` ({len(df):,} rows).",
+                })
                 return {**state, "collected_dataset_ref": ref,
                         "data_source": "pre-registered", "audit_trace": audit_trace,
                         "explanations": explanations, "current_step": "data_collection",
                         "error": None}
 
     # ----- Search local + (optionally) external, pick best ------------------
+    emit_graph_stream({
+        "phase": "data_collection",
+        "message": "Searching locally and via retrieval agent…",
+    })
     local_ref, local_audit = _try_local(goal, selected_model, linked_datasets)
     audit_trace.append(local_audit)
 
     ext_ref, ext_source, ext_audit = None, "", {}
     if use_external:
+        emit_graph_stream({
+            "phase": "data_collection",
+            "message": "Searching external sources (Kaggle + Hugging Face)…",
+        })
         print("[data_collection] Also searching external sources (Kaggle + HuggingFace)...")
         ext_ref, ext_source, ext_audit = _try_curator(goal)
         audit_trace.append(ext_audit)
@@ -323,8 +337,16 @@ def data_collection(state: "TrainingAgentState") -> "TrainingAgentState":
         explanations.append(
             f"Data collection complete. Using '{best_ref}' "
             f"({rows} rows, {cols} columns) from {best_source}.")
+        emit_graph_stream({
+            "phase": "data_collection",
+            "message": f"Selected dataset `{best_ref}` ({rows}×{cols}) from {best_source}.",
+        })
     else:
         explanations.append("Data collection failed: no suitable dataset found.")
+        emit_graph_stream({
+            "phase": "data_collection",
+            "message": "No suitable dataset found yet — will surface for review.",
+        })
 
     return {
         **state,

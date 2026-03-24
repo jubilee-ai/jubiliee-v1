@@ -12,6 +12,7 @@ export interface Dataset {
   format?: string
   rows?: number
   columns?: string[]
+  trainable?: boolean
 }
 
 export interface ModelType {
@@ -20,21 +21,8 @@ export interface ModelType {
   description?: string
 }
 
-export interface StreamEvent {
-  type: string
-  node?: string
-  progress?: number
-  thread_id?: string
-  summary?: unknown
-  details?: unknown
-  state?: Record<string, unknown>
-  state_snapshot?: Record<string, unknown>
-  dataset?: string
-  ref?: string
-  error?: string
-}
-
-export interface ChatStreamEvent {
+/** Unified SSE payloads from POST /api/chat (orchestrator and/or training graph). */
+export interface AgentStreamEvent {
   type: string
   thread_id?: string
   content?: string
@@ -42,8 +30,37 @@ export interface ChatStreamEvent {
   node?: string
   progress?: number
   summary?: unknown
+  details?: unknown
   state?: Record<string, unknown>
+  state_snapshot?: Record<string, unknown>
+  dataset?: string
+  ref?: string
   error?: string
+  /** Graph pipeline: stable key for dedupe when the same step name runs again */
+  stream_step_key?: string
+  /** Graph custom stream: planner / evaluator / step progress */
+  phase?: string
+  message?: string
+}
+
+/** @deprecated Use AgentStreamEvent */
+export type StreamEvent = AgentStreamEvent
+/** @deprecated Use AgentStreamEvent */
+export type ChatStreamEvent = AgentStreamEvent
+
+export interface AgentStreamRequest {
+  message: string
+  thread_id?: string
+  experiment_id?: string
+  training_context?: string
+  linked_datasets?: string[] | null
+  user_model_preference?: string | null
+  mode?: "train" | "chat"
+  resume_training?: {
+    thread_id: string
+    approved: boolean
+    feedback?: string
+  }
 }
 
 export interface TrainRequest {
@@ -131,87 +148,43 @@ function parseSSELine(line: string): unknown {
   return null
 }
 
+/** @deprecated Use streamChat with AgentStreamRequest (unified /api/chat). */
 export function streamTraining(
   req: { goal: string; linked_datasets?: string[] | null; user_model_preference?: string | null; hitl?: boolean },
-  onEvent: (event: StreamEvent) => void,
+  onEvent: (event: AgentStreamEvent) => void,
   onError: (error: Error) => void
 ): AbortController {
-  const controller = new AbortController()
-  const body = JSON.stringify({
-    goal: req.goal,
-    linked_datasets: req.linked_datasets ?? null,
-    user_model_preference: req.user_model_preference ?? null,
-    hitl: req.hitl ?? true,
-  })
-
-  fetch(`${API_BASE}/api/train-stream`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body,
-    signal: controller.signal,
-  })
-    .then(async (res) => {
-      if (!res.ok) throw new Error(`Stream failed: ${res.status}`)
-      const reader = res.body?.getReader()
-      if (!reader) throw new Error("No response body")
-      const decoder = new TextDecoder()
-      let buffer = ""
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-        buffer += decoder.decode(value, { stream: true })
-        const lines = buffer.split("\n")
-        buffer = lines.pop() ?? ""
-        for (const line of lines) {
-          const parsed = parseSSELine(line)
-          if (parsed) onEvent(parsed as StreamEvent)
-        }
-      }
-    })
-    .catch((err) => {
-      if (err?.name !== "AbortError") onError(err instanceof Error ? err : new Error(String(err)))
-    })
-
-  return controller
+  const hasDs = req.linked_datasets && req.linked_datasets.length > 0
+  return streamChat(
+    {
+      message: req.goal,
+      linked_datasets: req.linked_datasets ?? null,
+      user_model_preference: req.user_model_preference ?? null,
+      mode: hasDs ? undefined : "train",
+    },
+    onEvent,
+    onError
+  )
 }
 
+/** @deprecated Use streamChat with resume_training (unified /api/chat). */
 export function streamResumeTraining(
   req: { thread_id: string; approved?: boolean; feedback?: string },
-  onEvent: (event: StreamEvent) => void,
+  onEvent: (event: AgentStreamEvent) => void,
   onError: (error: Error) => void
 ): AbortController {
-  const controller = new AbortController()
-  const body = JSON.stringify(req)
-
-  fetch(`${API_BASE}/api/train-resume`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body,
-    signal: controller.signal,
-  })
-    .then(async (res) => {
-      if (!res.ok) throw new Error(`Resume stream failed: ${res.status}`)
-      const reader = res.body?.getReader()
-      if (!reader) throw new Error("No response body")
-      const decoder = new TextDecoder()
-      let buffer = ""
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-        buffer += decoder.decode(value, { stream: true })
-        const lines = buffer.split("\n")
-        buffer = lines.pop() ?? ""
-        for (const line of lines) {
-          const parsed = parseSSELine(line)
-          if (parsed) onEvent(parsed as StreamEvent)
-        }
-      }
-    })
-    .catch((err) => {
-      if (err?.name !== "AbortError") onError(err instanceof Error ? err : new Error(String(err)))
-    })
-
-  return controller
+  return streamChat(
+    {
+      message: "",
+      resume_training: {
+        thread_id: req.thread_id,
+        approved: req.approved ?? true,
+        feedback: req.feedback,
+      },
+    },
+    onEvent,
+    onError
+  )
 }
 
 // =========================================================================
@@ -263,7 +236,7 @@ export async function getExperiment(id: string): Promise<ExperimentDetail> {
 
 export async function updateExperiment(
   id: string,
-  updates: { name?: string; status?: string },
+  updates: { name?: string; status?: string; goal?: string; linked_datasets?: string[] },
 ): Promise<void> {
   const res = await fetch(`${API_BASE}/api/experiments/${id}`, {
     method: "PATCH",
@@ -295,8 +268,8 @@ export async function saveExperimentMessages(
 // =========================================================================
 
 export function streamChat(
-  req: { message: string; thread_id?: string; experiment_id?: string; training_context?: string },
-  onEvent: (event: ChatStreamEvent) => void,
+  req: AgentStreamRequest,
+  onEvent: (event: AgentStreamEvent) => void,
   onError: (error: Error) => void
 ): AbortController {
   const controller = new AbortController()
@@ -322,7 +295,7 @@ export function streamChat(
         buffer = lines.pop() ?? ""
         for (const line of lines) {
           const parsed = parseSSELine(line)
-          if (parsed) onEvent(parsed as ChatStreamEvent)
+          if (parsed) onEvent(parsed as AgentStreamEvent)
         }
       }
     })

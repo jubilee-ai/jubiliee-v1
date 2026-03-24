@@ -330,12 +330,14 @@ export interface ChatMessage {
 }
 
 export interface Dataset {
+  id?: string
   name: string
   description: string
   file: string
   rows?: number
   columns?: string[]
   format: string
+  trainable?: boolean
 }
 
 export interface TrainedModel {

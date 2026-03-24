@@ -133,6 +133,41 @@ textarea.composer-textarea:focus-visible {
   background-size: 24px 24px;
 }
 
+/* Clerk SignIn: align inner layout with Jubilee card (full-width column, centered social row) */
+.jubilee-signin-gate .cl-rootBox {
+  width: 100%;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.jubilee-signin-gate .cl-cardBox,
+.jubilee-signin-gate .cl-card,
+.jubilee-signin-gate .cl-main {
+  width: 100%;
+  max-width: 100%;
+}
+
+.jubilee-signin-gate .cl-socialButtons {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+  width: 100%;
+}
+
+.jubilee-signin-gate .cl-socialButtonsBlockButton {
+  width: 100%;
+  max-width: none;
+}
+
+.jubilee-signin-gate .cl-dividerRow {
+  width: 100%;
+}
+
+.jubilee-signin-gate .cl-footer {
+  width: 100%;
+  max-width: 100%;
+}
+
 /* Thinking wave bars */
 @keyframes wave {
   0%, 100% { transform: scaleY(0.3); opacity: 0.3; }

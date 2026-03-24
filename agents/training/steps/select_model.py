@@ -12,6 +12,8 @@ from pydantic import BaseModel, Field
 
 load_dotenv(Path(__file__).parent.parent.parent.parent / ".env")
 
+from agents.training.utils.graph_stream_hooks import emit_graph_stream
+
 if TYPE_CHECKING:
     from ..core.state import TrainingAgentState
 
@@ -260,6 +262,10 @@ def select_model(state: "TrainingAgentState") -> "TrainingAgentState":
         redo_section=redo_section,
     )
 
+    emit_graph_stream({
+        "phase": "select_model",
+        "message": "Choosing model family (supervised / unsupervised / neural)…",
+    })
     result: ModelFamilySelectionOutput = structured_llm.invoke(prompt)
     task_type = _derive_task_type(result.selected_family, state.get("goal", ""))
 

@@ -33,9 +33,12 @@ interface ChatPanelProps {
   messages: ChatMessage[]
   confirmationRequest: ConfirmationRequest | null
   isRunning: boolean
-  onSendMessage: (content: string) => void
+  onSendMessage: (content: string, opts?: { user_model_preference?: string }) => void
   onConfirmation: (action: ConfirmationAction, comment?: string) => void
-  onStartAgent: (goal: string, datasets?: string[], modelPreference?: string, hitl?: boolean) => void
+  linkedDatasets: string[]
+  onLinkedDatasetsChange: (ids: string[]) => void
+  linkedModelId: string | null
+  onLinkedModelChange: (id: string | null) => void
   datasets?: ApiDataset[]
   modelTypes?: ModelType[]
   highlightedMessageId?: string | null
@@ -57,7 +60,10 @@ export const ChatPanel = forwardRef<ChatPanelRef, ChatPanelProps>(function ChatP
   isRunning,
   onSendMessage,
   onConfirmation,
-  onStartAgent,
+  linkedDatasets,
+  onLinkedDatasetsChange,
+  linkedModelId,
+  onLinkedModelChange,
   datasets: propDatasets,
   modelTypes: propModelTypes,
   highlightedMessageId,
@@ -76,8 +82,6 @@ export const ChatPanel = forwardRef<ChatPanelRef, ChatPanelProps>(function ChatP
 
   const [draft, setDraft] = useState("")
   const [selectedStepId, setSelectedStepId] = useState<string | null>(null)
-  const [selectedDatasets, setSelectedDatasets] = useState<string[]>([])
-  const [selectedModel, setSelectedModel] = useState<string | null>(null)
   const [useHitl, setUseHitl] = useState(true)
   
   const messageRefs = useRef<Map<string, HTMLDivElement>>(new Map())
@@ -164,26 +168,28 @@ export const ChatPanel = forwardRef<ChatPanelRef, ChatPanelProps>(function ChatP
     const text = draft.trim()
     if (!text) return
 
-    if (selectedDatasets.length > 0) {
-      onStartAgent(text, selectedDatasets, selectedModel || undefined, useHitl)
-      setSelectedDatasets([])
-      setSelectedModel(null)
-    } else {
-      onSendMessage(text)
-    }
+    onSendMessage(text)
     setDraft("")
-  }, [draft, onStartAgent, onSendMessage, selectedDatasets, selectedModel, useHitl])
+  }, [draft, onSendMessage])
 
   const handleDatasetSelect = useCallback((dataset: Dataset) => {
-    const key = dataset.file ?? dataset.name
-    if (key && !selectedDatasets.includes(key)) {
-      setSelectedDatasets(prev => [...prev, key])
+    if (dataset.trainable === false) {
+      console.warn("Dataset is not trainable, skipping:", dataset.name)
+      return
     }
-  }, [selectedDatasets])
+    const key = dataset.file || dataset.id
+    if (!key) {
+      console.warn("Dataset has no file path or id, skipping:", dataset.name)
+      return
+    }
+    if (!linkedDatasets.includes(key)) {
+      onLinkedDatasetsChange([...linkedDatasets, key])
+    }
+  }, [linkedDatasets, onLinkedDatasetsChange])
 
   const handleDatasetRemove = useCallback((datasetFile: string) => {
-    setSelectedDatasets(prev => prev.filter(d => d !== datasetFile))
-  }, [])
+    onLinkedDatasetsChange(linkedDatasets.filter((d) => d !== datasetFile))
+  }, [linkedDatasets, onLinkedDatasetsChange])
 
   const handleContainerClick = useCallback(() => {
     if (highlightedMessageId && onClearHighlight) {
@@ -283,12 +289,12 @@ export const ChatPanel = forwardRef<ChatPanelRef, ChatPanelProps>(function ChatP
         onSend={handleSend}
         isDisabled={isRunning && !confirmationRequest}
         placeholder={messages.length === 0 ? "Ask a question or attach a dataset to train..." : "Send a message..."}
-        selectedDatasets={selectedDatasets}
+        selectedDatasets={linkedDatasets}
         onDatasetSelect={handleDatasetSelect}
         onDatasetRemove={handleDatasetRemove}
-        selectedModel={selectedModel}
-        onModelSelect={setSelectedModel}
-        onModelRemove={() => setSelectedModel(null)}
+        selectedModel={linkedModelId}
+        onModelSelect={(id) => onLinkedModelChange(id)}
+        onModelRemove={() => onLinkedModelChange(null)}
         availableDatasets={availableDatasets}
         availableModels={availableModels}
         useHitl={useHitl}
