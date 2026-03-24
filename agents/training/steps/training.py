@@ -15,7 +15,6 @@ from pathlib import Path
 from typing import Any, Optional
 
 import numpy as np
-
 from dotenv import load_dotenv
 from langchain.agents import create_agent
 from langchain.agents.structured_output import ToolStrategy
@@ -36,8 +35,8 @@ if str(_MODEL_TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(_MODEL_TOOLS_DIR))
 
 from model_storage import (delete_model, evaluate_model_tool, get_model_info,
-                           get_model_info_tool, list_models, load_model,
-                           list_trained_models_tool)
+                           get_model_info_tool, list_models,
+                           list_trained_models_tool, load_model)
 from utils import get_registered_dataset
 
 SKILLS_DIR = Path(__file__).parent.parent / "skills"
@@ -176,6 +175,7 @@ class TrainingIteration(BaseModel):
     train_accuracy: Optional[float] = None
     val_accuracy: Optional[float] = None
     val_roc_auc: Optional[float] = None
+    val_brier: Optional[float] = None
     train_r2: Optional[float] = None
     val_r2: Optional[float] = None
     val_rmse: Optional[float] = None
@@ -183,6 +183,7 @@ class TrainingIteration(BaseModel):
     test_r2: Optional[float] = None
     test_rmse: Optional[float] = None
     test_mae: Optional[float] = None
+    test_brier: Optional[float] = None
     silhouette_score: Optional[float] = None
     davies_bouldin: Optional[float] = None
     inertia: Optional[float] = None
@@ -197,6 +198,7 @@ class TrainingResult(BaseModel):
     model_type: str = Field(description="Estimator class name")
     val_accuracy: Optional[float] = None
     val_roc_auc: Optional[float] = None
+    val_brier: Optional[float] = None
     test_accuracy: Optional[float] = None
     test_roc_auc: Optional[float] = None
     train_r2: Optional[float] = None
@@ -206,6 +208,7 @@ class TrainingResult(BaseModel):
     test_r2: Optional[float] = None
     test_rmse: Optional[float] = None
     test_mae: Optional[float] = None
+    test_brier: Optional[float] = None
     silhouette_score: Optional[float] = None
     davies_bouldin: Optional[float] = None
     inertia: Optional[float] = None
@@ -260,7 +263,8 @@ def _run_quick_baseline(
     This runs in <10s even on large datasets and gives the NN agent a
     concrete target to beat.
     """
-    from sklearn.ensemble import HistGradientBoostingClassifier, HistGradientBoostingRegressor
+    from sklearn.ensemble import (HistGradientBoostingClassifier,
+                                  HistGradientBoostingRegressor)
     from sklearn.metrics import accuracy_score, r2_score, roc_auc_score
     from sklearn.preprocessing import LabelEncoder
 
@@ -409,6 +413,12 @@ def _format_best_metric(best_iteration: dict, task_type: str) -> str:
     if task_type == "regression":
         r2 = best_iteration.get("val_r2")
         return f"R²={r2:.4f}" if r2 is not None else "N/A"
+    brier = best_iteration.get("val_brier")
+    if brier is not None:
+        roc = best_iteration.get("val_roc_auc")
+        if roc is not None:
+            return f"Brier={brier:.4f}, ROC-AUC={roc:.4f}"
+        return f"Brier={brier:.4f}"
     roc = best_iteration.get("val_roc_auc")
     acc = best_iteration.get("val_accuracy")
     parts = []
@@ -424,6 +434,9 @@ def _primary_metric(it: TrainingIteration, task_type: str) -> float:
         return it.silhouette_score if it.silhouette_score is not None else -float("inf")
     if task_type == "regression":
         return it.val_r2 or it.train_r2 or -float("inf")
+    if it.val_brier is not None:
+        # Lower Brier is better; negate so "higher is better" logic still works.
+        return -float(it.val_brier)
     return it.val_roc_auc or it.val_accuracy or -float("inf")
 
 
@@ -562,10 +575,17 @@ def _find_best_iteration(iterations: list[dict], task_type: str) -> Optional[dic
             primary = it.get("val_r2") or it.get("train_r2") or -float("inf")
             score = (primary, 0.0)
         else:
-            score = (
-                it.get("val_roc_auc") or -float("inf"),
-                it.get("val_accuracy") or -float("inf"),
-            )
+            if it.get("val_brier") is not None:
+                score = (
+                    -(it.get("val_brier") or float("inf")),
+                    it.get("val_roc_auc") or -float("inf"),
+                    it.get("val_accuracy") or -float("inf"),
+                )
+            else:
+                score = (
+                    it.get("val_roc_auc") or -float("inf"),
+                    it.get("val_accuracy") or -float("inf"),
+                )
         if score > best_score:
             best_score = score
             best = it
@@ -579,6 +599,7 @@ def _iteration_to_dict(it: TrainingIteration) -> dict:
         "train_accuracy": it.train_accuracy,
         "val_accuracy": it.val_accuracy,
         "roc_auc": it.val_roc_auc,
+        "brier": it.val_brier,
     }
     if not d.get("hyperparams") and it.model_name:
         info = get_model_info(it.model_name)
@@ -594,7 +615,7 @@ def _evaluate_model_on_test(
     task_type: str,
 ) -> dict[str, float | None]:
     import numpy as np
-    from sklearn.metrics import accuracy_score, roc_auc_score
+    from sklearn.metrics import accuracy_score, brier_score_loss, roc_auc_score
 
     result: dict[str, float | None] = {}
     if task_type == "unsupervised":
@@ -609,7 +630,8 @@ def _evaluate_model_on_test(
         X = test_df[[c for c in test_df.columns if c != target_column]]
 
         if task_type == "regression":
-            from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+            from sklearn.metrics import (mean_absolute_error,
+                                         mean_squared_error, r2_score)
             y_pred = model.predict(X)
             result["test_r2"] = float(r2_score(y_true, y_pred))
             result["test_rmse"] = float(np.sqrt(mean_squared_error(y_true, y_pred)))
@@ -625,6 +647,7 @@ def _evaluate_model_on_test(
                 y_proba = model.predict_proba(X)
                 if y_proba.shape[1] == 2:
                     result["test_roc_auc"] = float(roc_auc_score(y_true_arr, y_proba[:, 1]))
+                    result["test_brier"] = float(brier_score_loss(y_true_arr, y_proba[:, 1]))
                 else:
                     result["test_roc_auc"] = float(
                         roc_auc_score(y_true_arr, y_proba, multi_class="ovr", average="weighted")
@@ -633,6 +656,216 @@ def _evaluate_model_on_test(
     except Exception as exc:
         print(f"[training_agent] Programmatic test evaluation failed: {exc}")
     return result
+
+
+def _evaluate_model_on_validation(
+    model_name: str,
+    val_ref: str,
+    target_column: str,
+    task_type: str,
+) -> dict[str, float | None]:
+    """Programmatic validation metrics with Brier for binary classification."""
+    import numpy as np
+    from sklearn.metrics import accuracy_score, brier_score_loss, roc_auc_score
+
+    result: dict[str, float | None] = {}
+    if task_type in {"unsupervised"}:
+        return result
+    try:
+        model = load_model(model_name)
+        val_df = get_registered_dataset(val_ref)
+        if model is None or val_df is None:
+            return result
+        y_true = val_df[target_column]
+        X = val_df[[c for c in val_df.columns if c != target_column]]
+        if task_type == "regression":
+            from sklearn.metrics import (mean_absolute_error,
+                                         mean_squared_error, r2_score)
+            y_pred = model.predict(X)
+            result["val_r2"] = float(r2_score(y_true, y_pred))
+            result["val_rmse"] = float(np.sqrt(mean_squared_error(y_true, y_pred)))
+            result["val_mae"] = float(mean_absolute_error(y_true, y_pred))
+        else:
+            y_pred = model.predict(X)
+            y_true_arr = np.asarray(y_true)
+            y_pred_arr = np.asarray(y_pred)
+            if y_true_arr.dtype != y_pred_arr.dtype:
+                y_pred_arr = y_pred_arr.astype(y_true_arr.dtype)
+            result["val_accuracy"] = float(accuracy_score(y_true_arr, y_pred_arr))
+            if hasattr(model, "predict_proba"):
+                y_proba = model.predict_proba(X)
+                if y_proba.shape[1] == 2:
+                    result["val_roc_auc"] = float(roc_auc_score(y_true_arr, y_proba[:, 1]))
+                    result["val_brier"] = float(brier_score_loss(y_true_arr, y_proba[:, 1]))
+                else:
+                    result["val_roc_auc"] = float(
+                        roc_auc_score(y_true_arr, y_proba, multi_class="ovr", average="weighted")
+                    )
+    except Exception as exc:
+        print(f"[training_agent] Programmatic validation evaluation failed: {exc}")
+    return result
+
+
+def _evaluate_calibrated_classification(
+    model_name: str,
+    val_ref: str,
+    test_ref: Optional[str],
+    target_column: str,
+) -> dict[str, float | None]:
+    """Fit probability calibration on val and report calibrated metrics."""
+    from sklearn.calibration import CalibratedClassifierCV
+    from sklearn.metrics import brier_score_loss, roc_auc_score
+
+    result: dict[str, float | None] = {}
+    try:
+        model = load_model(model_name)
+        val_df = get_registered_dataset(val_ref)
+        test_df = get_registered_dataset(test_ref) if test_ref else None
+        if model is None or val_df is None:
+            return result
+
+        X_val = val_df[[c for c in val_df.columns if c != target_column]]
+        y_val = val_df[target_column]
+
+        # Binary-only calibration for Brier optimization path.
+        if len(np.unique(y_val)) != 2:
+            return result
+
+        calibrator = None
+        try:
+            # sklearn>=1.6 prefers FrozenEstimator over cv="prefit"
+            from sklearn.frozen import FrozenEstimator
+
+            calibrator = CalibratedClassifierCV(FrozenEstimator(model), method="isotonic")
+        except Exception:
+            calibrator = CalibratedClassifierCV(model, cv="prefit", method="isotonic")
+        calibrator.fit(X_val, y_val)
+
+        val_proba = calibrator.predict_proba(X_val)[:, 1]
+        result["val_brier_calibrated"] = float(brier_score_loss(y_val, val_proba))
+        result["val_roc_auc_calibrated"] = float(roc_auc_score(y_val, val_proba))
+
+        if test_df is not None:
+            X_test = test_df[[c for c in test_df.columns if c != target_column]]
+            y_test = test_df[target_column]
+            if len(np.unique(y_test)) == 2:
+                test_proba = calibrator.predict_proba(X_test)[:, 1]
+                result["test_brier_calibrated"] = float(brier_score_loss(y_test, test_proba))
+                result["test_roc_auc_calibrated"] = float(roc_auc_score(y_test, test_proba))
+    except Exception as exc:
+        print(f"[training_agent] Calibration evaluation failed: {exc}")
+    return result
+
+
+def _evaluate_weighted_ensemble(
+    model_names: list[str],
+    val_ref: str,
+    test_ref: Optional[str],
+    target_column: str,
+) -> dict[str, Any]:
+    """Build inverse-Brier weighted ensemble over candidate models."""
+    from sklearn.metrics import brier_score_loss, roc_auc_score
+
+    if not model_names:
+        return {}
+    val_df = get_registered_dataset(val_ref)
+    test_df = get_registered_dataset(test_ref) if test_ref else None
+    if val_df is None:
+        return {}
+
+    X_val = val_df[[c for c in val_df.columns if c != target_column]]
+    y_val = np.asarray(val_df[target_column])
+    if len(np.unique(y_val)) != 2:
+        return {}
+    X_test = None
+    y_test = None
+    if test_df is not None:
+        X_test = test_df[[c for c in test_df.columns if c != target_column]]
+        y_test = np.asarray(test_df[target_column])
+
+    probs_val: list[np.ndarray] = []
+    probs_test: list[np.ndarray] = []
+    valid_names: list[str] = []
+    model_briers: dict[str, float] = {}
+    for name in model_names:
+        try:
+            model = load_model(name)
+            if model is None or not hasattr(model, "predict_proba"):
+                continue
+            p_val = model.predict_proba(X_val)
+            if p_val.shape[1] != 2:
+                continue
+            p_val = p_val[:, 1]
+            brier = float(brier_score_loss(y_val, p_val))
+            probs_val.append(p_val)
+            valid_names.append(name)
+            model_briers[name] = brier
+            if X_test is not None:
+                p_test = model.predict_proba(X_test)
+                if p_test.shape[1] == 2:
+                    probs_test.append(p_test[:, 1])
+        except Exception:
+            continue
+
+    if len(valid_names) < 2:
+        return {}
+
+    eps = 1e-9
+    raw_w = np.array([1.0 / (model_briers[n] + eps) for n in valid_names], dtype=float)
+    weights = raw_w / raw_w.sum()
+
+    stacked_val = np.vstack(probs_val)
+    blend_val = np.average(stacked_val, axis=0, weights=weights)
+    result: dict[str, Any] = {
+        "ensemble_model_names": valid_names,
+        "ensemble_weights": {n: float(w) for n, w in zip(valid_names, weights)},
+        "val_brier_ensemble": float(brier_score_loss(y_val, blend_val)),
+        "val_roc_auc_ensemble": float(roc_auc_score(y_val, blend_val)),
+        "val_brier_by_model": model_briers,
+    }
+
+    if y_test is not None and len(probs_test) == len(valid_names):
+        stacked_test = np.vstack(probs_test)
+        blend_test = np.average(stacked_test, axis=0, weights=weights)
+        result["test_brier_ensemble"] = float(brier_score_loss(y_test, blend_test))
+        result["test_roc_auc_ensemble"] = float(roc_auc_score(y_test, blend_test))
+    return result
+
+
+def _select_prediction_strategy(output: dict[str, Any], default_model_name: str) -> dict[str, Any]:
+    """Choose prediction strategy by lowest available validation Brier."""
+    candidates: list[tuple[str, float]] = []
+    vb = output.get("val_brier")
+    if vb is not None:
+        candidates.append(("best_model", float(vb)))
+    vbc = output.get("val_brier_calibrated")
+    if vbc is not None:
+        candidates.append(("calibrated_best_model", float(vbc)))
+    vbe = output.get("val_brier_ensemble")
+    if vbe is not None:
+        candidates.append(("weighted_ensemble", float(vbe)))
+
+    if not candidates:
+        return {
+            "selected_prediction_strategy": "best_model",
+            "selected_backtest_brier": None,
+            "selected_model_name": default_model_name,
+            "selected_ensemble_weights": None,
+            "selection_reason": "No validation Brier metrics available; defaulting to best model.",
+        }
+
+    strategy, best_brier = min(candidates, key=lambda x: x[1])
+    selected = {
+        "selected_prediction_strategy": strategy,
+        "selected_backtest_brier": float(best_brier),
+        "selected_model_name": default_model_name,
+        "selected_ensemble_weights": None,
+        "selection_reason": f"Selected by minimum validation Brier ({best_brier:.4f}).",
+    }
+    if strategy == "weighted_ensemble":
+        selected["selected_ensemble_weights"] = output.get("ensemble_weights", {})
+        selected["selected_model_name"] = None
+    return selected
 
 
 def _extract_feature_importances(model_name: str, feature_columns: list[str]) -> dict[str, float]:
@@ -724,7 +957,7 @@ def run_training_agent(
     goal: str,
     model_name: Optional[str] = None,
     max_iterations: int = 6,
-    llm_model: str = "openai:gpt-5.1",
+    llm_model: str = "openai:gpt-5.4",
     estimator_hint: Optional[str] = None,
 ) -> dict[str, Any]:
     """Run the training agent.
@@ -966,6 +1199,16 @@ Follow the skill documentation below — it covers model selection and training.
                     output[key] = best_iteration[key]
 
         if training_result.success and actual_best_name and task_type != "unsupervised":
+            if val_ref:
+                val_metrics = _evaluate_model_on_validation(
+                    model_name=actual_best_name,
+                    val_ref=val_ref,
+                    target_column=target_column,
+                    task_type=task_type,
+                )
+                for key, val in val_metrics.items():
+                    if val is not None:
+                        output[key] = val
             test_metrics = _evaluate_model_on_test(
                 model_name=actual_best_name,
                 test_ref=test_ref,
@@ -975,6 +1218,25 @@ Follow the skill documentation below — it covers model selection and training.
             for key, val in test_metrics.items():
                 if val is not None:
                     output[key] = val
+
+            if task_type == "classification" and val_ref:
+                calibrated = _evaluate_calibrated_classification(
+                    model_name=actual_best_name,
+                    val_ref=val_ref,
+                    test_ref=test_ref,
+                    target_column=target_column,
+                )
+                for key, val in calibrated.items():
+                    if val is not None:
+                        output[key] = val
+                candidate_models = [it.model_name for it in training_result.iterations if it.success and it.model_name]
+                ensemble = _evaluate_weighted_ensemble(
+                    model_names=candidate_models,
+                    val_ref=val_ref,
+                    test_ref=test_ref,
+                    target_column=target_column,
+                )
+                output.update(ensemble)
 
         # Extract feature importances from the best model
         feat_imp = {}
@@ -1009,6 +1271,7 @@ Follow the skill documentation below — it covers model selection and training.
             "feature_redo_suspected_issues": feature_redo_request.suspected_issues if feature_redo_request else None,
             "feature_importances": feat_imp,
         })
+        output.update(_select_prediction_strategy(output, actual_best_name))
         return output
 
     except Exception as e:

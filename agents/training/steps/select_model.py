@@ -241,7 +241,7 @@ def select_model(state: "TrainingAgentState") -> "TrainingAgentState":
             "current_step": "select_model",
         }
 
-    llm = init_chat_model(model="gpt-5.1", temperature=0)
+    llm = init_chat_model(model="gpt-5.4", temperature=0)
     structured_llm = llm.with_structured_output(ModelFamilySelectionOutput)
 
     redo_hint = state.get("_select_model_redo_hint", "")

@@ -606,7 +606,7 @@ Be specific with hyperparameter values. Consider:
 - Model type - choose appropriate hyperparameters for {selected_model}
 """
 
-        response = init_chat_model("openai:gpt-5.1").invoke([{"role": "user", "content": prompt}])
+        response = init_chat_model("openai:gpt-5.4").invoke([{"role": "user", "content": prompt}])
 
         # Parse JSON from response
         try:

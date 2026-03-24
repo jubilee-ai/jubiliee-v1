@@ -220,7 +220,7 @@ def planner_node(state: "TrainingAgentState") -> "TrainingAgentState":
             replan_context=replan_context,
         )
 
-        llm = init_chat_model(model="gpt-5.1", temperature=0)
+        llm = init_chat_model(model="gpt-5.4", temperature=0)
         structured_llm = llm.with_structured_output(Plan)
         plan: Plan = structured_llm.invoke(prompt)
         plan = _validate_plan(plan)

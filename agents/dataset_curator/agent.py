@@ -108,7 +108,7 @@ End with a JSON summary:
 # LLM
 # =============================================================================
 
-llm = ChatOpenAI(model="gpt-5.1", temperature=0)
+llm = ChatOpenAI(model="gpt-5.4", temperature=0)
 
 # =============================================================================
 # Local tools (non-MCP)

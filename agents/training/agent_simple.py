@@ -27,6 +27,11 @@ if str(_DATA_TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(_DATA_TOOLS_DIR))
 from utils import get_registered_dataset, register_dataset
 
+_MODEL_TOOLS_DIR = Path(__file__).parent.parent.parent / "tools" / "models-tools" / "training"
+if str(_MODEL_TOOLS_DIR) not in sys.path:
+    sys.path.insert(0, str(_MODEL_TOOLS_DIR))
+_MARCH_MADNESS_DIR = Path(__file__).parent.parent.parent / ".kaggle" / "march-machine-learning-mania-2026"
+
 from .steps.cleaning_simple import run_cleaning_simple
 from .steps.data_collection import data_collection as _data_collection_impl
 from .steps.feature_engineering_executor import execute_feature_spec_split
@@ -37,7 +42,6 @@ from .steps.orchestrator import _infer_target_column
 from .steps.select_model import MODEL_FAMILIES
 from .steps.select_model import select_model as _select_model_impl
 from .steps.training import run_training_agent as _run_training
-
 
 # =============================================================================
 # STRUCTURED OUTPUT SCHEMAS
@@ -118,7 +122,7 @@ def create_simple_training_agent(
     goal: str,
     linked_datasets: Optional[list[str]] = None,
     user_model_preference: Optional[str] = None,
-    model: str = "openai:gpt-5.1",
+    model: str = "openai:gpt-5.4",
     hitl: bool = True,
     checkpointer=None,
     use_external_sources: bool = False,
@@ -164,7 +168,12 @@ def create_simple_training_agent(
     # Keys produced by each step, used to invalidate downstream state on re-runs
     _STEP_OUTPUTS = {
         "select_model": ["selected_model", "model_explanation"],
-        "data_collection": ["collected_dataset_ref", "data_source"],
+        "data_collection": [
+            "collected_dataset_ref",
+            "data_source",
+            "competition_inference_ref",
+            "competition_team_features_ref",
+        ],
         "cleaning": ["cleaned_dataset_ref", "cleaning_summary", "cleaning_transformations"],
         "label_split_definition": [
             "label_definition", "split_indices",
@@ -689,7 +698,7 @@ def create_simple_training_agent(
             f"{redo_section}"
         )
 
-        structured_llm = init_chat_model("openai:gpt-5.1").with_structured_output(
+        structured_llm = init_chat_model("openai:gpt-5.4").with_structured_output(
             TrainingPlan, method="function_calling"
         )
         training_plan = structured_llm.invoke(prompt).model_dump()
@@ -743,7 +752,7 @@ def create_simple_training_agent(
 
         model_name = f"{selected_model}_{int(time.time())}"
         training_plan = state.get("training_plan") or {}
-        plan_max_iters = training_plan.get("max_iterations", 5 if selected_model == "neural_networks" else 3)
+        plan_max_iters = training_plan.get("max_iterations", 50 if selected_model == "neural_networks" else 3)
         result = _run_training(
             train_ref=train_ref,
             val_ref=state.get("transformed_val_ref"),
@@ -800,8 +809,21 @@ def create_simple_training_agent(
                 "model_type": best_model_type,
                 "val_accuracy": result.get("val_accuracy"),
                 "val_roc_auc": result.get("val_roc_auc"),
+                "val_brier": result.get("val_brier"),
                 "test_accuracy": result.get("test_accuracy"),
                 "test_roc_auc": result.get("test_roc_auc"),
+                "test_brier": result.get("test_brier"),
+                "val_brier_calibrated": result.get("val_brier_calibrated"),
+                "test_brier_calibrated": result.get("test_brier_calibrated"),
+                "val_brier_ensemble": result.get("val_brier_ensemble"),
+                "test_brier_ensemble": result.get("test_brier_ensemble"),
+                "ensemble_weights": result.get("ensemble_weights"),
+                "ensemble_model_names": result.get("ensemble_model_names"),
+                "selected_prediction_strategy": result.get("selected_prediction_strategy"),
+                "selected_backtest_brier": result.get("selected_backtest_brier"),
+                "selected_model_name": result.get("selected_model_name"),
+                "selected_ensemble_weights": result.get("selected_ensemble_weights"),
+                "selection_reason": result.get("selection_reason"),
                 "train_r2": result.get("train_r2"),
                 "val_r2": result.get("val_r2"),
                 "val_rmse": result.get("val_rmse"),
@@ -839,7 +861,7 @@ def create_simple_training_agent(
         lines.append(f"Model: {result.get('model_name', '?')}")
         metric_parts = []
         for key, label in [
-            ("val_accuracy", "Val Accuracy"), ("val_roc_auc", "Val ROC-AUC"),
+            ("val_brier", "Val Brier"), ("val_accuracy", "Val Accuracy"), ("val_roc_auc", "Val ROC-AUC"),
             ("test_accuracy", "Test Accuracy"), ("val_r2", "Val R²"), ("test_r2", "Test R²"),
             ("silhouette_score", "Silhouette"), ("davies_bouldin", "Davies-Bouldin"),
             ("inertia", "Inertia"),
@@ -968,7 +990,7 @@ def invoke_simple_training_agent(
     goal: str,
     linked_datasets: Optional[list[str]] = None,
     user_model_preference: Optional[str] = None,
-    model: str = "openai:gpt-5.1",
+    model: str = "openai:gpt-5.4",
     use_external_sources: bool = False,
 ):
     """Convenience function: create and invoke the simple training agent (no HITL)."""
@@ -978,3 +1000,157 @@ def invoke_simple_training_agent(
     )
     result = agent.invoke({"messages": [{"role": "user", "content": goal}]})
     return result
+
+
+def _predict_binary_proba(model, X):
+    """Return binary class probabilities for a fitted model."""
+    import numpy as np
+
+    if hasattr(model, "predict_proba"):
+        proba = model.predict_proba(X)
+        if getattr(proba, "ndim", 1) == 1:
+            return np.asarray(proba, dtype=float)
+        if proba.shape[1] == 2:
+            return np.asarray(proba[:, 1], dtype=float)
+        return np.asarray(proba[:, 0], dtype=float)
+    if hasattr(model, "decision_function"):
+        scores = np.asarray(model.decision_function(X), dtype=float)
+        return 1.0 / (1.0 + np.exp(-scores))
+    pred = np.asarray(model.predict(X), dtype=float)
+    return np.clip(pred, 0.0, 1.0)
+
+
+def _load_model_by_name(model_name: str):
+    import importlib
+
+    mod = importlib.import_module("model_storage")
+    return mod.load_model(model_name)
+
+
+def _align_features_for_model(model, inference_df):
+    import numpy as np
+    import pandas as pd
+
+    feature_cols = [c for c in inference_df.columns if c != "ID"]
+    X = inference_df[feature_cols].copy()
+    if hasattr(model, "feature_names_in_"):
+        expected = list(model.feature_names_in_)
+        missing = [c for c in expected if c not in X.columns]
+        for c in missing:
+            X[c] = np.nan
+        X = X[expected]
+    return X
+
+
+def generate_kaggle_submission_from_state(state: dict, output_path: Optional[str] = None) -> dict:
+    """Generate Kaggle submission.csv from the finalized training state."""
+    import numpy as np
+    import pandas as pd
+    from sklearn.calibration import CalibratedClassifierCV
+
+    metrics = state.get("training_metrics") or {}
+    strategy = metrics.get("selected_prediction_strategy") or "best_model"
+    base_model_name = metrics.get("selected_model_name") or metrics.get("model_name")
+    if not base_model_name and strategy != "weighted_ensemble":
+        raise ValueError("No trained model name available for submission generation.")
+
+    inference_ref = state.get("competition_inference_ref") or "march_mania_matchup_inference_2026"
+    inference_df = get_registered_dataset(inference_ref)
+    if inference_df is None:
+        raise ValueError(f"Inference dataset not found: {inference_ref}")
+    if "ID" not in inference_df.columns:
+        raise ValueError(f"Inference dataset '{inference_ref}' must include an 'ID' column.")
+
+    pred = None
+    if strategy == "weighted_ensemble":
+        model_names = metrics.get("ensemble_model_names") or []
+        weights = metrics.get("selected_ensemble_weights") or metrics.get("ensemble_weights") or {}
+        if not model_names:
+            raise ValueError("Weighted ensemble selected but no ensemble models were recorded.")
+        probs = []
+        w = []
+        for name in model_names:
+            mdl = _load_model_by_name(name)
+            if mdl is None:
+                continue
+            X = _align_features_for_model(mdl, inference_df)
+            probs.append(_predict_binary_proba(mdl, X))
+            w.append(float(weights.get(name, 0.0)))
+        if not probs:
+            raise ValueError("No ensemble members could be loaded for inference.")
+        w_arr = np.asarray(w, dtype=float)
+        if np.isclose(w_arr.sum(), 0.0):
+            w_arr = np.ones(len(probs), dtype=float) / len(probs)
+        else:
+            w_arr = w_arr / w_arr.sum()
+        pred = np.average(np.vstack(probs), axis=0, weights=w_arr)
+    elif strategy == "calibrated_best_model":
+        base_model = _load_model_by_name(base_model_name)
+        if base_model is None:
+            raise ValueError(f"Could not load model: {base_model_name}")
+        val_ref = state.get("transformed_val_ref")
+        label_def = state.get("label_definition") or {}
+        target_column = label_def.get("target_column")
+        val_df = get_registered_dataset(val_ref) if val_ref else None
+        if val_df is None or not target_column or target_column not in val_df.columns:
+            # Safe fallback if calibration inputs are unavailable.
+            X = _align_features_for_model(base_model, inference_df)
+            pred = _predict_binary_proba(base_model, X)
+        else:
+            X_val = _align_features_for_model(base_model, val_df.drop(columns=[target_column]))
+            y_val = val_df[target_column]
+            calibrator = None
+            try:
+                from sklearn.frozen import FrozenEstimator
+
+                calibrator = CalibratedClassifierCV(FrozenEstimator(base_model), method="isotonic")
+            except Exception:
+                calibrator = CalibratedClassifierCV(base_model, cv="prefit", method="isotonic")
+            calibrator.fit(X_val, y_val)
+            X = _align_features_for_model(base_model, inference_df)
+            pred = _predict_binary_proba(calibrator, X)
+    else:
+        mdl = _load_model_by_name(base_model_name)
+        if mdl is None:
+            raise ValueError(f"Could not load model: {base_model_name}")
+        X = _align_features_for_model(mdl, inference_df)
+        pred = _predict_binary_proba(mdl, X)
+
+    pred = np.clip(np.asarray(pred, dtype=float), 0.001, 0.999)
+    submission = pd.DataFrame({
+        "ID": inference_df["ID"].astype(str),
+        "Pred": pred,
+    })
+
+    out = Path(output_path) if output_path else (_MARCH_MADNESS_DIR / "submission.csv")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    submission.to_csv(out, index=False)
+
+    return {
+        "submission_path": str(out),
+        "n_rows": len(submission),
+        "selected_prediction_strategy": strategy,
+        "selected_model_name": base_model_name,
+        "selected_backtest_brier": metrics.get("selected_backtest_brier"),
+    }
+
+
+def run_kaggle_submission_with_simple_agent(
+    goal: str,
+    output_path: Optional[str] = None,
+    linked_datasets: Optional[list[str]] = None,
+    user_model_preference: Optional[str] = None,
+    model: str = "openai:gpt-5.1",
+    use_external_sources: bool = False,
+) -> dict:
+    """Run full training agent and write Kaggle submission.csv in one command."""
+    agent, state = create_simple_training_agent(
+        goal=goal,
+        linked_datasets=linked_datasets,
+        user_model_preference=user_model_preference,
+        model=model,
+        hitl=False,
+        use_external_sources=use_external_sources,
+    )
+    agent.invoke({"messages": [{"role": "user", "content": goal}]})
+    return generate_kaggle_submission_from_state(state, output_path=output_path)

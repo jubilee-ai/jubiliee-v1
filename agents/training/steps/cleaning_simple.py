@@ -426,7 +426,7 @@ CLEANING_SYSTEM_PROMPT = _build_system_prompt()
 # =============================================================================
 
 def create_cleaning_agent(
-    model: str = "openai:gpt-5.1",
+    model: str = "openai:5.4",
     target_col: Optional[str] = None,
     task_type: Optional[str] = None,
     forbidden_columns: Optional[list[str]] = None,
@@ -484,7 +484,7 @@ def create_cleaning_agent(
 def run_cleaning_simple(
     dataset_ref: str,
     goal: str = "Clean the dataset for machine learning",
-    model: str = "openai:gpt-5.1",
+    model: str = "openai:gpt-5.4",
     max_iterations: int = 10,
     target_col: Optional[str] = None,
     task_type: Optional[str] = None,

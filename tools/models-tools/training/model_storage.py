@@ -765,7 +765,7 @@ def evaluate_model_tool(
     - min_precision/min_recall: Add constraints (e.g., "maximize F1 but keep precision >= 0.3")
     
     METRICS COMPUTED:
-    - For classification: accuracy, ROC-AUC, precision, recall, F1, confusion matrix
+    - For classification: accuracy, ROC-AUC, Brier score, precision, recall, F1, confusion matrix
     - For regression: MSE, RMSE, MAE, R²
     
     Args:
@@ -835,18 +835,21 @@ def evaluate_model_tool(
             # Classification metrics
             from sklearn.metrics import (
                 accuracy_score, roc_auc_score, precision_score, recall_score,
-                f1_score, confusion_matrix, classification_report, balanced_accuracy_score
+                f1_score, confusion_matrix, classification_report, balanced_accuracy_score,
+                brier_score_loss,
             )
             import numpy as np
             
             # Get probabilities if available
             y_proba = None
             roc_auc = None
+            brier = None
             if hasattr(model, 'predict_proba'):
                 try:
                     y_proba = model.predict_proba(X)
                     if y_proba.shape[1] == 2:
                         roc_auc = roc_auc_score(y_true, y_proba[:, 1])
+                        brier = brier_score_loss(y_true, y_proba[:, 1])
                     else:
                         roc_auc = roc_auc_score(y_true, y_proba, multi_class='ovr', average='weighted')
                 except Exception:
@@ -950,6 +953,7 @@ def evaluate_model_tool(
                 "📈 CLASSIFICATION METRICS",
                 f"  Accuracy: {accuracy:.4f}",
                 f"  ROC-AUC: {roc_auc:.4f}" if roc_auc else "  ROC-AUC: N/A",
+                f"  Brier Score (lower is better): {brier:.4f}" if brier is not None else "  Brier Score: N/A",
                 f"  Precision (weighted): {precision:.4f}" if precision else "  Precision: N/A",
                 f"  Recall (weighted): {recall:.4f}" if recall else "  Recall: N/A",
                 f"  F1 Score (weighted): {f1:.4f}" if f1 else "  F1: N/A",

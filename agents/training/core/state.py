@@ -92,6 +92,8 @@ class TrainingAgentState(TypedDict):
     collected_dataset_ref: Optional[str]
     data_source: Optional[str]  # "local", "kaggle", "huggingface", "pre-registered"
     use_external_sources: bool
+    competition_inference_ref: Optional[str]  # e.g. march_mania_matchup_inference_2026
+    competition_team_features_ref: Optional[str]  # e.g. march_mania_team_season_features
 
     # Step 3: Cleaning & Standardization
     cleaned_dataset_ref: Optional[str]
@@ -179,6 +181,8 @@ def create_initial_state(
         "task_type": None,
         "collected_dataset_ref": None,
         "data_source": None,
+        "competition_inference_ref": None,
+        "competition_team_features_ref": None,
         "cleaned_dataset_ref": None,
         "cleaning_transformations": [],
         "cleaning_summary": None,

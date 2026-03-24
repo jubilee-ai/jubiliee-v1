@@ -206,7 +206,7 @@ def evaluator_node(state: "TrainingAgentState") -> "TrainingAgentState":
         state_context=ctx,
     )
 
-    llm = init_chat_model(model="gpt-5.1", temperature=0)
+    llm = init_chat_model(model="gpt-5.4", temperature=0)
     structured_llm = llm.with_structured_output(EvaluatorDecision)
     decision: EvaluatorDecision = structured_llm.invoke(prompt)
 

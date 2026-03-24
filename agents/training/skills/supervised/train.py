@@ -75,6 +75,27 @@ def _discover_estimators() -> dict[str, tuple[str, str]]:
 
 ESTIMATORS: dict[str, tuple[str, str]] = _discover_estimators()
 
+
+def _register_external_estimators(catalog: dict[str, tuple[str, str]]) -> None:
+    """Add optional non-sklearn estimators when available."""
+    try:
+        if importlib.util.find_spec("xgboost") is None:
+            raise ImportError("xgboost not installed")
+        catalog["XGBClassifier"] = ("xgboost", "XGBClassifier")
+        catalog["XGBRegressor"] = ("xgboost", "XGBRegressor")
+    except Exception:
+        pass
+    try:
+        if importlib.util.find_spec("lightgbm") is None:
+            raise ImportError("lightgbm not installed")
+        catalog["LGBMClassifier"] = ("lightgbm", "LGBMClassifier")
+        catalog["LGBMRegressor"] = ("lightgbm", "LGBMRegressor")
+    except Exception:
+        pass
+
+
+_register_external_estimators(ESTIMATORS)
+
 # Defaults applied at construction time.
 _INIT_DEFAULTS: dict[str, dict] = {
     "SVC": {"probability": True},
@@ -82,12 +103,25 @@ _INIT_DEFAULTS: dict[str, dict] = {
     "LogisticRegression": {"max_iter": 1000},
     "MLPClassifier": {"max_iter": 500},
     "MLPRegressor": {"max_iter": 500},
+    "XGBClassifier": {
+        "objective": "binary:logistic",
+        "eval_metric": "logloss",
+        "tree_method": "hist",
+    },
+    "XGBRegressor": {
+        "objective": "reg:squarederror",
+        "tree_method": "hist",
+    },
+    "LGBMClassifier": {"objective": "binary", "verbosity": -1},
+    "LGBMRegressor": {"objective": "regression", "verbosity": -1},
 }
 
 _PARALLELIZABLE = {
     "RandomForestClassifier", "RandomForestRegressor",
     "ExtraTreesClassifier", "ExtraTreesRegressor",
     "BaggingClassifier", "BaggingRegressor",
+    "XGBClassifier", "XGBRegressor",
+    "LGBMClassifier", "LGBMRegressor",
 }
 
 
@@ -186,6 +220,47 @@ SEARCH_SPACES: dict[str, dict] = {
     "MultinomialNB": {"alpha": loguniform(1e-3, 10)},
     "ComplementNB":  {"alpha": loguniform(1e-3, 10)},
     "BernoulliNB":   {"alpha": loguniform(1e-3, 10)},
+    # External GBDT libraries (optional dependencies)
+    "XGBClassifier": {
+        "n_estimators": randint(100, 900),
+        "max_depth": randint(3, 10),
+        "learning_rate": loguniform(1e-2, 0.3),
+        "subsample": uniform(0.6, 0.4),
+        "colsample_bytree": uniform(0.6, 0.4),
+        "min_child_weight": randint(1, 10),
+        "reg_alpha": loguniform(1e-8, 10),
+        "reg_lambda": loguniform(1e-8, 10),
+    },
+    "XGBRegressor": {
+        "n_estimators": randint(100, 900),
+        "max_depth": randint(3, 10),
+        "learning_rate": loguniform(1e-2, 0.3),
+        "subsample": uniform(0.6, 0.4),
+        "colsample_bytree": uniform(0.6, 0.4),
+        "min_child_weight": randint(1, 10),
+        "reg_alpha": loguniform(1e-8, 10),
+        "reg_lambda": loguniform(1e-8, 10),
+    },
+    "LGBMClassifier": {
+        "n_estimators": randint(100, 900),
+        "max_depth": randint(3, 12),
+        "learning_rate": loguniform(1e-2, 0.3),
+        "num_leaves": randint(20, 160),
+        "subsample": uniform(0.6, 0.4),
+        "colsample_bytree": uniform(0.6, 0.4),
+        "reg_alpha": loguniform(1e-8, 10),
+        "reg_lambda": loguniform(1e-8, 10),
+    },
+    "LGBMRegressor": {
+        "n_estimators": randint(100, 900),
+        "max_depth": randint(3, 12),
+        "learning_rate": loguniform(1e-2, 0.3),
+        "num_leaves": randint(20, 160),
+        "subsample": uniform(0.6, 0.4),
+        "colsample_bytree": uniform(0.6, 0.4),
+        "reg_alpha": loguniform(1e-8, 10),
+        "reg_lambda": loguniform(1e-8, 10),
+    },
 }
 
 
@@ -227,8 +302,10 @@ def _select_scoring(is_clf: bool, y: pd.Series) -> str:
         return "r2"
     n_classes = y.nunique()
     minority_ratio = y.value_counts().min() / len(y)
-    if n_classes == 2 and minority_ratio < 0.3:
-        return "roc_auc"
+    if n_classes == 2:
+        # Kaggle-style probability competitions are often scored with Brier/log-loss;
+        # optimize probabilistic quality directly instead of hard-label accuracy.
+        return "neg_brier_score"
     if n_classes > 2 and minority_ratio < 0.15:
         return "f1_weighted"
     return "accuracy"
@@ -280,6 +357,28 @@ def _get_tunable_params_summary(estimator_name: str) -> str:
         return ""
 
 
+def _build_season_cv_splits(df: pd.DataFrame, season_column: str, max_folds: int = 5):
+    """Leave-one-season-out style splits using chronological seasons.
+
+    Each fold trains on all earlier seasons and validates on one later season.
+    """
+    if season_column not in df.columns:
+        return None
+    seasons = pd.Series(df[season_column]).dropna().astype(int)
+    unique = sorted(seasons.unique().tolist())
+    if len(unique) < 3:
+        return None
+    candidate_val = unique[-max_folds:]
+    splits = []
+    for val_season in candidate_val:
+        train_idx = df.index[seasons < val_season].to_numpy()
+        val_idx = df.index[seasons == val_season].to_numpy()
+        if len(train_idx) < 50 or len(val_idx) < 20:
+            continue
+        splits.append((train_idx, val_idx))
+    return splits if len(splits) >= 2 else None
+
+
 def run(params: dict) -> str:
     """Train any sklearn estimator. See SKILL.md for parameters."""
     estimator_name = params.get("estimator")
@@ -308,6 +407,7 @@ def run(params: dict) -> str:
 
     X, y = df[feature_columns], df[target_column]
     n_rows = len(X)
+    season_column = params.get("season_column")
 
     categorical_cols = params.get("categorical_columns") or X.select_dtypes(include=["object", "category"]).columns.tolist()
     categorical_cols = [c for c in categorical_cols if c in feature_columns]
@@ -342,6 +442,11 @@ def run(params: dict) -> str:
     auto_tune = params.get("auto_tune", True)
     n_search_iter = params.get("n_search_iter", 20)
     cv_folds = max(2, min(params.get("cv_folds", 5), len(y)))
+    cv_splits = None
+    if season_column:
+        cv_splits = _build_season_cv_splits(df, season_column=season_column, max_folds=cv_folds)
+        if cv_splits:
+            print(f"[sklearn_generic] Using season-based CV with {len(cv_splits)} folds on '{season_column}'")
     best_params: dict = {}
     cv_score: float | None = None
 
@@ -359,6 +464,9 @@ def run(params: dict) -> str:
         n_search_iter = min(n_search_iter, 10)
     if n_rows > _SUBSAMPLE_SEARCH:
         cv_folds = min(cv_folds, 3)
+    if cv_splits:
+        # Keep explicit chronological folds if provided.
+        cv_folds = len(cv_splits)
 
     scoring = _select_scoring(is_clf, y)
 
@@ -373,7 +481,7 @@ def run(params: dict) -> str:
         # Subsample for search when dataset exceeds threshold
         X_search, y_search = X, y
         subsampled = False
-        if n_rows > _SUBSAMPLE_SEARCH:
+        if n_rows > _SUBSAMPLE_SEARCH and not cv_splits:
             from sklearn.model_selection import train_test_split
             frac = _SUBSAMPLE_SEARCH / n_rows
             X_search, _, y_search, _ = train_test_split(
@@ -390,7 +498,7 @@ def run(params: dict) -> str:
             pipeline, space,
             n_iter=actual_iter,
             scoring=scoring,
-            cv=cv_folds,
+            cv=cv_splits if cv_splits else cv_folds,
             n_jobs=-1,
             random_state=params.get("random_state", 42),
             error_score="raise",
