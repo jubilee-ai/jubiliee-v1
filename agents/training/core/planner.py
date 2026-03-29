@@ -289,10 +289,18 @@ def planner_node(state: "TrainingAgentState") -> "TrainingAgentState":
             "message": "Planning: drafting execution steps…",
         })
         token_handler = GraphTokenStreamHandler(phase="planner")
+        callbacks = [token_handler]
+        try:
+            from backend.observability.langfuse_handler import get_langfuse_handler
+            lf = get_langfuse_handler(experiment_id=s.get("_experiment_id"), node="planner")
+            if lf:
+                callbacks.append(lf)
+        except Exception:
+            pass
         llm = init_chat_model(model="gpt-5.4-mini", temperature=0, streaming=True)
         structured_llm = llm.with_structured_output(Plan)
         plan: Plan = structured_llm.invoke(
-            prompt, config={"callbacks": [token_handler]}
+            prompt, config={"callbacks": callbacks}
         )
         plan = _validate_plan(plan, s)
         emit_graph_stream({

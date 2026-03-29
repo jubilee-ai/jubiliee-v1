@@ -3,6 +3,7 @@ from fastapi.responses import RedirectResponse
 
 from backend.catalog.interfaces import CatalogServiceInterface
 from backend.catalog import service as catalog_service
+from backend.shared.auth import CurrentUser, get_current_user
 from backend.shared.artifact_store import get_artifact_store
 from backend.shared.database import get_db_session
 from backend.shared.models import Dataset, Model, ModelVersion
@@ -18,9 +19,14 @@ def get_catalog_service() -> CatalogServiceInterface:
 async def get_datasets(
     include_derived: bool = False,
     service: CatalogServiceInterface = Depends(get_catalog_service),
+    current_user: CurrentUser = Depends(get_current_user),
 ):
     try:
-        return service.get_datasets(include_derived=include_derived)
+        return service.get_datasets(
+            include_derived=include_derived,
+            user_id=current_user.id,
+            org_id=current_user.organization_id,
+        )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -33,15 +39,22 @@ async def get_models(service: CatalogServiceInterface = Depends(get_catalog_serv
 @router.get("/api/trained-models")
 async def get_trained_models(
     service: CatalogServiceInterface = Depends(get_catalog_service),
+    current_user: CurrentUser = Depends(get_current_user),
 ):
     try:
-        return service.get_trained_models()
+        return service.get_trained_models(
+            user_id=current_user.id,
+            org_id=current_user.organization_id,
+        )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/api/trained-models/{model_name}/download")
-async def download_model(model_name: str):
+async def download_model(
+    model_name: str,
+    current_user: CurrentUser = Depends(get_current_user),
+):
     with get_db_session() as session:
         model = session.query(Model).filter_by(name=model_name).first()
         if not model:
@@ -61,7 +74,10 @@ async def download_model(model_name: str):
 
 
 @router.get("/api/datasets/{ref}/download")
-async def download_dataset(ref: str):
+async def download_dataset(
+    ref: str,
+    current_user: CurrentUser = Depends(get_current_user),
+):
     with get_db_session() as session:
         dataset = session.query(Dataset).filter_by(name=ref).first()
         if not dataset:

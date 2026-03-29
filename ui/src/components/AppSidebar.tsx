@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react"
-import { Plus, MessageSquare, Loader2, CheckCircle2, AlertCircle, Trash2, FlaskConical, Database, Box, Settings } from "lucide-react"
+import { Plus, MessageSquare, Loader2, CheckCircle2, AlertCircle, Trash2, FlaskConical, Database, Box, Settings, Activity, Share2, Users } from "lucide-react"
+import { SidebarExperimentsSkeleton } from "@/components/AppLoadingSkeletons"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { ScrollArea } from "@/components/ui/scroll-area"
@@ -8,11 +9,13 @@ import {
   createExperiment,
   deleteExperiment,
   updateExperiment,
+  shareExperiment,
+  unshareExperiment,
   type ExperimentSummary,
 } from "@/lib/api"
 import { cn } from "@/lib/utils"
 
-export type AppTab = "experiment_lab" | "datasets" | "models" | "settings"
+export type AppTab = "experiment_lab" | "datasets" | "models" | "observability" | "settings"
 
 interface AppSidebarProps {
   activeTab: AppTab
@@ -21,6 +24,8 @@ interface AppSidebarProps {
   onSelectExperiment: (id: string) => void
   onNewExperiment: () => void
   isBackendConnected: boolean
+  /** After first health check; avoids showing empty state while still probing the API. */
+  isBackendReachabilityKnown: boolean
   switchingTo?: string | null
   /** Increment from parent after any experiment list mutation outside this component. */
   experimentsListNonce?: number
@@ -34,6 +39,7 @@ const navItems: { id: AppTab; label: string; icon: React.ReactNode }[] = [
   { id: "experiment_lab", label: "Experiments", icon: <FlaskConical className="h-4 w-4" /> },
   { id: "models", label: "Models", icon: <Box className="h-4 w-4" /> },
   { id: "datasets", label: "Datasets", icon: <Database className="h-4 w-4" /> },
+  { id: "observability", label: "Observability", icon: <Activity className="h-4 w-4" /> },
   { id: "settings", label: "Settings", icon: <Settings className="h-4 w-4" /> },
 ]
 
@@ -156,6 +162,7 @@ export function AppSidebar({
   onSelectExperiment,
   onNewExperiment,
   isBackendConnected,
+  isBackendReachabilityKnown,
   switchingTo,
   experimentsListNonce = 0,
   onExperimentsChanged,
@@ -223,6 +230,22 @@ export function AppSidebar({
     onSelectExperiment(id)
   }
 
+  const handleShare = async (e: React.MouseEvent, exp: ExperimentSummary) => {
+    e.stopPropagation()
+    const next = !exp.shared_with_org
+    setExperiments((prev) =>
+      prev.map((ex) => (ex.id === exp.id ? { ...ex, shared_with_org: next } : ex))
+    )
+    try {
+      if (next) await shareExperiment(exp.id)
+      else await unshareExperiment(exp.id)
+    } catch {
+      setExperiments((prev) =>
+        prev.map((ex) => (ex.id === exp.id ? { ...ex, shared_with_org: !next } : ex))
+      )
+    }
+  }
+
   return (
     <div className="h-full min-w-0 flex flex-col border-r border-border/50 bg-background">
       {/* Section Navigation */}
@@ -260,21 +283,29 @@ export function AppSidebar({
 
       <ScrollArea className="flex-1 min-h-0 min-w-0 mt-1.5">
         <div className="px-2 pb-2 space-y-1 min-w-0">
-          {isLoading && experiments.length === 0 && (
-            <div className="flex items-center justify-center py-8 text-muted-foreground text-xs">
-              <Loader2 className="h-3.5 w-3.5 animate-spin mr-2" />
-              Loading…
-            </div>
+          {(!isBackendReachabilityKnown ||
+            (isBackendConnected && isLoading && experiments.length === 0)) && (
+            <SidebarExperimentsSkeleton />
           )}
-          {!isLoading && experiments.length === 0 && (
+          {isBackendReachabilityKnown &&
+            isBackendConnected &&
+            !isLoading &&
+            experiments.length === 0 && (
             <div className="text-center py-8 text-muted-foreground/50 text-xs">
               No experiments yet
+            </div>
+          )}
+          {isBackendReachabilityKnown && !isBackendConnected && !isLoading && (
+            <div className="text-center py-8 text-muted-foreground/60 text-xs leading-relaxed px-2">
+              Can&apos;t reach the API. Check the server is running, then refresh the page.
             </div>
           )}
           {experiments.map((exp) => {
             const isSwitching = switchingTo === exp.id
             const isActive = activeTab === "experiment_lab" && activeExperimentId === exp.id
             const preview = exp.last_message ? stripMarkdown(exp.last_message) : null
+            const isOwner = exp.is_owner !== false
+            const isShared = !!exp.shared_with_org
 
             return (
               <div
@@ -307,13 +338,25 @@ export function AppSidebar({
                     className="min-w-0 flex-1 text-left rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background cursor-pointer"
                   >
                     <div className="flex items-start justify-between gap-2 min-w-0">
-                      <EditableExperimentTitle
-                        experimentId={exp.id}
-                        name={exp.name}
-                        isActive={isActive}
-                        disabled={isSwitching || !isBackendConnected}
-                        onRenamed={handleRename}
-                      />
+                      <div className="flex items-center gap-1 min-w-0 flex-1">
+                        <EditableExperimentTitle
+                          experimentId={exp.id}
+                          name={exp.name}
+                          isActive={isActive}
+                          disabled={isSwitching || !isBackendConnected}
+                          onRenamed={handleRename}
+                        />
+                        {!isOwner && (
+                          <span className="shrink-0 inline-flex items-center gap-0.5 rounded-full bg-blue-500/10 px-1.5 py-0 text-[9px] font-medium text-blue-400" title="Shared with you">
+                            <Users className="h-2.5 w-2.5" />
+                          </span>
+                        )}
+                        {isOwner && isShared && (
+                          <span className="shrink-0 inline-flex items-center gap-0.5 rounded-full bg-emerald-500/10 px-1.5 py-0 text-[9px] font-medium text-emerald-400" title="Shared with org">
+                            <Share2 className="h-2.5 w-2.5" />
+                          </span>
+                        )}
+                      </div>
                       <span className="text-[10px] text-muted-foreground/50 shrink-0 tabular-nums pt-0.5">
                         {relativeTime(exp.updated_at || exp.created_at)}
                       </span>
@@ -324,17 +367,40 @@ export function AppSidebar({
                       </p>
                     ) : null}
                   </div>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    aria-label={`Delete ${exp.name}`}
-                    className="h-7 w-7 shrink-0 p-0 text-muted-foreground/35 hover:text-destructive hover:bg-destructive/10"
-                    onClick={(e) => handleDelete(e, exp.id)}
-                    disabled={isSwitching}
-                  >
-                    <Trash2 className="h-3.5 w-3.5" />
-                  </Button>
+                  <div className="flex flex-col gap-0.5 shrink-0">
+                    {isOwner && (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        aria-label={isShared ? `Unshare ${exp.name}` : `Share ${exp.name}`}
+                        className={cn(
+                          "h-7 w-7 p-0",
+                          isShared
+                            ? "text-emerald-400 hover:text-emerald-500 hover:bg-emerald-500/10"
+                            : "text-muted-foreground/35 hover:text-foreground hover:bg-muted"
+                        )}
+                        onClick={(e) => handleShare(e, exp)}
+                        disabled={isSwitching}
+                        title={isShared ? "Shared with organization — click to unshare" : "Share with organization"}
+                      >
+                        <Share2 className="h-3.5 w-3.5" />
+                      </Button>
+                    )}
+                    {isOwner && (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        aria-label={`Delete ${exp.name}`}
+                        className="h-7 w-7 p-0 text-muted-foreground/35 hover:text-destructive hover:bg-destructive/10"
+                        onClick={(e) => handleDelete(e, exp.id)}
+                        disabled={isSwitching}
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </Button>
+                    )}
+                  </div>
                 </div>
               </div>
             )

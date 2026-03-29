@@ -1,7 +1,7 @@
 import uuid
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from backend.catalog.repository import _dataset_to_dict
@@ -11,6 +11,7 @@ from backend.experiments.schemas import (
     ExperimentSummary,
     UpdateExperimentRequest,
 )
+from backend.shared.auth import CurrentUser, get_current_user
 from backend.shared.database import get_db_session
 from backend.shared.models import (
     Dataset,
@@ -29,7 +30,10 @@ class SaveMessagesRequest(BaseModel):
 
 
 @router.post("/api/experiments", response_model=ExperimentSummary)
-def create_experiment(request: CreateExperimentRequest):
+def create_experiment(
+    request: CreateExperimentRequest,
+    current_user: CurrentUser = Depends(get_current_user),
+):
     experiment_id = f"exp-{uuid.uuid4().hex[:8]}"
     chat_thread_id = f"chat-{experiment_id}"
     name = request.name or f"Experiment {experiment_id[-8:]}"
@@ -38,17 +42,24 @@ def create_experiment(request: CreateExperimentRequest):
         name=name,
         chat_thread_id=chat_thread_id,
         linked_datasets=request.linked_datasets,
+        user_id=current_user.id,
     )
     return result
 
 
 @router.get("/api/experiments", response_model=list[ExperimentSummary])
-def list_experiments():
-    return repository.list_experiments()
+def list_experiments(current_user: CurrentUser = Depends(get_current_user)):
+    return repository.list_experiments(
+        user_id=current_user.id,
+        org_id=current_user.organization_id,
+    )
 
 
 @router.get("/api/experiments/{experiment_id}", response_model=ExperimentDetail)
-def get_experiment(experiment_id: str):
+def get_experiment(
+    experiment_id: str,
+    current_user: CurrentUser = Depends(get_current_user),
+):
     result = repository.get_experiment(experiment_id)
     if result is None:
         raise HTTPException(status_code=404, detail="Experiment not found")
@@ -56,7 +67,11 @@ def get_experiment(experiment_id: str):
 
 
 @router.patch("/api/experiments/{experiment_id}")
-def update_experiment(experiment_id: str, request: UpdateExperimentRequest):
+def update_experiment(
+    experiment_id: str,
+    request: UpdateExperimentRequest,
+    current_user: CurrentUser = Depends(get_current_user),
+):
     updates = request.model_dump(exclude_none=True)
     if not updates:
         raise HTTPException(status_code=400, detail="No fields to update")
@@ -67,7 +82,10 @@ def update_experiment(experiment_id: str, request: UpdateExperimentRequest):
 
 
 @router.delete("/api/experiments/{experiment_id}")
-def delete_experiment(experiment_id: str):
+def delete_experiment(
+    experiment_id: str,
+    current_user: CurrentUser = Depends(get_current_user),
+):
     ok = repository.delete_experiment(experiment_id)
     if not ok:
         raise HTTPException(status_code=404, detail="Experiment not found")
@@ -75,7 +93,11 @@ def delete_experiment(experiment_id: str):
 
 
 @router.put("/api/experiments/{experiment_id}/messages")
-def save_messages(experiment_id: str, request: SaveMessagesRequest):
+def save_messages(
+    experiment_id: str,
+    request: SaveMessagesRequest,
+    current_user: CurrentUser = Depends(get_current_user),
+):
     exp = repository.get_experiment(experiment_id)
     if exp is None:
         raise HTTPException(status_code=404, detail="Experiment not found")
@@ -84,7 +106,10 @@ def save_messages(experiment_id: str, request: SaveMessagesRequest):
 
 
 @router.get("/api/experiments/{experiment_id}/artifacts")
-def get_experiment_artifacts(experiment_id: str):
+def get_experiment_artifacts(
+    experiment_id: str,
+    current_user: CurrentUser = Depends(get_current_user),
+):
     with get_db_session() as session:
         run_ids = [
             r.id
@@ -129,3 +154,95 @@ def get_experiment_artifacts(experiment_id: str):
             })
 
         return {"datasets": datasets, "models": models}
+
+
+# =========================================================================
+# Sharing — toggle shared_with_org on experiments
+# =========================================================================
+
+@router.post("/api/experiments/{experiment_id}/share")
+def share_experiment(
+    experiment_id: str,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    with get_db_session() as session:
+        from backend.shared.models import Experiment as ExpModel
+        exp = session.get(ExpModel, experiment_id)
+        if exp is None:
+            raise HTTPException(status_code=404, detail="Experiment not found")
+        if exp.user_id != current_user.id:
+            raise HTTPException(status_code=403, detail="Only the owner can share")
+        exp.shared_with_org = True
+    return {"status": "ok", "shared_with_org": True}
+
+
+@router.delete("/api/experiments/{experiment_id}/share")
+def unshare_experiment(
+    experiment_id: str,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    with get_db_session() as session:
+        from backend.shared.models import Experiment as ExpModel
+        exp = session.get(ExpModel, experiment_id)
+        if exp is None:
+            raise HTTPException(status_code=404, detail="Experiment not found")
+        if exp.user_id != current_user.id:
+            raise HTTPException(status_code=403, detail="Only the owner can unshare")
+        exp.shared_with_org = False
+    return {"status": "ok", "shared_with_org": False}
+
+
+# =========================================================================
+# Sharing — toggle shared_with_org on datasets and models
+# =========================================================================
+
+@router.post("/api/datasets/{dataset_id}/share")
+def share_dataset(
+    dataset_id: str,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    with get_db_session() as session:
+        ds = session.get(Dataset, dataset_id)
+        if ds is None:
+            raise HTTPException(status_code=404, detail="Dataset not found")
+        ds.shared_with_org = True
+    return {"status": "ok", "shared_with_org": True}
+
+
+@router.delete("/api/datasets/{dataset_id}/share")
+def unshare_dataset(
+    dataset_id: str,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    with get_db_session() as session:
+        ds = session.get(Dataset, dataset_id)
+        if ds is None:
+            raise HTTPException(status_code=404, detail="Dataset not found")
+        ds.shared_with_org = False
+    return {"status": "ok", "shared_with_org": False}
+
+
+@router.post("/api/models/{model_name}/share")
+def share_model(
+    model_name: str,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    with get_db_session() as session:
+        mdl = session.query(Model).filter_by(name=model_name).first()
+        if mdl is None:
+            raise HTTPException(status_code=404, detail="Model not found")
+        mdl.shared_with_org = True
+    return {"status": "ok", "shared_with_org": True}
+
+
+@router.delete("/api/models/{model_name}/share")
+def unshare_model(
+    model_name: str,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    with get_db_session() as session:
+        mdl = session.query(Model).filter_by(name=model_name).first()
+        if mdl is None:
+            raise HTTPException(status_code=404, detail="Model not found")
+        mdl.shared_with_org = False
+    return {"status": "ok", "shared_with_org": False}

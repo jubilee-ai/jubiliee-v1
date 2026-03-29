@@ -25,6 +25,9 @@ class ExperimentSummary(BaseModel):
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
     last_message: Optional[str] = None
+    user_id: Optional[str] = None
+    shared_with_org: bool = False
+    is_owner: bool = True
 
 
 class ExperimentDetail(ExperimentSummary):

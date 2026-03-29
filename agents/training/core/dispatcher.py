@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from agents.training.utils.graph_stream_hooks import emit_graph_stream
+from agents.training.utils.graph_stream_hooks import emit_graph_stream, step_timer_start
 
 if TYPE_CHECKING:
     from .state import TrainingAgentState
@@ -59,6 +59,7 @@ def dispatcher_node(state: "TrainingAgentState") -> "TrainingAgentState":
     step_name = _plan_entry_step(next_step)
     plan, step_name, plan_mutated = _ensure_data_collection_before_cleaning(state, plan, plan_index, step_name)
 
+    step_timer_start(step_name)
     print(f"[dispatcher] Step {plan_index + 1}/{len(plan)}: {step_name}")
     emit_graph_stream({
         "phase": "dispatch",

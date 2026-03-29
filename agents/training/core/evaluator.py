@@ -273,10 +273,18 @@ def evaluator_node(state: "TrainingAgentState") -> "TrainingAgentState":
         "message": f"Reviewing `{completed_step}` — deciding next move…",
     })
     token_handler = GraphTokenStreamHandler(phase="evaluator")
+    callbacks = [token_handler]
+    try:
+        from backend.observability.langfuse_handler import get_langfuse_handler
+        lf = get_langfuse_handler(experiment_id=state.get("_experiment_id"), node="evaluator")
+        if lf:
+            callbacks.append(lf)
+    except Exception:
+        pass
     llm = init_chat_model(model="gpt-5.4-mini", temperature=0, streaming=True)
     structured_llm = llm.with_structured_output(EvaluatorDecision)
     decision: EvaluatorDecision = structured_llm.invoke(
-        prompt, config={"callbacks": [token_handler]}
+        prompt, config={"callbacks": callbacks}
     )
     reason_snip = (decision.reasoning or "").strip()
     if len(reason_snip) > 120:

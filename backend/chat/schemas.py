@@ -16,6 +16,7 @@ class ChatRequest(BaseModel):
     linked_datasets: Optional[list[str]] = None
     model_preference: Optional[str] = None
     resume: Optional[ResumePayload] = None
+    hitl: bool = True
 
     @model_validator(mode="after")
     def require_message_unless_resume(self) -> "ChatRequest":

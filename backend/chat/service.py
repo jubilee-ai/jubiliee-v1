@@ -3,7 +3,7 @@ import uuid
 from typing import Optional
 
 from backend.chat import repository
-from backend.chat.events import format_sse, stream_start, stream_end, token as token_event, tool_start, tool_end, error_event, predict_start, predict_complete
+from backend.chat.events import format_sse, stream_start, stream_end, token as token_event, tool_start, tool_end, error_event, predict_start, predict_complete, task_assigned as task_assigned_event
 from backend.chat.intent_router import should_route_to_training_graph
 from backend.chat.schemas import ChatRequest
 from backend.shared.serialization import serialize_state
@@ -228,7 +228,7 @@ def generate_chat_sse(
         yield format_sse(error_event(str(exc), experiment_id), experiment_id)
 
 
-def chat(request: ChatRequest) -> tuple[str, object]:
+def chat(request: ChatRequest, user_id=None) -> tuple[str, object]:
     """Route unified /api/chat body to graph training or orchestrator SSE."""
     from backend.training import service as training_service
 

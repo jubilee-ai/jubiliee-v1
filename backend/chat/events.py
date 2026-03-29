@@ -213,6 +213,19 @@ def dataset_error(
     }
 
 
+def task_assigned(
+    job_id: str,
+    goal: str,
+    experiment_id: str | None = None,
+) -> dict[str, Any]:
+    return {
+        "type": "task_assigned",
+        "job_id": job_id,
+        "goal": goal,
+        "experiment_id": experiment_id,
+    }
+
+
 def error_event(
     error_msg: str,
     experiment_id: str | None = None,
@@ -239,10 +252,48 @@ ALL_EVENT_TYPES: list[str] = [
     "predict.complete",
     "dataset.resolved",
     "dataset.error",
+    "task_assigned",
     "error",
 ]
 
 
+_PERSIST_EVENT_TYPES: frozenset[str] = frozenset({
+    "stream.start",
+    "stream.end",
+    "step.complete",
+    "step.skipped",
+    "review.required",
+    "review.auto_approved",
+    "predict.start",
+    "predict.complete",
+    "error",
+})
+
+
+def _persist_event(payload: dict[str, Any]) -> None:
+    """Best-effort write of significant events to the step_events table."""
+    event_type = payload.get("type", "")
+    if event_type not in _PERSIST_EVENT_TYPES:
+        return
+    try:
+        from backend.shared.database import get_db_session
+        from backend.shared.models import StepEvent
+
+        with get_db_session() as session:
+            session.add(StepEvent(
+                experiment_id=payload.get("experiment_id"),
+                event_type=event_type,
+                node=payload.get("node"),
+                payload=payload,
+            ))
+            session.commit()
+    except Exception:
+        pass
+
+
 def format_sse(payload: dict[str, Any], experiment_id: str | None = None) -> str:
     """Public API — stamp *experiment_id* + *ts* and return an SSE ``data:`` line."""
-    return _sse(payload, experiment_id=experiment_id)
+    payload.setdefault("experiment_id", experiment_id)
+    payload.setdefault("ts", _now_iso())
+    _persist_event(payload)
+    return f"data: {json.dumps(payload)}\n\n"

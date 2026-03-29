@@ -1,7 +1,8 @@
 import { useState } from "react"
-import { Database, Download, Search, ChevronDown, ChevronRight, Rows3, Columns3, FileText } from "lucide-react"
+import { Database, Download, Search, ChevronDown, ChevronRight, Rows3, Columns3, FileText, Share2, Users } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
-import type { Dataset } from "@/lib/api"
+import { Button } from "@/components/ui/button"
+import { shareDataset, unshareDataset, type Dataset } from "@/lib/api"
 
 interface DatasetsPageProps {
   datasets: Dataset[]
@@ -59,11 +60,26 @@ function ColumnList({ columns }: { columns: string[] }) {
 
 export function DatasetsPage({ datasets }: DatasetsPageProps) {
   const [search, setSearch] = useState("")
+  const [shareState, setShareState] = useState<Record<string, boolean>>({})
 
   const filtered = datasets.filter((d) =>
     !search || d.name.toLowerCase().includes(search.toLowerCase()) ||
     d.description?.toLowerCase().includes(search.toLowerCase())
   )
+
+  const handleShare = async (ds: Dataset) => {
+    const id = ds.id
+    if (!id) return
+    const currentlyShared = shareState[id] ?? ds.shared_with_org ?? false
+    const next = !currentlyShared
+    setShareState((prev) => ({ ...prev, [id]: next }))
+    try {
+      if (next) await shareDataset(id)
+      else await unshareDataset(id)
+    } catch {
+      setShareState((prev) => ({ ...prev, [id]: !next }))
+    }
+  }
 
   return (
     <div className="flex-1 overflow-auto">
@@ -109,6 +125,8 @@ export function DatasetsPage({ datasets }: DatasetsPageProps) {
                 label: ds.source_type ?? "unknown",
                 className: "bg-muted text-muted-foreground border-transparent",
               }
+              const isOwner = ds.is_owner !== false
+              const isShared = shareState[ds.id ?? ""] ?? ds.shared_with_org ?? false
               return (
                 <div
                   key={ds.id ?? ds.name}
@@ -130,6 +148,12 @@ export function DatasetsPage({ datasets }: DatasetsPageProps) {
                             {ds.format}
                           </span>
                         )}
+                        {!isOwner && (
+                          <span className="inline-flex items-center gap-0.5 rounded-full bg-blue-500/10 px-1.5 py-0.5 text-[10px] font-medium text-blue-400">
+                            <Users className="h-3 w-3" />
+                            Shared
+                          </span>
+                        )}
                       </div>
                       {ds.description && (
                         <p className="mt-1 text-xs text-muted-foreground line-clamp-2 pl-6">
@@ -138,15 +162,33 @@ export function DatasetsPage({ datasets }: DatasetsPageProps) {
                       )}
                     </div>
 
-                    {ds.trainable && ds.name && (
-                      <a
-                        href={`/api/datasets/${encodeURIComponent(ds.name)}/download`}
-                        className="shrink-0 inline-flex items-center gap-1 rounded-md border border-border px-2.5 py-1.5 text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
-                      >
-                        <Download className="h-3 w-3" />
-                        Download
-                      </a>
-                    )}
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      {isOwner && ds.id && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => handleShare(ds)}
+                          className={
+                            isShared
+                              ? "h-8 px-2 text-emerald-400 hover:text-emerald-500 hover:bg-emerald-500/10"
+                              : "h-8 px-2 text-muted-foreground hover:text-foreground"
+                          }
+                          title={isShared ? "Shared — click to unshare" : "Share with organization"}
+                        >
+                          <Share2 className="h-3.5 w-3.5 mr-1" />
+                          <span className="text-xs">{isShared ? "Shared" : "Share"}</span>
+                        </Button>
+                      )}
+                      {ds.trainable && ds.name && (
+                        <a
+                          href={`/api/datasets/${encodeURIComponent(ds.name)}/download`}
+                          className="inline-flex items-center gap-1 rounded-md border border-border px-2.5 py-1.5 text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+                        >
+                          <Download className="h-3 w-3" />
+                          Download
+                        </a>
+                      )}
+                    </div>
                   </div>
 
                   <div className="mt-3 pl-6 flex items-center gap-6 text-xs text-muted-foreground">

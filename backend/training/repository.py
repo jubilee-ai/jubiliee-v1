@@ -1,12 +1,13 @@
 import json
+import uuid as _uuid
 from datetime import datetime, timezone
 from typing import Optional
 
-from sqlalchemy import select
+from sqlalchemy import or_, and_, select
 
 from backend.shared.database import get_db_session
 from backend.shared.models import (
-    AgentCheckpoint, ChatThread, Experiment, TrainingSummary, TrainingJob,
+    AgentCheckpoint, ChatThread, Experiment, TrainingSummary, TrainingJob, User,
 )
 from backend.shared.state import (
     chat_threads_with_context,
@@ -325,6 +326,7 @@ def create_experiment(
     name: str,
     chat_thread_id: str,
     linked_datasets: Optional[list[str]] = None,
+    user_id: Optional[_uuid.UUID] = None,
 ) -> dict[str, object]:
     with get_db_session() as session:
         exp = Experiment(
@@ -332,6 +334,7 @@ def create_experiment(
             name=name,
             chat_thread_id=chat_thread_id,
             linked_datasets=linked_datasets or [],
+            user_id=user_id,
         )
         session.add(exp)
     return {
@@ -343,14 +346,38 @@ def create_experiment(
         "chat_history": [],
         "training_state": None,
         "training_context": None,
+        "user_id": str(user_id) if user_id else None,
+        "shared_with_org": False,
     }
 
 
-def list_experiments() -> list[dict[str, object]]:
+def _ownership_filter(
+    user_id: Optional[_uuid.UUID],
+    org_id: Optional[_uuid.UUID],
+    model_cls: type,
+):
+    """Build a WHERE clause: own rows + org-shared rows + legacy unowned rows."""
+    if user_id is None:
+        return True  # no auth — return everything (backward compat)
+    org_user_ids = select(User.id).where(User.organization_id == org_id).scalar_subquery()
+    return or_(
+        model_cls.user_id == user_id,
+        and_(model_cls.shared_with_org.is_(True), model_cls.user_id.in_(org_user_ids)),
+        model_cls.user_id.is_(None),
+    )
+
+
+def list_experiments(
+    user_id: Optional[_uuid.UUID] = None,
+    org_id: Optional[_uuid.UUID] = None,
+) -> list[dict[str, object]]:
     with get_db_session() as session:
-        rows = session.execute(
-            select(Experiment).order_by(Experiment.updated_at.desc())
-        ).scalars().all()
+        stmt = (
+            select(Experiment)
+            .where(_ownership_filter(user_id, org_id, Experiment))
+            .order_by(Experiment.updated_at.desc())
+        )
+        rows = session.execute(stmt).scalars().all()
         return [
             {
                 "id": r.id,
@@ -366,6 +393,9 @@ def list_experiments() -> list[dict[str, object]]:
                     if r.chat_history and isinstance(r.chat_history, list) and r.chat_history
                     else None
                 ),
+                "user_id": str(r.user_id) if r.user_id else None,
+                "shared_with_org": r.shared_with_org,
+                "is_owner": r.user_id == user_id if user_id else True,
             }
             for r in rows
         ]
@@ -388,6 +418,8 @@ def get_experiment(experiment_id: str) -> Optional[dict[str, object]]:
             "linked_datasets": exp.linked_datasets,
             "created_at": exp.created_at.isoformat() if exp.created_at else None,
             "updated_at": exp.updated_at.isoformat() if exp.updated_at else None,
+            "user_id": str(exp.user_id) if exp.user_id else None,
+            "shared_with_org": exp.shared_with_org,
         }
 
 

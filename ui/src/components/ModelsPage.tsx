@@ -1,11 +1,12 @@
 import { useEffect, useState } from "react"
 import {
   Box, Download, Activity, Hash, Calendar, Layers, Target,
-  Search, ChevronDown, ChevronRight, Cpu,
+  Search, ChevronDown, ChevronRight, Cpu, Share2, Users,
 } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
 import type { ModelType, TrainedModelEntry } from "@/lib/api"
-import { getTrainedModels } from "@/lib/api"
+import { getTrainedModels, shareModel, unshareModel } from "@/lib/api"
 
 interface ModelsPageProps {
   modelTypes: ModelType[]
@@ -94,6 +95,7 @@ export function ModelsPage({ modelTypes }: ModelsPageProps) {
   const [trainedModels, setTrainedModels] = useState<TrainedModelEntry[]>([])
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState("")
+  const [shareState, setShareState] = useState<Record<string, boolean>>({})
 
   useEffect(() => {
     let cancelled = false
@@ -110,6 +112,18 @@ export function ModelsPage({ modelTypes }: ModelsPageProps) {
       })
     return () => { cancelled = true }
   }, [])
+
+  const handleShare = async (m: TrainedModelEntry) => {
+    const currentlyShared = shareState[m.model_name] ?? m.shared_with_org ?? false
+    const next = !currentlyShared
+    setShareState((prev) => ({ ...prev, [m.model_name]: next }))
+    try {
+      if (next) await shareModel(m.model_name)
+      else await unshareModel(m.model_name)
+    } catch {
+      setShareState((prev) => ({ ...prev, [m.model_name]: !next }))
+    }
+  }
 
   const filteredTrained = trainedModels.filter((m) =>
     !search || m.model_name.toLowerCase().includes(search.toLowerCase()) ||
@@ -190,6 +204,8 @@ export function ModelsPage({ modelTypes }: ModelsPageProps) {
             <div className="mt-4 space-y-2">
               {filteredTrained.map((m) => {
                 const metrics = pickMetrics(m.metrics)
+                const isOwner = m.is_owner !== false
+                const isShared = shareState[m.model_name] ?? m.shared_with_org ?? false
                 return (
                   <div
                     key={m.model_name}
@@ -206,6 +222,12 @@ export function ModelsPage({ modelTypes }: ModelsPageProps) {
                           <span className="flex items-center gap-0.5 text-[10px] text-muted-foreground">
                             <Hash className="h-3 w-3" />v{m.version}
                           </span>
+                          {!isOwner && (
+                            <span className="inline-flex items-center gap-0.5 rounded-full bg-blue-500/10 px-1.5 py-0.5 text-[10px] font-medium text-blue-400">
+                              <Users className="h-3 w-3" />
+                              Shared
+                            </span>
+                          )}
                         </div>
                         {m.target_column && (
                           <p className="mt-1 pl-6 text-xs text-muted-foreground flex items-center gap-1">
@@ -215,13 +237,31 @@ export function ModelsPage({ modelTypes }: ModelsPageProps) {
                         )}
                       </div>
 
-                      <a
-                        href={`/api/trained-models/${encodeURIComponent(m.model_name)}/download`}
-                        className="shrink-0 inline-flex items-center gap-1 rounded-md border border-border px-2.5 py-1.5 text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
-                      >
-                        <Download className="h-3 w-3" />
-                        Download
-                      </a>
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        {isOwner && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => handleShare(m)}
+                            className={
+                              isShared
+                                ? "h-8 px-2 text-emerald-400 hover:text-emerald-500 hover:bg-emerald-500/10"
+                                : "h-8 px-2 text-muted-foreground hover:text-foreground"
+                            }
+                            title={isShared ? "Shared — click to unshare" : "Share with organization"}
+                          >
+                            <Share2 className="h-3.5 w-3.5 mr-1" />
+                            <span className="text-xs">{isShared ? "Shared" : "Share"}</span>
+                          </Button>
+                        )}
+                        <a
+                          href={`/api/trained-models/${encodeURIComponent(m.model_name)}/download`}
+                          className="inline-flex items-center gap-1 rounded-md border border-border px-2.5 py-1.5 text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+                        >
+                          <Download className="h-3 w-3" />
+                          Download
+                        </a>
+                      </div>
                     </div>
 
                     {/* Metrics */}

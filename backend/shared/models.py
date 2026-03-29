@@ -27,6 +27,46 @@ def _uuid_pk():
 
 
 # =============================================================================
+# Multi-tenancy: organizations and users
+# =============================================================================
+
+
+class Organization(Base):
+    __tablename__ = "organizations"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    name: Mapped[str] = mapped_column(String(256), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    users: Mapped[list["User"]] = relationship(
+        back_populates="organization", passive_deletes=True,
+    )
+
+
+class User(Base):
+    __tablename__ = "users"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    clerk_id: Mapped[str] = mapped_column(String(256), unique=True, nullable=False, index=True)
+    email: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    name: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    organization: Mapped["Organization"] = relationship(back_populates="users")
+
+
+# =============================================================================
 # Existing tables (renamed for clarity)
 # =============================================================================
 
@@ -43,6 +83,13 @@ class Experiment(Base):
     training_state: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     training_context: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     linked_datasets: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
+    user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True, index=True,
+    )
+    shared_with_org: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -50,6 +97,7 @@ class Experiment(Base):
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
 
+    owner: Mapped["User | None"] = relationship(foreign_keys=[user_id])
     training_jobs: Mapped[list["TrainingJob"]] = relationship(
         back_populates="experiment", passive_deletes=True,
     )
@@ -142,10 +190,18 @@ class Dataset(Base):
     name: Mapped[str] = mapped_column(String(256), nullable=False)
     source_type: Mapped[str] = mapped_column(String(64), nullable=False)
     properties: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
+    user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True, index=True,
+    )
+    shared_with_org: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
 
+    owner: Mapped["User | None"] = relationship(foreign_keys=[user_id])
     run_links: Mapped[list["RunDatasetLink"]] = relationship(
         back_populates="dataset", passive_deletes=True,
     )
@@ -158,6 +214,13 @@ class Model(Base):
     id: Mapped[uuid.UUID] = _uuid_pk()
     name: Mapped[str] = mapped_column(String(256), unique=True, nullable=False)
     properties: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
+    user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True, index=True,
+    )
+    shared_with_org: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -165,6 +228,7 @@ class Model(Base):
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
 
+    owner: Mapped["User | None"] = relationship(foreign_keys=[user_id])
     versions: Mapped[list["ModelVersion"]] = relationship(
         back_populates="model", passive_deletes=True,
         order_by="ModelVersion.version.desc()",
@@ -224,6 +288,67 @@ class RunDatasetLink(Base):
 
     training_run: Mapped["TrainingJob"] = relationship(back_populates="dataset_links")
     dataset: Mapped["Dataset"] = relationship(back_populates="run_links")
+
+
+# =============================================================================
+# Observability
+# =============================================================================
+
+
+class StepEvent(Base):
+    """Persisted SSE events for the observability timeline."""
+    __tablename__ = "step_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    experiment_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("experiments.id", ondelete="CASCADE"),
+        nullable=True, index=True,
+    )
+    training_job_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("training_jobs.id", ondelete="CASCADE"),
+        nullable=True, index=True,
+    )
+    event_type: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    node: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    payload: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+    )
+    duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+# =============================================================================
+# Notifications
+# =============================================================================
+
+
+class Notification(Base):
+    """User-facing notifications for background task milestones."""
+    __tablename__ = "notifications"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    experiment_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("experiments.id", ondelete="CASCADE"),
+        nullable=True, index=True,
+    )
+    job_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("training_jobs.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    type: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    title: Mapped[str] = mapped_column(String(512), nullable=False)
+    body: Mapped[str | None] = mapped_column(Text, nullable=True)
+    metadata_: Mapped[dict | None] = mapped_column("metadata", JSONB, nullable=True)
+    read: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
 
 
 # Backward-compat aliases for imports that reference old names.

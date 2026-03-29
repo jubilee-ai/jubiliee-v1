@@ -1,4 +1,13 @@
-import { useState, useEffect, useRef, useCallback, type CSSProperties, type MouseEvent as ReactMouseEvent } from "react"
+import {
+  useState,
+  useEffect,
+  useRef,
+  useCallback,
+  lazy,
+  Suspense,
+  type CSSProperties,
+  type MouseEvent as ReactMouseEvent,
+} from "react"
 import { useRealAgent } from "@/hooks/useRealAgent"
 import { ProgressPanel } from "@/components/ProgressPanel"
 import { ChatPanel, ChatPanelRef } from "@/components/ChatPanel"
@@ -15,21 +24,29 @@ import {
 } from "@/components/ui/dialog"
 import { RotateCcw, FileText, Search, Bell, ArrowLeft } from "lucide-react"
 import type { StepInfo, TrainingAgentState, ConfirmationAction } from "@/types/agent"
-import { createExperiment } from "@/lib/api"
+import { createExperiment, setTokenProvider } from "@/lib/api"
 import { cn } from "@/lib/utils"
-import { DatasetsPage } from "@/components/DatasetsPage"
-import { ModelsPage } from "@/components/ModelsPage"
+const DatasetsPage = lazy(() =>
+  import("@/components/DatasetsPage").then((m) => ({ default: m.DatasetsPage })),
+)
+const ModelsPage = lazy(() =>
+  import("@/components/ModelsPage").then((m) => ({ default: m.ModelsPage })),
+)
+const ObservabilityPage = lazy(() =>
+  import("@/components/ObservabilityPage").then((m) => ({ default: m.ObservabilityPage })),
+)
 import { Show, SignIn, UserButton, useAuth } from "@clerk/react"
+import {
+  AuthLoadingShell,
+  LabConnectionSkeleton,
+  CatalogPageSkeleton,
+} from "@/components/AppLoadingSkeletons"
 
 export default function App() {
   const { isLoaded, isSignedIn } = useAuth()
 
   if (!isLoaded) {
-    return (
-      <div className="flex h-screen items-center justify-center bg-background">
-        <p className="text-sm text-muted-foreground">Loading…</p>
-      </div>
-    )
+    return <AuthLoadingShell />
   }
 
   if (!isSignedIn) {
@@ -132,6 +149,12 @@ function SignInGate() {
 }
 
 function AuthenticatedApp() {
+  const { getToken } = useAuth()
+
+  useEffect(() => {
+    setTokenProvider(() => getToken())
+  }, [getToken])
+
   const SIDEBAR_MIN_WIDTH = 224
   const SIDEBAR_MAX_WIDTH = 420
   const [sidebarWidth, setSidebarWidth] = useState(240)
@@ -308,13 +331,6 @@ function AuthenticatedApp() {
           </div>
         </nav>
 
-        {/* Backend offline banner */}
-        {!realAgent.isBackendConnected && (
-          <div className="fixed top-14 left-0 right-0 z-40 px-5 py-1.5 text-xs text-muted-foreground bg-muted text-center">
-            Run <code className="bg-card px-1.5 py-0.5 rounded text-[11px] font-mono">docker compose up --build</code> to start
-          </div>
-        )}
-
         {/* Main Layout — min-h-0 so inner chat can scroll instead of growing the page */}
         <div className="flex flex-1 min-h-0 overflow-hidden pt-14" style={layoutStyle}>
           {/* Fixed Sidebar */}
@@ -326,6 +342,7 @@ function AuthenticatedApp() {
               onSelectExperiment={handleSelectExperiment}
               onNewExperiment={() => void openBlankExperiment()}
               isBackendConnected={realAgent.isBackendConnected}
+              isBackendReachabilityKnown={realAgent.isBackendReachabilityKnown}
               switchingTo={switchingTo}
               experimentsListNonce={experimentsListNonce}
               onExperimentsChanged={bumpExperimentsList}
@@ -374,46 +391,72 @@ function AuthenticatedApp() {
                   </div>
                 ) : null}
                 <div className="relative flex flex-1 min-h-0 flex-col overflow-hidden">
-                  {hasActivity && (
-                    <div className="absolute top-3 left-1/2 -translate-x-1/2 z-10">
-                      <ExperimentChecklistIndicator
-                        steps={agent.steps}
-                        currentStep={currentStep ?? null}
-                        completedSteps={completedSteps}
-                        totalSteps={totalSteps}
-                        agentState={agent.agentState}
+                  {!realAgent.isBackendReachabilityKnown ? (
+                    <LabConnectionSkeleton />
+                  ) : (
+                    <>
+                      {hasActivity && (
+                        <div className="absolute top-3 left-1/2 -translate-x-1/2 z-10">
+                          <ExperimentChecklistIndicator
+                            steps={agent.steps}
+                            currentStep={currentStep ?? null}
+                            completedSteps={completedSteps}
+                            totalSteps={totalSteps}
+                            agentState={agent.agentState}
+                            isRunning={agent.isRunning}
+                            onStepClick={handleStepClick}
+                          />
+                        </div>
+                      )}
+                      <ChatPanel
+                        ref={chatPanelRef}
+                        messages={agent.messages}
+                        confirmationRequest={agent.confirmationRequest}
                         isRunning={agent.isRunning}
-                        onStepClick={handleStepClick}
+                        onSendMessage={agent.sendMessage}
+                        onConfirmation={agent.handleConfirmation as (action: ConfirmationAction, comment?: string) => void}
+                        linkedDatasets={realAgent.linkedDatasets}
+                        onLinkedDatasetsChange={realAgent.updateLinkedDatasets}
+                        linkedModelId={realAgent.linkedModelId}
+                        onLinkedModelChange={realAgent.setLinkedModelId}
+                        datasets={realAgent.datasets}
+                        modelTypes={realAgent.modelTypes}
+                        highlightedMessageId={highlightedMessageId}
+                        onClearHighlight={handleClearHighlight}
+                        onViewReport={() => setShowReport(true)}
+                        agentState={agent.agentState}
+                        steps={agent.steps}
+                        hasExperimentChecklist={hasActivity}
+                        experimentId={realAgent.experimentId}
                       />
-                    </div>
+                    </>
                   )}
-                  <ChatPanel
-                    ref={chatPanelRef}
-                    messages={agent.messages}
-                    confirmationRequest={agent.confirmationRequest}
-                    isRunning={agent.isRunning}
-                    onSendMessage={agent.sendMessage}
-                    onConfirmation={agent.handleConfirmation as (action: ConfirmationAction, comment?: string) => void}
-                    linkedDatasets={realAgent.linkedDatasets}
-                    onLinkedDatasetsChange={realAgent.updateLinkedDatasets}
-                    linkedModelId={realAgent.linkedModelId}
-                    onLinkedModelChange={realAgent.setLinkedModelId}
-                    datasets={realAgent.datasets}
-                    modelTypes={realAgent.modelTypes}
-                    highlightedMessageId={highlightedMessageId}
-                    onClearHighlight={handleClearHighlight}
-                    onViewReport={() => setShowReport(true)}
-                    agentState={agent.agentState}
-                    steps={agent.steps}
-                    hasExperimentChecklist={hasActivity}
-                    experimentId={realAgent.experimentId}
-                  />
                 </div>
               </div>
             ) : activeTab === "datasets" ? (
-              <DatasetsPage datasets={realAgent.datasets} />
+              !realAgent.isBackendReachabilityKnown ? (
+                <CatalogPageSkeleton titleWidth="w-44" />
+              ) : (
+                <Suspense fallback={<CatalogPageSkeleton titleWidth="w-44" />}>
+                  <DatasetsPage datasets={realAgent.datasets} />
+                </Suspense>
+              )
             ) : activeTab === "models" ? (
-              <ModelsPage modelTypes={realAgent.modelTypes} />
+              !realAgent.isBackendReachabilityKnown ? (
+                <CatalogPageSkeleton titleWidth="w-36" />
+              ) : (
+                <Suspense fallback={<CatalogPageSkeleton titleWidth="w-36" />}>
+                  <ModelsPage modelTypes={realAgent.modelTypes} />
+                </Suspense>
+              )
+            ) : activeTab === "observability" ? (
+              !realAgent.isBackendReachabilityKnown ? (
+                <CatalogPageSkeleton titleWidth="w-52" />
+              ) : (
+                <Suspense fallback={<CatalogPageSkeleton titleWidth="w-52" />}>
+                  <ObservabilityPage />
+                </Suspense>
+              )
             ) : activeTab === "settings" ? (
               <div className="flex-1 overflow-auto">
                 <div className="max-w-5xl mx-auto px-8 py-10">

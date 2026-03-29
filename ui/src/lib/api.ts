@@ -4,6 +4,33 @@
 
 const API_BASE = "" // Relative; proxied by nginx in Docker or same-origin in dev
 
+// ---------------------------------------------------------------------------
+// Auth token provider — set by the React layer via Clerk's getToken()
+// ---------------------------------------------------------------------------
+
+let _getToken: (() => Promise<string | null>) | null = null
+
+export function setTokenProvider(provider: () => Promise<string | null>) {
+  _getToken = provider
+}
+
+async function authHeaders(): Promise<Record<string, string>> {
+  const headers: Record<string, string> = {}
+  if (_getToken) {
+    try {
+      const token = await _getToken()
+      if (token) headers["Authorization"] = `Bearer ${token}`
+    } catch {
+      // Clerk may throw if session expired — proceed without token
+    }
+  }
+  return headers
+}
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
 export interface Dataset {
   id?: string
   name: string
@@ -16,6 +43,9 @@ export interface Dataset {
   columns?: string[]
   description?: string
   use_case?: string
+  user_id?: string | null
+  shared_with_org?: boolean
+  is_owner?: boolean
 }
 
 export interface ModelType {
@@ -37,6 +67,9 @@ export interface TrainedModelEntry {
   created_at: string
   updated_at: string
   version: number
+  user_id?: string | null
+  shared_with_org?: boolean
+  is_owner?: boolean
 }
 
 /** Unified SSE payloads from POST /api/chat (orchestrator and/or training graph). */
@@ -112,7 +145,8 @@ export async function checkHealth(): Promise<boolean> {
 }
 
 export async function getDatasets(): Promise<Dataset[]> {
-  const res = await fetch(`${API_BASE}/api/datasets`)
+  const headers = await authHeaders()
+  const res = await fetch(`${API_BASE}/api/datasets`, { headers })
   if (!res.ok) throw new Error(`Failed to fetch datasets: ${res.status}`)
   return res.json()
 }
@@ -125,7 +159,8 @@ export async function getModelTypes(): Promise<ModelType[]> {
 
 /** Trained model registry entries keyed by model name. */
 export async function getTrainedModels(): Promise<Record<string, TrainedModelEntry>> {
-  const res = await fetch(`${API_BASE}/api/trained-models`)
+  const headers = await authHeaders()
+  const res = await fetch(`${API_BASE}/api/trained-models`, { headers })
   if (!res.ok) throw new Error(`Failed to fetch trained models: ${res.status}`)
   return res.json()
 }
@@ -157,6 +192,9 @@ export interface ExperimentSummary {
   created_at?: string | null
   updated_at?: string | null
   last_message?: string | null
+  user_id?: string | null
+  shared_with_org?: boolean
+  is_owner?: boolean
 }
 
 export interface ExperimentDetail extends ExperimentSummary {
@@ -169,9 +207,10 @@ export async function createExperiment(
   name?: string,
   linked_datasets?: string[],
 ): Promise<ExperimentSummary> {
+  const headers = { "Content-Type": "application/json", ...(await authHeaders()) }
   const res = await fetch(`${API_BASE}/api/experiments`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers,
     body: JSON.stringify({ name, linked_datasets }),
   })
   if (!res.ok) throw new Error(`Failed to create experiment: ${res.status}`)
@@ -179,13 +218,15 @@ export async function createExperiment(
 }
 
 export async function listExperiments(): Promise<ExperimentSummary[]> {
-  const res = await fetch(`${API_BASE}/api/experiments`)
+  const headers = await authHeaders()
+  const res = await fetch(`${API_BASE}/api/experiments`, { headers })
   if (!res.ok) throw new Error(`Failed to list experiments: ${res.status}`)
   return res.json()
 }
 
 export async function getExperiment(id: string): Promise<ExperimentDetail> {
-  const res = await fetch(`${API_BASE}/api/experiments/${id}`)
+  const headers = await authHeaders()
+  const res = await fetch(`${API_BASE}/api/experiments/${id}`, { headers })
   if (!res.ok) throw new Error(`Failed to get experiment: ${res.status}`)
   return res.json()
 }
@@ -194,16 +235,18 @@ export async function updateExperiment(
   id: string,
   updates: { name?: string; status?: string; goal?: string; linked_datasets?: string[] },
 ): Promise<void> {
+  const headers = { "Content-Type": "application/json", ...(await authHeaders()) }
   const res = await fetch(`${API_BASE}/api/experiments/${id}`, {
     method: "PATCH",
-    headers: { "Content-Type": "application/json" },
+    headers,
     body: JSON.stringify(updates),
   })
   if (!res.ok) throw new Error(`Failed to update experiment: ${res.status}`)
 }
 
 export async function deleteExperiment(id: string): Promise<void> {
-  const res = await fetch(`${API_BASE}/api/experiments/${id}`, { method: "DELETE" })
+  const headers = await authHeaders()
+  const res = await fetch(`${API_BASE}/api/experiments/${id}`, { method: "DELETE", headers })
   if (!res.ok) throw new Error(`Failed to delete experiment: ${res.status}`)
 }
 
@@ -211,12 +254,97 @@ export async function saveExperimentMessages(
   id: string,
   messages: Array<Record<string, unknown>>,
 ): Promise<void> {
+  const headers = { "Content-Type": "application/json", ...(await authHeaders()) }
   const res = await fetch(`${API_BASE}/api/experiments/${id}/messages`, {
     method: "PUT",
-    headers: { "Content-Type": "application/json" },
+    headers,
     body: JSON.stringify({ messages }),
   })
   if (!res.ok) throw new Error(`Failed to save messages: ${res.status}`)
+}
+
+// =========================================================================
+// Observability API
+// =========================================================================
+
+export interface TimelineEvent {
+  id: number
+  experiment_id: string | null
+  training_job_id: string | null
+  event_type: string
+  node: string | null
+  payload: Record<string, unknown> | null
+  started_at: string | null
+  completed_at: string | null
+  duration_ms: number | null
+  created_at: string | null
+}
+
+export interface ExperimentTimeline {
+  experiment_id: string
+  events: TimelineEvent[]
+  by_node: Record<string, TimelineEvent[]>
+}
+
+export interface ObservabilitySummaryRow {
+  experiment_id: string
+  name: string
+  status: string
+  goal: string | null
+  created_at: string | null
+  updated_at: string | null
+  steps_completed: number
+  total_duration_ms: number | null
+  job_status: string | null
+  metrics: Record<string, number>
+}
+
+export interface ObservabilitySummary {
+  experiments: ObservabilitySummaryRow[]
+  step_averages: Record<string, { avg_duration_ms: number | null; count: number }>
+}
+
+export interface LlmTelemetryTrace {
+  trace_id: string
+  name: string | null
+  node: string | null
+  latency_ms: number | null
+  input_tokens: number
+  output_tokens: number
+  total_cost: number | null
+  model: string | null
+  created_at: string | null
+}
+
+export interface LlmTelemetry {
+  configured: boolean
+  experiment_id?: string
+  traces: LlmTelemetryTrace[]
+  total_cost: number | null
+  total_input_tokens: number
+  total_output_tokens: number
+  error?: string
+}
+
+export async function getExperimentTimeline(id: string): Promise<ExperimentTimeline> {
+  const headers = await authHeaders()
+  const res = await fetch(`${API_BASE}/api/experiments/${id}/timeline`, { headers })
+  if (!res.ok) throw new Error(`Failed to fetch timeline: ${res.status}`)
+  return res.json()
+}
+
+export async function getObservabilitySummary(): Promise<ObservabilitySummary> {
+  const headers = await authHeaders()
+  const res = await fetch(`${API_BASE}/api/observability/summary`, { headers })
+  if (!res.ok) throw new Error(`Failed to fetch summary: ${res.status}`)
+  return res.json()
+}
+
+export async function getLlmTelemetry(experimentId: string): Promise<LlmTelemetry> {
+  const headers = await authHeaders()
+  const res = await fetch(`${API_BASE}/api/experiments/${experimentId}/llm-telemetry`, { headers })
+  if (!res.ok) throw new Error(`Failed to fetch LLM telemetry: ${res.status}`)
+  return res.json()
 }
 
 // =========================================================================
@@ -231,12 +359,15 @@ export function streamChat(
   const controller = new AbortController()
   const body = JSON.stringify(req)
 
-  fetch(`${API_BASE}/api/chat`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body,
-    signal: controller.signal,
-  })
+  authHeaders()
+    .then((auth) => {
+      return fetch(`${API_BASE}/api/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...auth },
+        body,
+        signal: controller.signal,
+      })
+    })
     .then(async (res) => {
       if (!res.ok) throw new Error(`Chat stream failed: ${res.status}`)
       const reader = res.body?.getReader()
@@ -260,4 +391,44 @@ export function streamChat(
     })
 
   return controller
+}
+
+// =========================================================================
+// Sharing API
+// =========================================================================
+
+export async function shareExperiment(id: string): Promise<void> {
+  const headers = await authHeaders()
+  const res = await fetch(`${API_BASE}/api/experiments/${id}/share`, { method: "POST", headers })
+  if (!res.ok) throw new Error(`Failed to share experiment: ${res.status}`)
+}
+
+export async function unshareExperiment(id: string): Promise<void> {
+  const headers = await authHeaders()
+  const res = await fetch(`${API_BASE}/api/experiments/${id}/share`, { method: "DELETE", headers })
+  if (!res.ok) throw new Error(`Failed to unshare experiment: ${res.status}`)
+}
+
+export async function shareDataset(id: string): Promise<void> {
+  const headers = await authHeaders()
+  const res = await fetch(`${API_BASE}/api/datasets/${id}/share`, { method: "POST", headers })
+  if (!res.ok) throw new Error(`Failed to share dataset: ${res.status}`)
+}
+
+export async function unshareDataset(id: string): Promise<void> {
+  const headers = await authHeaders()
+  const res = await fetch(`${API_BASE}/api/datasets/${id}/share`, { method: "DELETE", headers })
+  if (!res.ok) throw new Error(`Failed to unshare dataset: ${res.status}`)
+}
+
+export async function shareModel(name: string): Promise<void> {
+  const headers = await authHeaders()
+  const res = await fetch(`${API_BASE}/api/models/${encodeURIComponent(name)}/share`, { method: "POST", headers })
+  if (!res.ok) throw new Error(`Failed to share model: ${res.status}`)
+}
+
+export async function unshareModel(name: string): Promise<void> {
+  const headers = await authHeaders()
+  const res = await fetch(`${API_BASE}/api/models/${encodeURIComponent(name)}/share`, { method: "DELETE", headers })
+  if (!res.ok) throw new Error(`Failed to unshare model: ${res.status}`)
 }

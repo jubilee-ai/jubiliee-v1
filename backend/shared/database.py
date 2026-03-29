@@ -56,6 +56,15 @@ def get_db_session() -> Generator[Session, None, None]:
 
 
 def init_db() -> None:
-    """Create all tables (used for local dev; production uses Alembic)."""
-    from backend.shared.models import Base
-    Base.metadata.create_all(bind=_get_engine())
+    """Create all tables and seed required data (local dev; production uses Alembic)."""
+    import uuid as _uuid
+    from backend.shared.models import Base, Organization
+
+    engine = _get_engine()
+    Base.metadata.create_all(bind=engine)
+
+    DEFAULT_ORG_ID = _uuid.UUID("00000000-0000-0000-0000-000000000001")
+    with get_db_session() as session:
+        if session.get(Organization, DEFAULT_ORG_ID) is None:
+            session.add(Organization(id=DEFAULT_ORG_ID, name="Default Organization"))
+            session.flush()

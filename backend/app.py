@@ -15,6 +15,9 @@ bootstrap_paths()
 from backend.catalog.routes import router as catalog_router
 from backend.chat.routes import router as chat_router
 from backend.experiments.routes import router as experiments_router
+from backend.notifications.routes import router as notifications_router
+from backend.observability.routes import router as observability_router
+from backend.observability.langfuse_proxy import router as langfuse_proxy_router
 from backend.shared.database import init_db
 from backend.training.routes import router as training_router
 
@@ -71,6 +74,9 @@ app.include_router(catalog_router)
 app.include_router(training_router)
 app.include_router(chat_router)
 app.include_router(experiments_router)
+app.include_router(notifications_router)
+app.include_router(observability_router)
+app.include_router(langfuse_proxy_router)
 
 
 if __name__ == "__main__":

@@ -177,6 +177,8 @@ export interface UseRealAgentReturn {
   messages: ChatMessage[]
   isRunning: boolean
   isBackendConnected: boolean
+  /** False until the first `/api/health` check on mount completes (success or failure). */
+  isBackendReachabilityKnown: boolean
   currentJobId: string | null
   progress: number
   confirmationRequest: ConfirmationRequest | null
@@ -217,6 +219,7 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [isRunning, setIsRunning] = useState(false)
   const [isBackendConnected, setIsBackendConnected] = useState(false)
+  const [isBackendReachabilityKnown, setIsBackendReachabilityKnown] = useState(false)
   const [currentJobId, setCurrentJobId] = useState<string | null>(null)
   const [progress, setProgress] = useState(0)
   const [datasets, setDatasets] = useState<Dataset[]>([])
@@ -305,18 +308,24 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
   useEffect(() => {
     let cancelled = false
     ;(async () => {
-      const connected = await checkHealth()
-      if (cancelled) return
-      setIsBackendConnected(connected)
-      if (connected) {
-        const [datasetsData, modelsData] = await Promise.all([
-          getDatasets().catch(() => []),
-          getModelTypes().catch(() => []),
-        ])
-        if (!cancelled) {
-          setDatasets(datasetsData)
-          setModelTypes(modelsData)
+      try {
+        const connected = await checkHealth()
+        if (cancelled) return
+        setIsBackendConnected(connected)
+        if (connected) {
+          const [datasetsData, modelsData] = await Promise.all([
+            getDatasets().catch(() => []),
+            getModelTypes().catch(() => []),
+          ])
+          if (!cancelled) {
+            setDatasets(datasetsData)
+            setModelTypes(modelsData)
+          }
         }
+      } catch {
+        if (!cancelled) setIsBackendConnected(false)
+      } finally {
+        if (!cancelled) setIsBackendReachabilityKnown(true)
       }
     })()
     return () => {
@@ -1474,6 +1483,7 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
     messages,
     isRunning,
     isBackendConnected,
+    isBackendReachabilityKnown,
     currentJobId,
     progress,
     confirmationRequest,

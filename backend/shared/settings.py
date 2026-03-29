@@ -60,6 +60,26 @@ class Settings(BaseSettings):
         description="R2 bucket name for model weights",
     )
 
+    # Langfuse (LLM observability)
+    LANGFUSE_SECRET_KEY: Optional[SecretStr] = Field(
+        default=None,
+        description="Langfuse secret key for LLM telemetry",
+    )
+    LANGFUSE_PUBLIC_KEY: Optional[str] = Field(
+        default=None,
+        description="Langfuse public key for LLM telemetry",
+    )
+    LANGFUSE_HOST: str = Field(
+        default="https://cloud.langfuse.com",
+        description="Langfuse API host",
+    )
+
+    # Clerk (auth)
+    CLERK_ISSUER: str = Field(
+        default="https://stunning-stingray-24.clerk.accounts.dev",
+        description="Clerk issuer URL for JWT verification (JWKS fetched from {issuer}/.well-known/jwks.json)",
+    )
+
     # App config
     CORS_ORIGINS: list[str] = Field(
         default_factory=lambda: [
@@ -120,6 +140,18 @@ class Settings(BaseSettings):
     @property
     def trained_models_dir(self) -> Path:
         return self.project_root / "trained_models"
+
+    @property
+    def langfuse_secret_key(self) -> Optional[str]:
+        return (
+            self.LANGFUSE_SECRET_KEY.get_secret_value()
+            if self.LANGFUSE_SECRET_KEY is not None
+            else None
+        )
+
+    @property
+    def langfuse_enabled(self) -> bool:
+        return bool(self.langfuse_secret_key and self.LANGFUSE_PUBLIC_KEY)
 
 
 @lru_cache(maxsize=1)

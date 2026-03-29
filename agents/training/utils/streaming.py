@@ -83,7 +83,15 @@ def extract_interrupt_info(interrupt_data: list) -> dict[str, Any]:
 
 def build_node_update(node_name: str, node_output: dict[str, Any]) -> dict[str, Any]:
     """Build summary/details for a node output."""
-    update = {"type": "node_complete", "node": node_name, "progress": calculate_progress(node_name), "state": node_output}
+    from agents.training.utils.graph_stream_hooks import step_timer_finish
+
+    timing = step_timer_finish()
+    update: dict[str, Any] = {
+        "type": "node_complete", "node": node_name,
+        "progress": calculate_progress(node_name), "state": node_output,
+    }
+    if timing:
+        update["timing"] = timing
 
     if node_name == "select_model":
         update["summary"] = {"selected_model": node_output.get("selected_model"), "explanation": node_output.get("model_explanation")}

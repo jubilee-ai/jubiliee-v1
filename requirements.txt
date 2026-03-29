@@ -31,7 +31,9 @@ sqlalchemy
 psycopg2-binary
 alembic
 boto3
+PyJWT[crypto]
 fastapi
 uvicorn[standard]
 celery[redis]
 redis
+langfuse
