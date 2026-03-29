@@ -12,7 +12,10 @@ Centralizes common functionality:
 
 import hashlib
 import json
+import logging
+import os
 import re
+import tempfile
 import uuid
 from datetime import datetime, timezone
 from difflib import get_close_matches
@@ -21,6 +24,8 @@ from typing import Optional
 
 import numpy as np
 from dotenv import load_dotenv
+
+logger = logging.getLogger(__name__)
 
 # =============================================================================
 # CONFIGURATION
@@ -36,10 +41,6 @@ DATA_TOOLS_DIR = Path(__file__).parent
 DATASETS_DIR = DATA_TOOLS_DIR.parent.parent / "datasets"
 CATALOG_PATH = DATASETS_DIR / "catalog.json"
 SQL_DIR = DATASETS_DIR / "sql"
-DERIVED_DATASETS_DIR = DATASETS_DIR / "derived"  # For newly created/joined datasets
-
-# Ensure derived datasets directory exists
-DERIVED_DATASETS_DIR.mkdir(parents=True, exist_ok=True)
 
 
 # =============================================================================
@@ -348,20 +349,64 @@ def truncate_columns_display(columns: list[str], max_cols: int = 10) -> list[str
 
 
 # =============================================================================
-# DATASET REGISTRY (In-Memory + File Persistence)
+# R2 ARTIFACT HELPERS
 # =============================================================================
 
-# Global registry for storing DataFrames from operations (joins, queries, etc.)
-# This allows chaining operations by referencing previous results
-# Datasets are also persisted to DERIVED_DATASETS_DIR for durability
+
+def _get_r2_store():
+    """Get the R2 artifact store (R2 in production, local FS in dev)."""
+    try:
+        from backend.shared.artifact_store import get_artifact_store
+        return get_artifact_store()
+    except Exception:
+        return None
+
+
+def _upload_parquet_to_r2(df, storage_key: str) -> bool:
+    """Upload a DataFrame as parquet to R2. Returns True on success."""
+    store = _get_r2_store()
+    if not store:
+        return False
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".parquet", delete=False) as f:
+            df.to_parquet(f.name, index=False)
+            tmp_path = f.name
+        store.upload(Path(tmp_path), storage_key)
+        return True
+    except Exception as e:
+        logger.warning(f"R2 upload failed for {storage_key}: {e}")
+        return False
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+
+
+def _download_parquet_from_r2(storage_key: str):
+    """Download a parquet file from R2 and return as DataFrame. Returns None on failure."""
+    store = _get_r2_store()
+    if not store:
+        return None
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".parquet", delete=False) as f:
+            tmp_path = f.name
+        store.download(storage_key, Path(tmp_path))
+        import pandas as pd
+        return pd.read_parquet(tmp_path)
+    except Exception as e:
+        logger.warning(f"R2 download failed for {storage_key}: {e}")
+        return None
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+
+
+# =============================================================================
+# DATASET REGISTRY (In-Memory + R2 Persistence)
+# =============================================================================
+
 _dataset_registry: dict = {}
-
-
-def _sanitize_ref_for_filename(ref: str) -> str:
-    """Convert a dataset ref to a safe filename."""
-    # Replace problematic characters with underscores
-    safe = re.sub(r'[^\w\-.]', '_', ref)
-    return safe
 
 
 def _sanitize_ref_for_sql(ref: str) -> str:
@@ -371,12 +416,6 @@ def _sanitize_ref_for_sql(ref: str) -> str:
     if safe and safe[0].isdigit():
         safe = '_' + safe
     return safe.lower()
-
-
-def _get_derived_path(ref: str) -> Path:
-    """Get the file path for a derived dataset."""
-    safe_name = _sanitize_ref_for_filename(ref)
-    return DERIVED_DATASETS_DIR / f"{safe_name}.parquet"
 
 
 # Track which tables we've added to the warehouse (for cleanup)
@@ -391,18 +430,18 @@ def register_dataset(
     source_type: str = "derived",
 ) -> str:
     """
-    Register a DataFrame in the registry, persist to disk, and add to SQL warehouse.
+    Register a DataFrame in the registry, persist to R2, and add to SQL warehouse.
     
     Derived datasets are:
     1. Stored in memory for fast access
-    2. Saved to datasets/derived/ as parquet files for durability
+    2. Uploaded to R2 as parquet for durability
     3. Added to the SQL warehouse as tables for SQL querying
-    4. Registered in Postgres datasets table (metadata only, non-blocking)
+    4. Registered in Postgres datasets table (metadata + storage_key)
     
     Args:
         ref: Unique reference ID for this dataset
         df: Pandas DataFrame to store
-        persist: If True, save to disk as parquet (default True)
+        persist: If True, upload to R2 as parquet (default True)
         register_sql: If True, add to SQL warehouse for SQL queries (default True)
         source_type: Dataset origin -- "derived", "local", "kaggle", "huggingface"
     
@@ -413,13 +452,12 @@ def register_dataset(
     
     _dataset_registry[ref] = df
     
-    # Persist to disk if requested
+    storage_key = f"datasets/{source_type}/{ref}.parquet"
+
+    # Persist to R2 if requested
     if persist and isinstance(df, pd.DataFrame):
-        try:
-            file_path = _get_derived_path(ref)
-            df.to_parquet(file_path, index=False)
-        except Exception as e:
-            print(f"Warning: Failed to persist dataset '{ref}' to disk: {e}")
+        if not _upload_parquet_to_r2(df, storage_key):
+            logger.warning(f"Dataset '{ref}' not persisted to R2")
     
     # Register in SQL warehouse for SQL queries
     if register_sql and isinstance(df, pd.DataFrame):
@@ -431,14 +469,14 @@ def register_dataset(
     # Register metadata in Postgres (non-blocking)
     if isinstance(df, pd.DataFrame):
         try:
-            _register_in_postgres(ref, df, source_type)
-        except Exception:
-            pass
+            _register_in_postgres(ref, df, source_type, storage_key)
+        except Exception as e:
+            logger.error(f"Postgres registration failed for '{ref}': {e}")
 
     return ref
 
 
-def _register_in_postgres(ref: str, df, source_type: str) -> None:
+def _register_in_postgres(ref: str, df, source_type: str, storage_key: str) -> None:
     """Write dataset metadata to Postgres datasets table. Best-effort."""
     try:
         from backend.shared.database import get_db_session
@@ -450,6 +488,7 @@ def _register_in_postgres(ref: str, df, source_type: str) -> None:
 
     properties: dict = {
         "format": "parquet",
+        "storage_key": storage_key,
         "row_count": len(df),
         "columns": list(df.columns),
     }
@@ -534,9 +573,9 @@ def _register_in_sql_warehouse(ref: str, df) -> None:
 
 def get_registered_dataset(ref: str):
     """
-    Retrieve a DataFrame from the registry or disk.
+    Retrieve a DataFrame from the registry or R2.
     
-    Checks in-memory registry first, then falls back to disk.
+    Checks in-memory registry first, then falls back to Postgres metadata + R2.
     
     Args:
         ref: Reference ID of the dataset
@@ -544,57 +583,60 @@ def get_registered_dataset(ref: str):
     Returns:
         The DataFrame or None if not found
     """
-    import pandas as pd
-    
-    # Check in-memory first
     if ref in _dataset_registry:
         return _dataset_registry[ref]
     
-    # Check disk (derived datasets)
-    file_path = _get_derived_path(ref)
-    if file_path.exists():
-        try:
-            df = pd.read_parquet(file_path)
-            # Cache in memory for faster subsequent access
-            _dataset_registry[ref] = df
-            return df
-        except Exception:
-            pass
+    # Try Postgres + R2
+    try:
+        from backend.shared.database import get_db_session
+        from backend.shared.models import Dataset
+
+        with get_db_session() as session:
+            row = session.query(Dataset).filter(Dataset.name == ref).first()
+            if row and row.properties and row.properties.get("storage_key"):
+                df = _download_parquet_from_r2(row.properties["storage_key"])
+                if df is not None:
+                    _dataset_registry[ref] = df
+                    return df
+    except Exception as e:
+        logger.debug(f"Postgres/R2 lookup for {ref}: {e}")
     
     return None
 
 
 def list_registered_datasets() -> list[str]:
     """
-    List all registered dataset references (in-memory and on disk).
+    List all registered dataset references (in-memory + Postgres).
     
     Returns:
         List of reference IDs
     """
-    # Get in-memory refs
     refs = set(_dataset_registry.keys())
-    
-    # Add refs from disk
-    if DERIVED_DATASETS_DIR.exists():
-        for f in DERIVED_DATASETS_DIR.glob("*.parquet"):
-            refs.add(f.stem)
+
+    try:
+        from backend.shared.database import get_db_session
+        from backend.shared.models import Dataset
+
+        with get_db_session() as session:
+            for row in session.query(Dataset.name).all():
+                refs.add(row.name)
+    except Exception:
+        pass
     
     return sorted(refs)
 
 
-def clear_registry(clear_disk: bool = False, clear_sql: bool = True) -> None:
+def clear_registry(clear_sql: bool = True) -> None:
     """
-    Clear all registered datasets from memory, disk, and SQL warehouse.
+    Clear all registered datasets from memory and SQL warehouse.
     
     Args:
-        clear_disk: If True, also delete files from datasets/derived/
         clear_sql: If True, also drop derived tables from SQL warehouse (default True)
     """
     global _derived_sql_tables
     
     _dataset_registry.clear()
     
-    # Clear SQL tables
     if clear_sql and _derived_sql_tables:
         try:
             from sqlalchemy import text
@@ -612,23 +654,14 @@ def clear_registry(clear_disk: bool = False, clear_sql: bool = True) -> None:
             _derived_sql_tables.clear()
         except Exception:
             pass
-    
-    # Clear disk files
-    if clear_disk and DERIVED_DATASETS_DIR.exists():
-        for f in DERIVED_DATASETS_DIR.glob("*.parquet"):
-            try:
-                f.unlink()
-            except Exception:
-                pass
 
 
-def clear_dataset_registry(prefix: str = None, clear_disk: bool = False, clear_sql: bool = True) -> int:
+def clear_dataset_registry(prefix: str = None, clear_sql: bool = True) -> int:
     """
     Clear registered datasets, optionally filtering by prefix.
     
     Args:
         prefix: If provided, only clear datasets starting with this prefix
-        clear_disk: If True, also delete files from datasets/derived/
         clear_sql: If True, also drop derived tables from SQL warehouse
     
     Returns:
@@ -640,7 +673,6 @@ def clear_dataset_registry(prefix: str = None, clear_disk: bool = False, clear_s
         count = len(_dataset_registry)
         _dataset_registry.clear()
         
-        # Clear all SQL tables
         if clear_sql and _derived_sql_tables:
             try:
                 from sqlalchemy import text
@@ -660,13 +692,6 @@ def clear_dataset_registry(prefix: str = None, clear_disk: bool = False, clear_s
             except Exception:
                 pass
         
-        if clear_disk and DERIVED_DATASETS_DIR.exists():
-            for f in DERIVED_DATASETS_DIR.glob("*.parquet"):
-                try:
-                    f.unlink()
-                    count += 1
-                except Exception:
-                    pass
         return count
     
     count = 0
@@ -675,7 +700,6 @@ def clear_dataset_registry(prefix: str = None, clear_disk: bool = False, clear_s
         del _dataset_registry[k]
         count += 1
     
-    # Clear matching SQL tables
     if clear_sql:
         try:
             from sqlalchemy import text
@@ -697,14 +721,6 @@ def clear_dataset_registry(prefix: str = None, clear_disk: bool = False, clear_s
         except Exception:
             pass
     
-    if clear_disk and DERIVED_DATASETS_DIR.exists():
-        for f in DERIVED_DATASETS_DIR.glob(f"{prefix}*.parquet"):
-            try:
-                f.unlink()
-                count += 1
-            except Exception:
-                pass
-    
     return count
 
 
@@ -719,33 +735,52 @@ def get_registered_dataset_info(ref: str) -> Optional[dict]:
         Dict with 'rows', 'columns', and 'persisted' status, or None if not found
     """
     df = get_registered_dataset(ref)
-    if df is not None:
-        file_path = _get_derived_path(ref)
-        return {
-            "rows": len(df),
-            "columns": len(df.columns),
-            "column_names": list(df.columns),
-            "persisted": file_path.exists(),
-            "file_path": str(file_path) if file_path.exists() else None,
-        }
-    return None
+    if df is None:
+        return None
+
+    storage_key = None
+    try:
+        from backend.shared.database import get_db_session
+        from backend.shared.models import Dataset
+
+        with get_db_session() as session:
+            row = session.query(Dataset).filter(Dataset.name == ref).first()
+            if row and row.properties:
+                storage_key = row.properties.get("storage_key")
+    except Exception:
+        pass
+
+    return {
+        "rows": len(df),
+        "columns": len(df.columns),
+        "column_names": list(df.columns),
+        "persisted": storage_key is not None,
+        "storage_key": storage_key,
+    }
 
 
 def list_derived_datasets() -> list[dict]:
     """
-    List all derived datasets stored on disk.
+    List all derived datasets registered in Postgres.
     
     Returns:
-        List of dicts with ref, file_path, and size_mb
+        List of dicts with ref, storage_key, and row_count
     """
-    datasets = []
-    if DERIVED_DATASETS_DIR.exists():
-        for f in DERIVED_DATASETS_DIR.glob("*.parquet"):
-            datasets.append({
-                "ref": f.stem,
-                "file_path": str(f),
-                "size_mb": round(f.stat().st_size / (1024 * 1024), 2),
-            })
+    datasets: list[dict] = []
+    try:
+        from backend.shared.database import get_db_session
+        from backend.shared.models import Dataset
+
+        with get_db_session() as session:
+            for row in session.query(Dataset).all():
+                props = row.properties or {}
+                datasets.append({
+                    "ref": row.name,
+                    "storage_key": props.get("storage_key"),
+                    "row_count": props.get("row_count"),
+                })
+    except Exception:
+        pass
     return datasets
 
 

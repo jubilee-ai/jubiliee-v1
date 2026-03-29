@@ -1,5 +1,10 @@
 /**
- * Hook for interacting with the real Training Agent via the FastAPI backend
+ * Training/chat agent hook (FastAPI backend).
+ *
+ * Shipped shape: one active experiment in React state; loadExperiment swaps that slice.
+ * Target doc ui/architecture-reference.html describes an ideal per-experiment map +
+ * ExperimentSessionContext in the reducer — stronger isolation for concurrent sessions, not required
+ * for a single active experiment.
  */
 
 import { useState, useCallback, useRef, useEffect } from "react"
@@ -12,21 +17,25 @@ import type {
 } from "@/types/agent"
 import {
   checkHealth,
-  startTraining,
-  getTrainingStatus,
   getDatasets,
   getModelTypes,
-  streamTraining,
-  streamResumeTraining,
   streamChat,
   getExperiment,
   saveExperimentMessages,
+  createExperiment,
   type Dataset,
   type ModelType,
-  type StreamEvent,
-  type ChatStreamEvent,
+  type AgentStreamEvent,
+  updateExperiment,
 } from "@/lib/api"
-import { uid } from "@/lib/utils"
+import {
+  uid,
+  suggestExperimentTitleFromLinkedDatasets,
+  suggestExperimentTitleFromUserMessage,
+} from "@/lib/utils"
+
+/** Ephemeral merged "thinking" lines from graph custom stream (cleared on each new `started`). */
+const GRAPH_THINKING_MSG_ID = "__graph_thinking__"
 
 // Step definitions matching the agent's tool set (agent_simple.py _STEP_ORDER)
 const STEP_DEFINITIONS = [
@@ -48,6 +57,71 @@ function createInitialSteps(): StepInfo[] {
     description: def.description,
     status: "pending",
   }))
+}
+
+const STEP_ORDER_IDS = STEP_DEFINITIONS.map((s) => s.id)
+
+/**
+ * Shared node_complete step transitions for train stream and chat stream (plan phase parity).
+ * Mirrors prior stream handler behavior: complete node, stale downstream on re-run,
+ * fill prior pending, start next pending.
+ */
+function applyNodeCompleteToSteps(
+  prev: StepInfo[],
+  nodeName: string,
+  _event: AgentStreamEvent,
+): StepInfo[] {
+  const nodeIndex = STEP_ORDER_IDS.indexOf(nodeName)
+  const currentStepState = prev.find((s) => s.id === nodeName)
+  const isRerun = (currentStepState?.runCount || 0) >= 1
+
+  return prev.map((step, index) => {
+    if (step.id === nodeName) {
+      return {
+        ...step,
+        status: "completed",
+        endTime: Date.now(),
+        runCount: (step.runCount || 0) + 1,
+      }
+    }
+    if (nodeIndex < 0) {
+      return step
+    }
+    if (isRerun && index > nodeIndex && (step.status === "completed" || step.status === "stale")) {
+      return { ...step, status: "stale" }
+    }
+    if (!isRerun) {
+      if (index < nodeIndex && step.status === "pending") {
+        return { ...step, status: "completed" }
+      }
+      if (index === nodeIndex + 1 && step.status === "pending") {
+        return { ...step, status: "running", startTime: Date.now() }
+      }
+    }
+    return step
+  })
+}
+
+function subtitleFromSkippedEvent(summary: unknown): string {
+  if (!summary || typeof summary !== "object" || Array.isArray(summary)) return ""
+  const rec = summary as Record<string, unknown>
+  const r = rec.reason ?? rec.message ?? rec.detail
+  if (typeof r === "string" && r.trim()) return r.length > 120 ? `${r.slice(0, 117)}…` : r
+  return ""
+}
+
+function applyNodeSkippedToSteps(prev: StepInfo[], nodeName: string): StepInfo[] {
+  return prev.map((step) =>
+    step.id === nodeName ? { ...step, status: "skipped" as const, endTime: Date.now() } : step,
+  )
+}
+
+function markStepsDonePreservingSkipped(prev: StepInfo[]): StepInfo[] {
+  return prev.map((step) =>
+    step.status === "skipped"
+      ? step
+      : { ...step, status: "completed" as const, endTime: step.endTime || Date.now() },
+  )
 }
 
 function createInitialState(): TrainingAgentState {
@@ -91,6 +165,11 @@ function createInitialState(): TrainingAgentState {
   }
 }
 
+export interface UseRealAgentOptions {
+  /** Called after a new experiment row is created (auto-create on send / link dataset). */
+  onExperimentEnsured?: (id: string) => void
+}
+
 export interface UseRealAgentReturn {
   // State
   agentState: TrainingAgentState
@@ -109,16 +188,30 @@ export interface UseRealAgentReturn {
   
   // Actions
   startAgent: (goal: string, datasets?: string[], modelPreference?: string, hitl?: boolean) => Promise<void>
-  sendMessage: (content: string) => void
+  sendMessage: (content: string, opts?: { user_model_preference?: string }) => void
+  linkedDatasets: string[]
+  updateLinkedDatasets: (ids: string[]) => void
+  /** Model type id linked for this experiment session (sent with each message / training run). */
+  linkedModelId: string | null
+  setLinkedModelId: (id: string | null) => void
   handleConfirmation: (action: ConfirmationAction, comment?: string) => void
   reset: () => void
+  /** Ping `/api/health` only (for status banner + pre-flight). Does not refetch datasets/models. */
   checkConnection: () => Promise<boolean>
+  /** Refetch dataset catalog (e.g. when opening the Datasets tab). */
+  refreshDatasets: () => Promise<void>
+  /** Refetch model types (e.g. when opening the Models tab). */
+  refreshModelTypes: () => Promise<void>
   setExperimentId: (id: string | null) => void
   loadExperiment: (id: string) => Promise<void>
   saveCurrentMessages: () => Promise<void>
+  /** Clear local session and deselect experiment (experiment row remains in the list). */
+  leaveLabSession: () => void
 }
 
-export function useRealAgent(): UseRealAgentReturn {
+export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn {
+  const onExperimentEnsuredRef = useRef(options?.onExperimentEnsured)
+  onExperimentEnsuredRef.current = options?.onExperimentEnsured
   const [agentState, setAgentState] = useState<TrainingAgentState>(createInitialState())
   const [steps, setSteps] = useState<StepInfo[]>(createInitialSteps())
   const [messages, setMessages] = useState<ChatMessage[]>([])
@@ -128,11 +221,13 @@ export function useRealAgent(): UseRealAgentReturn {
   const [progress, setProgress] = useState(0)
   const [datasets, setDatasets] = useState<Dataset[]>([])
   const [modelTypes, setModelTypes] = useState<ModelType[]>([])
-  const [threadId, setThreadId] = useState<string | null>(null)
-  const [chatThreadId, setChatThreadId] = useState<string | null>(null)
+
+
   const [confirmationRequest, setConfirmationRequest] = useState<ConfirmationRequest | null>(null)
   const [acceptAllMode, setAcceptAllMode] = useState(false)
   const [experimentId, setExperimentId] = useState<string | null>(null)
+  const [linkedDatasets, setLinkedDatasets] = useState<string[]>([])
+  const [linkedModelId, setLinkedModelId] = useState<string | null>(null)
   
   // Use a ref to track accept-all mode to avoid stale closure issues in callbacks
   const acceptAllModeRef = useRef(acceptAllMode)
@@ -144,12 +239,12 @@ export function useRealAgent(): UseRealAgentReturn {
   const experimentIdRef = useRef<string | null>(experimentId)
   experimentIdRef.current = experimentId
 
-  const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const linkedDatasetsRef = useRef<string[]>(linkedDatasets)
+  linkedDatasetsRef.current = linkedDatasets
+
   const streamControllerRef = useRef<AbortController | null>(null)
-  const chatControllerRef = useRef<AbortController | null>(null)
+  const linkedDatasetsPatchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const emittedStepsRef = useRef<Set<string>>(new Set())
-  /** @deprecated Polling path is unused; streaming is always used. Kept for potential future toggle. */
-  const useStreaming = true // Enable streaming by default
 
   // Add a message to the chat
   const addMessage = useCallback((role: ChatMessage["role"], content: string) => {
@@ -159,43 +254,46 @@ export function useRealAgent(): UseRealAgentReturn {
     ])
   }, [])
 
-  /** @deprecated Unused when streaming is enabled (default). Kept for potential polling fallback. */
-  const updateStepsFromProgress = useCallback((currentStep: string | null, status: "running" | "completed") => {
-    const stepOrder = STEP_DEFINITIONS.map((s) => s.id)
-    const currentIndex = currentStep ? stepOrder.indexOf(currentStep) : -1
-    
-    setSteps((prev) =>
-      prev.map((step, index) => {
-        if (status === "completed") {
-          return { ...step, status: "completed" }
-        }
-        if (index < currentIndex) {
-          return { ...step, status: "completed" }
-        }
-        if (index === currentIndex) {
-          return { ...step, status: "running" }
-        }
-        return { ...step, status: "pending" }
-      })
-    )
+  const saveCurrentMessages = useCallback(async () => {
+    const eid = experimentIdRef.current
+    const msgs = messagesRef.current
+    if (!eid || msgs.length === 0) return
+    try {
+      await saveExperimentMessages(
+        eid,
+        msgs.map((m) => ({
+          id: m.id,
+          role: m.role,
+          content: m.content,
+          timestamp: m.timestamp,
+        })),
+      )
+    } catch {
+      // best-effort save
+    }
   }, [])
 
-  // Check backend connection
+  const refreshDatasets = useCallback(async () => {
+    try {
+      setDatasets(await getDatasets())
+    } catch {
+      setDatasets([])
+    }
+  }, [])
+
+  const refreshModelTypes = useCallback(async () => {
+    try {
+      setModelTypes(await getModelTypes())
+    } catch {
+      setModelTypes([])
+    }
+  }, [])
+
+  /** Health check only — avoids hammering datasets/models on a timer. */
   const checkConnection = useCallback(async () => {
     try {
       const connected = await checkHealth()
       setIsBackendConnected(connected)
-      
-      if (connected) {
-        // Load datasets and models
-        const [datasetsData, modelsData] = await Promise.all([
-          getDatasets().catch(() => []),
-          getModelTypes().catch(() => []),
-        ])
-        setDatasets(datasetsData)
-        setModelTypes(modelsData)
-      }
-      
       return connected
     } catch {
       setIsBackendConnected(false)
@@ -203,87 +301,31 @@ export function useRealAgent(): UseRealAgentReturn {
     }
   }, [])
 
-  // Check connection on mount
+  // One-time: health + catalog when the app loads (not on every periodic ping).
   useEffect(() => {
-    checkConnection()
-  }, [checkConnection])
-
-  /** @deprecated Unused when streaming is enabled (default). Kept for potential polling fallback. */
-  const pollJob = useCallback(async (jobId: string) => {
-    try {
-      const status = await getTrainingStatus(jobId)
-      setProgress(status.progress)
-      
-      if (status.current_step) {
-        updateStepsFromProgress(status.current_step, status.status === "completed" ? "completed" : "running")
-      }
-      
-      if (status.status === "completed" && status.state) {
-        // Update agent state from result
-        const resultState = status.state as unknown as TrainingAgentState
-        setAgentState(resultState)
-        setIsRunning(false)
-        setCurrentJobId(null)
-        
-        // Mark all steps completed
-        setSteps((prev) => prev.map((step) => ({ ...step, status: "completed" })))
-        
-        // Add completion message
-        const metrics = resultState.training_metrics
-        if (metrics?.success) {
-          // Check if we have classification or regression metrics
-          const hasClassificationMetrics = metrics.test_accuracy != null || metrics.test_roc_auc != null
-          
-          // Get regression metrics from iterations if not at top level
-          const lastIteration = metrics.iterations?.[metrics.iterations.length - 1]
-          const testR2 = metrics.test_r2 ?? lastIteration?.test_r2
-          const testRmse = metrics.test_rmse ?? lastIteration?.test_rmse
-          const testMae = metrics.test_mae ?? lastIteration?.test_mae
-          const hasRegressionMetrics = testR2 != null || testRmse != null
-          
-          if (hasClassificationMetrics) {
-            addMessage("agent", `Training completed successfully!\n\nModel: ${metrics.model_name}\nTest Accuracy: ${((metrics.test_accuracy as number) * 100).toFixed(1)}%\nTest ROC-AUC: ${(metrics.test_roc_auc as number)?.toFixed(3) || "N/A"}`)
-          } else if (hasRegressionMetrics) {
-            // Regression task with metrics
-            const metricsStr = [
-              testR2 != null ? `Test R²: ${testR2.toFixed(4)}` : null,
-              testRmse != null ? `RMSE: ${testRmse.toFixed(2)}` : null,
-              testMae != null ? `MAE: ${testMae.toFixed(2)}` : null,
-            ].filter(Boolean).join("\n")
-            
-            addMessage("agent", `Training completed successfully!\n\nModel: ${metrics.model_name || resultState.model_weights_path}\nModel Type: ${metrics.model_type || resultState.selected_model}\n\n${metricsStr}\n\n${metrics.summary ? `Summary: ${metrics.summary.slice(0, 200)}...` : ""}`)
-          } else {
-            // Other task
-            addMessage("agent", `Training completed successfully!\n\nModel: ${metrics.model_name || resultState.model_weights_path}\nModel Type: ${metrics.model_type || resultState.selected_model}\nIterations: ${metrics.num_iterations || 1}\n\nClick "View Report" for detailed results.`)
-          }
-        } else if (resultState.report_path) {
-          addMessage("agent", `Training completed!\n\nModel: ${resultState.model_weights_path || "Unknown"}\nReport saved to: ${resultState.report_path}\n\nClick "View Report" for details.`)
-        } else {
-          addMessage("agent", "Training completed. Check the report for details.")
-        }
-        
-        // Clear polling
-        if (pollingRef.current) {
-          clearInterval(pollingRef.current)
-          pollingRef.current = null
-        }
-      } else if (status.status === "error") {
-        setIsRunning(false)
-        setCurrentJobId(null)
-        addMessage("system", `Error: ${status.error || "Unknown error occurred"}`)
-        
-        if (pollingRef.current) {
-          clearInterval(pollingRef.current)
-          pollingRef.current = null
+    let cancelled = false
+    ;(async () => {
+      const connected = await checkHealth()
+      if (cancelled) return
+      setIsBackendConnected(connected)
+      if (connected) {
+        const [datasetsData, modelsData] = await Promise.all([
+          getDatasets().catch(() => []),
+          getModelTypes().catch(() => []),
+        ])
+        if (!cancelled) {
+          setDatasets(datasetsData)
+          setModelTypes(modelsData)
         }
       }
-    } catch (err) {
-      console.error("Polling error:", err)
+    })()
+    return () => {
+      cancelled = true
     }
-  }, [addMessage, updateStepsFromProgress])
+  }, [])
 
   // Format detailed stream event for display
-  const formatStreamDetails = useCallback((event: StreamEvent): string => {
+  const formatStreamDetails = useCallback((event: AgentStreamEvent): string => {
     const details = event.details as Record<string, unknown> | undefined
     const summary = event.summary as Record<string, unknown> | undefined
     
@@ -587,8 +629,15 @@ export function useRealAgent(): UseRealAgentReturn {
         return summary.selected_model ? String(summary.selected_model) : ""
       case "data_collection": {
         const rows = summary.rows
-        const cols = Array.isArray(summary.columns) ? summary.columns.length : summary.columns
-        return rows ? `${rows} rows, ${cols || "?"} cols` : ""
+        const colList = summary.columns
+        const ncol = Array.isArray(colList)
+          ? colList.length
+          : typeof colList === "number"
+            ? colList
+            : null
+        const colsStr = ncol != null ? String(ncol) : "?"
+        if (rows === undefined || rows === null || rows === "") return ""
+        return `${rows} rows, ${colsStr} cols`
       }
       case "cleaning":
       case "cleaning_and_standardization":
@@ -629,29 +678,167 @@ export function useRealAgent(): UseRealAgentReturn {
     }
   }, [])
 
-  // Handle streaming event
-  const handleStreamEvent = useCallback((event: StreamEvent) => {
-    console.log("[stream]", event)
-    
-    // Store thread_id from any event
-    if (event.thread_id) {
-      setThreadId(event.thread_id)
+  const applyAgentStreamEvent = useCallback((event: AgentStreamEvent) => {
+    console.log("[agent-stream]", event)
+
+    if (event.type === "start" || (event.type === "stream.start" && event.pipeline_completed == null)) {
+      setIsRunning(true)
+      return
     }
-    
-    if (event.type === "started") {
+    if (event.type === "token") {
+      const phase = event.phase
+      const isThinkingPhase = phase === "planner" || phase === "evaluator" || phase === "select_model"
+
+      if (isThinkingPhase) {
+        const content = event.content || ""
+        if (!content) return
+        setMessages((prev) => {
+          const i = prev.findIndex((m) => m.id === GRAPH_THINKING_MSG_ID)
+          if (i === -1) {
+            return [
+              ...prev,
+              {
+                id: GRAPH_THINKING_MSG_ID,
+                role: "system",
+                content: content,
+                timestamp: Date.now(),
+                _streaming: true,
+              },
+            ]
+          }
+          const cur = prev[i]
+          const next = [...prev]
+          next[i] = { ...cur, content: cur.content + content, timestamp: Date.now() }
+          return next
+        })
+        return
+      }
+
+      setMessages((prev) => {
+        const last = prev[prev.length - 1]
+        if (last && last.role === "agent" && last._streaming) {
+          return [
+            ...prev.slice(0, -1),
+            { ...last, content: last.content + (event.content || "") },
+          ]
+        }
+        return [
+          ...prev,
+          { id: uid("msg"), role: "agent", content: event.content || "", timestamp: Date.now(), _streaming: true },
+        ]
+      })
+      return
+    }
+    if (event.type === "tool_call" || event.type === "tool.start") {
+      const toolName = event.tool || "unknown"
+      const toolLabel =
+        toolName === "analyze_data" ? "Running analysis…" :
+        toolName === "train_model" ? "Training model (this may take several minutes)…" :
+        toolName === "check_trained_models" ? "Checking trained models…" :
+        toolName === "predict" ? "Making prediction…" :
+        toolName === "get_model_details" ? "Loading model details…" :
+        `Running ${toolName}…`
+      addMessage("system", toolLabel)
+      return
+    }
+    if (event.type === "tool_result" || event.type === "tool.end") {
+      return
+    }
+    if (event.type === "predict.start") {
+      addMessage("system", `Running predictions with **${event.model || "model"}**…`)
+      return
+    }
+    if (event.type === "predict.complete") {
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: uid("msg"),
+          role: "agent",
+          content: "",
+          timestamp: Date.now(),
+          prediction: {
+            model: event.model || "unknown",
+            rows_predicted: event.rows_predicted || 0,
+            headline: event.headline || "Prediction complete",
+            result_ref: event.result_ref,
+          },
+        },
+      ])
+      return
+    }
+    if (event.type === "training_started") {
+      emittedStepsRef.current = new Set()
+      setProgress(0)
+      setSteps(() => {
+        const initial = createInitialSteps()
+        return initial.map((step, index) =>
+          index === 0 ? { ...step, status: "running", startTime: Date.now() } : step,
+        )
+      })
+      return
+    }
+    if (event.type === "training_completed") {
+      setProgress(100)
+      setSteps((prev) => markStepsDonePreservingSkipped(prev))
+      return
+    }
+    if (event.type === "end" || (event.type === "stream.end" && !event.pipeline_completed)) {
+      setMessages((prev) =>
+        prev.map((m) => (m._streaming ? { ...m, _streaming: undefined } : m)),
+      )
+      setIsRunning(false)
+      setTimeout(() => saveCurrentMessages(), 100)
+      return
+    }
+
+    if (event.type === "thinking" || event.type === "step.progress") {
+      const raw = (typeof event.message === "string" ? event.message.trim() : "")
+        || (typeof event.phase === "string" ? event.phase.trim() : "")
+      if (!raw) return
+      const line = `⋯ ${raw}`
+      setMessages((prev) => {
+        const i = prev.findIndex((m) => m.id === GRAPH_THINKING_MSG_ID)
+        if (i === -1) {
+          return [
+            ...prev,
+            {
+              id: GRAPH_THINKING_MSG_ID,
+              role: "system",
+              content: line,
+              timestamp: Date.now(),
+              _streaming: true,
+            },
+          ]
+        }
+        const cur = prev[i]
+        const next = [...prev]
+        next[i] = {
+          ...cur,
+          content: `${cur.content}\n${line}`,
+          timestamp: Date.now(),
+        }
+        return next
+      })
+      return
+    }
+
+    if (event.type === "started" || (event.type === "stream.start" && event.pipeline_completed != null)) {
+      setMessages((prev) => prev.filter((m) => m.id !== GRAPH_THINKING_MSG_ID))
       setProgress(0)
       addMessage("system", "Training stream started...")
-      
-      // Mark the first step as running
-      setSteps((prev) =>
-        prev.map((step, index) => {
-          if (index === 0) {
-            return { ...step, status: "running", startTime: Date.now() }
-          }
-          return step
-        })
-      )
-    } else if (event.type === "interrupt") {
+      // Graph pipeline sends started with node "planner" before any step node runs;
+      // avoid showing "Data collection" as running during planning.
+      if (event.node !== "planner") {
+        setSteps((prev) =>
+          prev.map((step, index) => {
+            if (index === 0) {
+              return { ...step, status: "running", startTime: Date.now() }
+            }
+            return step
+          }),
+        )
+      }
+    } else if (event.type === "interrupt" || event.type === "review.required") {
       // Human-in-the-loop interrupt - pause for user approval
       console.log("[stream] Interrupt received:", event)
       
@@ -719,26 +906,25 @@ export function useRealAgent(): UseRealAgentReturn {
       // If in accept-all mode, auto-accept
       if (acceptAllModeRef.current) {
         console.log("[stream] Auto-accepting in accept-all mode")
-        const currentThreadId = event.thread_id
-        if (currentThreadId) {
-          // Mark step as completed and continue
-          setSteps((prev) =>
-            prev.map((step) =>
-              step.id === nodeName ? { ...step, status: "completed" } : step
-            )
+        setSteps((prev) =>
+          prev.map((step) =>
+            step.id === nodeName ? { ...step, status: "completed" } : step
           )
-          // Auto-resume with approval
-          setTimeout(() => {
-            streamControllerRef.current = streamResumeTraining(
-              { thread_id: currentThreadId, approved: true },
-              handleStreamEvent,
-(error: Error) => {
-        setIsRunning(false)
-        addMessage("system", `Stream error: ${error.message}`)
-      }
-            )
-          }, 100)
-        }
+        )
+        setTimeout(() => {
+          streamControllerRef.current = streamChat(
+            {
+              message: "",
+              experiment_id: experimentIdRef.current || undefined,
+              resume: { approved: true },
+            },
+            applyAgentStreamEvent,
+            (error: Error) => {
+              setIsRunning(false)
+              addMessage("system", `Stream error: ${error.message}`)
+            },
+          )
+        }, 100)
         return
       }
       
@@ -754,53 +940,32 @@ export function useRealAgent(): UseRealAgentReturn {
       // Pause running state so the input is enabled
       setIsRunning(false)
       
-    } else if (event.type === "dataset_loaded") {
+    } else if (event.type === "dataset_loaded" || event.type === "dataset.resolved") {
       addMessage("system", `Dataset loaded: ${event.dataset} → ${event.ref}`)
-    } else if (event.type === "node_complete") {
+    } else if (event.type === "dataset_error" || event.type === "dataset.error") {
+      addMessage("system", `Could not load dataset: ${event.dataset || "unknown"}`)
+    } else if (event.type === "node_complete" || event.type === "step.complete") {
       const nodeName = event.node || "unknown"
       const nodeProgress = event.progress || 0
-      
-      // Deduplicate: skip if we already emitted a node_complete for this step
-      if (emittedStepsRef.current.has(nodeName)) {
-        console.log("[stream] Skipping duplicate node_complete for", nodeName)
+      const stepKey =
+        typeof (event as { stream_step_key?: string }).stream_step_key === "string"
+          ? (event as { stream_step_key: string }).stream_step_key
+          : nodeName
+
+      // Deduplicate per pipeline execution (same step name can repeat after replan/amend)
+      if (emittedStepsRef.current.has(stepKey)) {
+        console.log("[stream] Skipping duplicate node_complete for", stepKey)
         return
       }
-      emittedStepsRef.current.add(nodeName)
+      emittedStepsRef.current.add(stepKey)
       
       setProgress(nodeProgress)
-      
-      const stepOrder = STEP_DEFINITIONS.map((s) => s.id)
-      const nodeIndex = stepOrder.indexOf(nodeName)
-      
-      setSteps((prev) => {
-        const currentStepState = prev.find(s => s.id === nodeName)
-        const isRerun = (currentStepState?.runCount || 0) >= 1
-        
-        return prev.map((step, index) => {
-          if (step.id === nodeName) {
-            return { 
-              ...step, 
-              status: "completed", 
-              endTime: Date.now(),
-              runCount: (step.runCount || 0) + 1,
-            }
-          }
-          // On re-run, downstream completed/stale steps become stale
-          if (isRerun && index > nodeIndex && (step.status === "completed" || step.status === "stale")) {
-            return { ...step, status: "stale" }
-          }
-          // On first pass, mark preceding pending steps as completed and next as running
-          if (!isRerun) {
-            if (index < nodeIndex && step.status === "pending") {
-              return { ...step, status: "completed" }
-            }
-            if (index === nodeIndex + 1 && step.status === "pending") {
-              return { ...step, status: "running", startTime: Date.now() }
-            }
-          }
-          return step
-        })
-      })
+
+      setSteps((prev) => applyNodeCompleteToSteps(prev, nodeName, event))
+
+      setMessages(prev => prev.map(m =>
+        m.id === GRAPH_THINKING_MSG_ID ? { ...m, _streaming: false } : m
+      ))
       
       // Compute a one-line subtitle for the step dropdown
       const summary = event.summary as Record<string, unknown> | undefined
@@ -819,6 +984,11 @@ export function useRealAgent(): UseRealAgentReturn {
           ...prev,
           ...(event.state as Partial<TrainingAgentState>),
         }))
+      }
+
+      // Graph orchestration nodes: update checklist/state only; no chat line.
+      if (nodeName === "planner" || nodeName === "dispatcher" || nodeName === "evaluator") {
+        return
       }
       
       // Format and show detailed info in chat
@@ -959,16 +1129,34 @@ export function useRealAgent(): UseRealAgentReturn {
       } else if (formattedDetails && formattedDetails.trim()) {
         addMessage("agent", formattedDetails)
       } else {
-        // Fallback to simple message
-        const stepDef = STEP_DEFINITIONS.find((s) => s.id === nodeName)
-        addMessage("agent", `✓ ${stepDef?.name || nodeName} complete`)
+        const headline = event.headline
+        if (headline && typeof headline === "string") {
+          addMessage("agent", `**${STEP_DEFINITIONS.find(s => s.id === nodeName)?.name || nodeName}** — ${headline}`)
+        } else {
+          const stepDef = STEP_DEFINITIONS.find((s) => s.id === nodeName)
+          addMessage("agent", `✓ ${stepDef?.name || nodeName} complete`)
+        }
       }
-    } else if (event.type === "completed") {
+    } else if (event.type === "node_skipped" || event.type === "step.skipped") {
+      const nodeName = event.node || "unknown"
+      if (emittedStepsRef.current.has(`skipped:${nodeName}`)) {
+        console.log("[stream] Skipping duplicate node_skipped for", nodeName)
+        return
+      }
+      emittedStepsRef.current.add(`skipped:${nodeName}`)
+
+      setSteps((prev) => applyNodeSkippedToSteps(prev, nodeName))
+      const skipSubtitle = subtitleFromSkippedEvent(event.summary)
+      if (skipSubtitle) {
+        setSteps((prev) =>
+          prev.map((step) => (step.id === nodeName ? { ...step, subtitle: skipSubtitle } : step)),
+        )
+      }
+    } else if (event.type === "completed" || (event.type === "stream.end" && event.pipeline_completed === true)) {
       setProgress(100)
       setIsRunning(false)
-      
-      // Mark all steps completed
-      setSteps((prev) => prev.map((step) => ({ ...step, status: "completed", endTime: step.endTime || Date.now() })))
+
+      setSteps((prev) => markStepsDonePreservingSkipped(prev))
       
       addMessage("agent", "**Training completed successfully!**\n\nClick 'View Report' to see detailed results including metrics, feature importance, and recommendations.")
     } else if (event.type === "error") {
@@ -981,7 +1169,56 @@ export function useRealAgent(): UseRealAgentReturn {
       
       addMessage("system", `Error: ${event.error || "Unknown error"}`)
     }
-  }, [addMessage, formatStreamDetails])
+  }, [addMessage, formatStreamDetails, computeStepSubtitle, saveCurrentMessages])
+
+  const ensureExperimentId = useCallback(
+    async (suggestedName?: string | null): Promise<string | null> => {
+      if (experimentIdRef.current) return experimentIdRef.current
+      try {
+        const name = suggestedName?.trim() || undefined
+        const exp = await createExperiment(name)
+        setExperimentId(exp.id)
+        experimentIdRef.current = exp.id
+        onExperimentEnsuredRef.current?.(exp.id)
+        return exp.id
+      } catch {
+        return null
+      }
+    },
+    [],
+  )
+
+  const scheduleLinkedDatasetsPatch = useCallback((ids: string[]) => {
+    const eid = experimentIdRef.current
+    if (!eid) return
+    if (linkedDatasetsPatchTimerRef.current) clearTimeout(linkedDatasetsPatchTimerRef.current)
+    linkedDatasetsPatchTimerRef.current = setTimeout(() => {
+      void updateExperiment(eid, { linked_datasets: ids })
+    }, 400)
+  }, [])
+
+  const updateLinkedDatasets = useCallback(
+    (ids: string[]) => {
+      setLinkedDatasets(ids)
+      void (async () => {
+        if (!experimentIdRef.current) {
+          if (ids.length === 0) return
+          try {
+            const title = suggestExperimentTitleFromLinkedDatasets(ids)
+            const exp = await createExperiment(title, ids)
+            setExperimentId(exp.id)
+            experimentIdRef.current = exp.id
+            onExperimentEnsuredRef.current?.(exp.id)
+          } catch {
+            // keep local selection; persist can retry when user has an experiment
+          }
+          return
+        }
+        scheduleLinkedDatasetsPatch(ids)
+      })()
+    },
+    [scheduleLinkedDatasetsPatch],
+  )
 
   // Start training with streaming
   const startAgentStreaming = useCallback(async (goal: string, linkedDatasets?: string[], modelPreference?: string, hitl?: boolean) => {
@@ -991,6 +1228,12 @@ export function useRealAgent(): UseRealAgentReturn {
       return
     }
 
+    const runEid = await ensureExperimentId(suggestExperimentTitleFromUserMessage(goal))
+    if (!runEid) {
+      addMessage("system", "Could not create an experiment. Check the backend connection.")
+      return
+    }
+
     setIsRunning(true)
     setProgress(0)
     setSteps(createInitialSteps())
@@ -999,353 +1242,156 @@ export function useRealAgent(): UseRealAgentReturn {
     const initialState = createInitialState()
     initialState.goal = goal
     initialState.linked_datasets = linkedDatasets || null
-    initialState.user_model_preference = modelPreference || null
+    initialState.user_model_preference = modelPreference || linkedModelId || null
     setAgentState(initialState)
 
     const hitlLabel = hitl === false ? " (no human review)" : ""
     addMessage("agent", `Starting training with goal: "${goal}"\n\nStreaming progress updates in real-time${hitlLabel}...`)
 
-    streamControllerRef.current = streamTraining(
+    streamControllerRef.current = streamChat(
       {
-        goal,
-        linked_datasets: linkedDatasets,
-        user_model_preference: modelPreference,
-        hitl,
+        message: goal,
+        linked_datasets: linkedDatasets ?? null,
+        model_preference: modelPreference ?? linkedModelId ?? null,
+        experiment_id: runEid,
       },
-      handleStreamEvent,
+      applyAgentStreamEvent,
       (error: Error) => {
         setIsRunning(false)
         addMessage("system", `Stream error: ${error.message}`)
-      }
+      },
     )
-  }, [addMessage, checkConnection, handleStreamEvent])
+  }, [addMessage, checkConnection, applyAgentStreamEvent, linkedModelId, ensureExperimentId])
 
-  // Handle confirmation actions (human-in-the-loop)
   const handleConfirmation = useCallback((action: ConfirmationAction, comment?: string) => {
-    if (!confirmationRequest || !threadId) {
-      console.warn("[handleConfirmation] No confirmation request or thread_id")
+    if (!confirmationRequest || !experimentId) {
+      console.warn("[handleConfirmation] No confirmation request or experiment_id")
       return
     }
-    
+
     const currentStep = confirmationRequest.step
     const stepDef = STEP_DEFINITIONS.find((s) => s.id === currentStep)
-    
+
+    const resumeStream = (approved: boolean, feedback?: string) => {
+      streamControllerRef.current = streamChat(
+        {
+          message: "",
+          experiment_id: experimentId,
+          resume: { approved, feedback },
+        },
+        applyAgentStreamEvent,
+        (error: Error) => {
+          setIsRunning(false)
+          addMessage("system", `Stream error: ${error.message}`)
+        },
+      )
+    }
+
     switch (action) {
       case "accept":
         addMessage("system", "✓ Step accepted")
-        
-        // Mark step as completed
         setSteps((prev) =>
           prev.map((step) =>
             step.id === currentStep ? { ...step, status: "completed" } : step
           )
         )
-        
-        // Clear confirmation and resume
         setConfirmationRequest(null)
         setIsRunning(true)
-        
-        // Resume streaming with approval
-        streamControllerRef.current = streamResumeTraining(
-          { thread_id: threadId, approved: true },
-          handleStreamEvent,
-(error: Error) => {
-        setIsRunning(false)
-        addMessage("system", `Stream error: ${error.message}`)
-      }
-        )
+        resumeStream(true)
         break
-        
+
       case "accept_all":
         addMessage("system", "Auto-accepting remaining steps")
         setAcceptAllMode(true)
-        acceptAllModeRef.current = true // Set ref immediately to avoid stale closure
-        
-        // Mark step as completed
+        acceptAllModeRef.current = true
         setSteps((prev) =>
           prev.map((step) =>
             step.id === currentStep ? { ...step, status: "completed" } : step
           )
         )
-        
-        // Clear confirmation and resume
         setConfirmationRequest(null)
         setIsRunning(true)
-        
-        // Resume streaming with approval
-        streamControllerRef.current = streamResumeTraining(
-          { thread_id: threadId, approved: true },
-          handleStreamEvent,
-(error: Error) => {
-        setIsRunning(false)
-        addMessage("system", `Stream error: ${error.message}`)
-      }
-        )
+        resumeStream(true)
         break
-        
+
       case "redo":
         addMessage("system", `↻ Requested redo${comment ? `: ${comment}` : ""}`)
         addMessage("agent", `Got it. I'll redo **${stepDef?.name || currentStep}**${comment ? ` with your feedback: "${comment}"` : ""}.`)
-        
-        // Mark step as running (will be redone)
         setSteps((prev) =>
           prev.map((step) =>
             step.id === currentStep ? { ...step, status: "running", startTime: Date.now() } : step
           )
         )
-        
-        // Clear confirmation and resume with feedback
         setConfirmationRequest(null)
         setIsRunning(true)
-        
-        // Resume streaming with rejection and feedback
-        streamControllerRef.current = streamResumeTraining(
-          { thread_id: threadId, approved: false, feedback: comment || "Please redo this step." },
-          handleStreamEvent,
-(error: Error) => {
-        setIsRunning(false)
-        addMessage("system", `Stream error: ${error.message}`)
-      }
-        )
+        resumeStream(false, comment || "Please redo this step.")
         break
     }
-  }, [confirmationRequest, threadId, addMessage, handleStreamEvent])
+  }, [confirmationRequest, experimentId, addMessage, applyAgentStreamEvent])
 
-  /** @deprecated Unused when streaming is enabled (default). Kept for potential polling fallback. */
-  const startAgentPolling = useCallback(async (goal: string, linkedDatasets?: string[], modelPreference?: string) => {
-    // Check connection first
-    const connected = await checkConnection()
-    if (!connected) {
-      addMessage("system", "Backend not connected. Please start the FastAPI server with: uvicorn app:app --reload")
-      return
-    }
-    
-    setIsRunning(true)
-    setProgress(0)
-    setSteps(createInitialSteps())
-    
-    // Update initial state
-    const initialState = createInitialState()
-    initialState.goal = goal
-    initialState.linked_datasets = linkedDatasets || null
-    initialState.user_model_preference = modelPreference || null
-    setAgentState(initialState)
-    
-    addMessage("agent", `Starting training with goal: "${goal}"\n\nThis will run the full pipeline. Progress will update as steps complete.`)
-    
-    try {
-      // Start training job
-      const response = await startTraining({
-        goal,
-        linked_datasets: linkedDatasets,
-        user_model_preference: modelPreference,
-      })
-      
-      setCurrentJobId(response.job_id)
-      addMessage("system", `Training job started (ID: ${response.job_id.slice(0, 8)}...)`)
-      
-      // Start polling for status
-      pollingRef.current = setInterval(() => {
-        pollJob(response.job_id)
-      }, 1000)
-      
-    } catch (err) {
-      setIsRunning(false)
-      const errorMsg = err instanceof Error ? err.message : "Unknown error"
-      addMessage("system", `Failed to start training: ${errorMsg}`)
-    }
-  }, [addMessage, checkConnection, pollJob])
-
-  // Start training (uses streaming by default)
   const startAgent = useCallback(async (goal: string, linkedDatasets?: string[], modelPreference?: string, hitl?: boolean) => {
-    if (useStreaming) {
-      await startAgentStreaming(goal, linkedDatasets, modelPreference, hitl)
-    } else {
-      await startAgentPolling(goal, linkedDatasets, modelPreference)
-    }
-  }, [useStreaming, startAgentStreaming, startAgentPolling])
+    await startAgentStreaming(goal, linkedDatasets, modelPreference, hitl)
+  }, [startAgentStreaming])
 
-  // Handle a chat stream event from the orchestrator agent
-  const handleChatEvent = useCallback((event: ChatStreamEvent) => {
-    console.log("[chat]", event)
+  const sendMessage = useCallback(
+    (
+      content: string,
+      opts?: { user_model_preference?: string },
+    ) => {
+      addMessage("user", content)
 
-    if (event.thread_id) {
-      setChatThreadId(event.thread_id)
-    }
-
-    if (event.type === "start") {
-      setIsRunning(true)
-    } else if (event.type === "tool_call") {
-      const toolName = event.tool || "unknown"
-      const toolLabel =
-        toolName === "analyze_data" ? "Running analysis…" :
-        toolName === "train_model" ? "Training model (this may take several minutes)…" :
-        toolName === "check_trained_models" ? "Checking trained models…" :
-        toolName === "predict" ? "Making prediction…" :
-        toolName === "get_model_details" ? "Loading model details…" :
-        `Running ${toolName}…`
-      addMessage("system", toolLabel)
-    } else if (event.type === "tool_result") {
-      // tool results are consumed by the agent; no separate message needed
-    } else if (event.type === "training_started") {
-      setSteps(createInitialSteps())
-      emittedStepsRef.current = new Set()
-      setProgress(0)
-    } else if (event.type === "node_complete") {
-      const nodeName = event.node || "unknown"
-      if (emittedStepsRef.current.has(nodeName)) return
-      emittedStepsRef.current.add(nodeName)
-
-      const nodeProgress = event.progress || 0
-      setProgress(nodeProgress)
-
-      const stepOrder = STEP_DEFINITIONS.map((s) => s.id)
-      const nodeIndex = stepOrder.indexOf(nodeName)
-
-      setSteps((prev) =>
-        prev.map((step, index) => {
-          if (step.id === nodeName) {
-            return { ...step, status: "completed", endTime: Date.now() }
-          }
-          if (index < nodeIndex && step.status === "pending") {
-            return { ...step, status: "completed" }
-          }
-          return step
-        })
-      )
-
-      const summary = event.summary as Record<string, unknown> | undefined
-      const subtitle = computeStepSubtitle(nodeName, summary)
-      if (subtitle) {
-        setSteps((prev) =>
-          prev.map((step) =>
-            step.id === nodeName ? { ...step, subtitle } : step
-          )
-        )
+      if (isRunning) {
+        addMessage("agent", "Please wait — a task is still running.")
+        return
       }
 
-      if (event.state) {
-        setAgentState((prev) => ({
-          ...prev,
-          ...(event.state as Partial<TrainingAgentState>),
-        }))
-      }
-    } else if (event.type === "training_completed") {
-      setProgress(100)
-      setSteps((prev) => prev.map((step) => ({ ...step, status: step.status === "pending" ? "completed" : step.status, endTime: step.endTime || Date.now() })))
-    } else if (event.type === "token") {
-      setMessages((prev) => {
-        const last = prev[prev.length - 1]
-        if (last && last.role === "agent" && last._streaming) {
-          return [
-            ...prev.slice(0, -1),
-            { ...last, content: last.content + (event.content || "") },
-          ]
+      streamControllerRef.current?.abort()
+
+      void (async () => {
+        const eid = await ensureExperimentId(suggestExperimentTitleFromUserMessage(content))
+        if (!eid) {
+          addMessage("system", "Could not create an experiment. Check the backend connection.")
+          return
         }
-        return [
-          ...prev,
-          { id: uid("msg"), role: "agent", content: event.content || "", timestamp: Date.now(), _streaming: true },
-        ]
-      })
-    } else if (event.type === "end") {
-      setMessages((prev) =>
-        prev.map((m) => (m._streaming ? { ...m, _streaming: undefined } : m))
-      )
-      setIsRunning(false)
-      // Persist messages to backend after exchange completes
-      setTimeout(() => saveCurrentMessages(), 100)
-    } else if (event.type === "error") {
-      addMessage("system", `Error: ${event.error || "Unknown error"}`)
-      setIsRunning(false)
-    }
-  }, [addMessage, computeStepSubtitle])
 
-  // Build a training context string from the current agent state so the
-  // orchestrator knows about the most recently trained model.
-  const buildTrainingContext = useCallback((): string | undefined => {
-    const metrics = agentState.training_metrics
-    if (!metrics || !metrics.model_name) return undefined
+        const ds = linkedDatasetsRef.current
+        if (ds.length > 0) {
+          setSteps(createInitialSteps())
+          emittedStepsRef.current = new Set()
+          setProgress(0)
+        }
 
-    const lines: string[] = []
-    lines.push(`Model name: ${metrics.model_name}`)
-    lines.push(`Model type: ${metrics.model_type || agentState.selected_model || "unknown"}`)
-    if (agentState.goal) lines.push(`Goal: ${agentState.goal}`)
-    const ld = agentState.label_definition as Record<string, unknown> | null
-    if (ld?.target_column) lines.push(`Target column: ${ld.target_column}`)
-    if (metrics.test_accuracy != null) lines.push(`Test Accuracy: ${metrics.test_accuracy}`)
-    if (metrics.test_roc_auc != null) lines.push(`Test ROC-AUC: ${metrics.test_roc_auc}`)
-    if (metrics.val_r2 != null) lines.push(`Val R²: ${metrics.val_r2}`)
-    if (metrics.test_r2 != null) lines.push(`Test R²: ${metrics.test_r2}`)
-    if (metrics.test_rmse != null) lines.push(`Test RMSE: ${metrics.test_rmse}`)
-    if (metrics.test_mae != null) lines.push(`Test MAE: ${metrics.test_mae}`)
-    if (metrics.num_iterations) lines.push(`Iterations: ${metrics.num_iterations}`)
-    if (metrics.summary) lines.push(`Summary: ${String(metrics.summary).slice(0, 300)}`)
-    if (agentState.report_path) lines.push(`Report: ${agentState.report_path}`)
+        setIsRunning(true)
 
-    return lines.join("\n")
-  }, [agentState])
-
-  // Send a chat message to the orchestrator agent
-  const sendMessage = useCallback((content: string) => {
-    addMessage("user", content)
-
-    if (isRunning) {
-      addMessage("agent", "Please wait — a task is still running.")
-      return
-    }
-
-    // Abort any previous chat stream
-    if (chatControllerRef.current) {
-      chatControllerRef.current.abort()
-    }
-
-    chatControllerRef.current = streamChat(
-      {
-        message: content,
-        thread_id: chatThreadId || undefined,
-        experiment_id: experimentId || undefined,
-        training_context: buildTrainingContext(),
-      },
-      handleChatEvent,
-      (error: Error) => {
-        setIsRunning(false)
-        addMessage("system", `Chat error: ${error.message}`)
-      },
-    )
-  }, [addMessage, isRunning, chatThreadId, experimentId, handleChatEvent, buildTrainingContext])
-
-  const saveCurrentMessages = useCallback(async () => {
-    const eid = experimentIdRef.current
-    const msgs = messagesRef.current
-    if (!eid || msgs.length === 0) return
-    try {
-      await saveExperimentMessages(
-        eid,
-        msgs.map((m) => ({
-          id: m.id,
-          role: m.role,
-          content: m.content,
-          timestamp: m.timestamp,
-        })),
-      )
-    } catch {
-      // best-effort save
-    }
-  }, [])
+        streamControllerRef.current = streamChat(
+          {
+            message: content,
+            experiment_id: eid,
+            linked_datasets: ds.length > 0 ? ds : null,
+            model_preference: opts?.user_model_preference ?? linkedModelId ?? null,
+          },
+          applyAgentStreamEvent,
+          (error: Error) => {
+            setIsRunning(false)
+            addMessage("system", `Chat error: ${error.message}`)
+          },
+        )
+      })()
+    },
+    [
+      addMessage,
+      isRunning,
+      linkedModelId,
+      applyAgentStreamEvent,
+      ensureExperimentId,
+    ],
+  )
 
   // Reset everything
   const reset = useCallback(() => {
-    if (pollingRef.current) {
-      clearInterval(pollingRef.current)
-      pollingRef.current = null
-    }
     if (streamControllerRef.current) {
       streamControllerRef.current.abort()
       streamControllerRef.current = null
-    }
-    if (chatControllerRef.current) {
-      chatControllerRef.current.abort()
-      chatControllerRef.current = null
     }
     setAgentState(createInitialState())
     setSteps(createInitialSteps())
@@ -1353,13 +1399,19 @@ export function useRealAgent(): UseRealAgentReturn {
     setIsRunning(false)
     setCurrentJobId(null)
     setProgress(0)
-    setThreadId(null)
-    setChatThreadId(null)
     setConfirmationRequest(null)
     setAcceptAllMode(false)
     acceptAllModeRef.current = false
     emittedStepsRef.current = new Set()
+    setLinkedDatasets([])
+    setLinkedModelId(null)
   }, [])
+
+  const leaveLabSession = useCallback(() => {
+    reset()
+    setExperimentId(null)
+    experimentIdRef.current = null
+  }, [reset])
 
   const loadExperiment = useCallback(async (id: string) => {
     try {
@@ -1368,10 +1420,8 @@ export function useRealAgent(): UseRealAgentReturn {
 
       const exp = await getExperiment(id)
       streamControllerRef.current?.abort()
-      chatControllerRef.current?.abort()
 
       setExperimentId(exp.id)
-      setChatThreadId(exp.chat_thread_id)
 
       // Restore chat history
       if (exp.chat_history && Array.isArray(exp.chat_history)) {
@@ -1399,6 +1449,11 @@ export function useRealAgent(): UseRealAgentReturn {
       setConfirmationRequest(null)
       setAcceptAllMode(false)
       emittedStepsRef.current = new Set()
+      const rawLd = exp.linked_datasets
+      setLinkedDatasets(Array.isArray(rawLd) ? rawLd.map(String) : [])
+      const ts = exp.training_state as Partial<TrainingAgentState> | null | undefined
+      const pref = ts?.user_model_preference
+      setLinkedModelId(typeof pref === "string" && pref ? pref : null)
     } catch (err) {
       console.error("Failed to load experiment:", err)
     }
@@ -1407,14 +1462,8 @@ export function useRealAgent(): UseRealAgentReturn {
   // Cleanup on unmount
   useEffect(() => {
     return () => {
-      if (pollingRef.current) {
-        clearInterval(pollingRef.current)
-      }
       if (streamControllerRef.current) {
         streamControllerRef.current.abort()
-      }
-      if (chatControllerRef.current) {
-        chatControllerRef.current.abort()
       }
     }
   }, [])
@@ -1429,6 +1478,10 @@ export function useRealAgent(): UseRealAgentReturn {
     progress,
     confirmationRequest,
     experimentId,
+    linkedDatasets,
+    updateLinkedDatasets,
+    linkedModelId,
+    setLinkedModelId,
     datasets,
     modelTypes,
     startAgent,
@@ -1436,8 +1489,11 @@ export function useRealAgent(): UseRealAgentReturn {
     handleConfirmation,
     reset,
     checkConnection,
+    refreshDatasets,
+    refreshModelTypes,
     setExperimentId,
     loadExperiment,
     saveCurrentMessages,
+    leaveLabSession,
   }
 }

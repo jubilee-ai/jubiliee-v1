@@ -88,6 +88,11 @@ class TrainingAgentState(TypedDict):
     # Derived from selected_model + goal: "classification" | "regression" | "unsupervised"
     task_type: Optional[str]
 
+    # Pre-resolved inputs — set before graph starts, corresponding steps auto-skip
+    resolved_dataset_ref: str | None
+    resolved_model_type: str | None
+    resolved_target_column: str | None
+
     # Step 2: Data Collection
     collected_dataset_ref: Optional[str]
     data_source: Optional[str]  # "local", "kaggle", "huggingface", "pre-registered"
@@ -164,6 +169,9 @@ def create_initial_state(
     linked_datasets: Optional[list[str]] = None,
     user_model_preference: Optional[str] = None,
     use_external_sources: bool = False,
+    resolved_dataset_ref: str | None = None,
+    resolved_model_type: str | None = None,
+    resolved_target_column: str | None = None,
 ) -> TrainingAgentState:
     """Create the initial state for the training agent."""
     return {
@@ -172,6 +180,10 @@ def create_initial_state(
         "linked_datasets": linked_datasets,
         "user_model_preference": user_model_preference,
         "use_external_sources": use_external_sources,
+        # Pre-resolved inputs
+        "resolved_dataset_ref": resolved_dataset_ref,
+        "resolved_model_type": resolved_model_type,
+        "resolved_target_column": resolved_target_column,
         # Initialize all other fields
         "selected_model": None,
         "model_explanation": None,

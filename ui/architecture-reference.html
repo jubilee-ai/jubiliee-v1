@@ -1,0 +1,761 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Jubilee — Architecture Callstack</title>
+<link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Instrument+Serif:ital@0;1&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<script type="module">
+  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+  mermaid.initialize({
+    startOnLoad: true,
+    theme: "dark",
+    securityLevel: "loose",
+    themeVariables: {
+      darkMode: true,
+      background: "#09090b",
+      primaryColor: "#18181b",
+      primaryTextColor: "#e4e4e7",
+      primaryBorderColor: "#3f3f46",
+      lineColor: "#71717a",
+      secondaryColor: "#18181b",
+      tertiaryColor: "#09090b",
+      fontFamily: "Space Mono, monospace",
+    },
+    flowchart: { curve: "basis", padding: 14 },
+    sequence: { actorMargin: 50, boxMargin: 10, messageMargin: 30, mirrorActors: false },
+  });
+</script>
+<style>
+*,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
+:root{
+  --z0:#09090b;--z1:#18181b;--z2:#27272a;--z3:#3f3f46;
+  --t0:#fafafa;--t1:#d4d4d8;--t2:#a1a1aa;--t3:#71717a;
+  --blue:#60a5fa;--blue-g:rgba(96,165,250,.1);
+  --violet:#a78bfa;--violet-g:rgba(167,139,250,.08);
+  --emerald:#34d399;--emerald-g:rgba(52,211,153,.08);
+  --amber:#fbbf24;--amber-g:rgba(251,191,36,.08);
+  --rose:#fb7185;--rose-g:rgba(251,113,133,.08);
+  --cyan:#22d3ee;--cyan-g:rgba(34,211,238,.06);
+  --r:10px;
+}
+html{scroll-behavior:smooth}
+body{background:var(--z0);color:var(--t1);font-family:'Inter',system-ui,sans-serif;font-size:13.5px;line-height:1.65}
+.page{max-width:1200px;margin:0 auto;padding:56px 28px 100px}
+h1{font-family:'Instrument Serif',serif;font-size:40px;font-weight:400;color:var(--t0);letter-spacing:-.5px;line-height:1.15}
+h1 em{font-style:italic;color:var(--blue)}
+.subtitle{color:var(--t3);font-family:'Space Mono',monospace;font-size:11px;margin:8px 0 56px;line-height:1.7}
+.subtitle code{background:var(--z2);padding:1px 5px;border-radius:4px;font-size:10.5px}
+section{margin-bottom:64px}
+h2{font-family:'Instrument Serif',serif;font-size:22px;font-weight:400;color:var(--t0);margin-bottom:20px;padding-bottom:10px;border-bottom:1px solid var(--z2);display:flex;align-items:center;gap:12px}
+h2 .n{display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:8px;background:var(--blue-g);border:1px solid rgba(96,165,250,.2);color:var(--blue);font-family:'Space Mono',monospace;font-size:12px}
+h3{font-family:'Instrument Serif',serif;font-size:16px;color:var(--t0);margin:24px 0 12px}
+
+/* boxes */
+.box{padding:18px 22px;background:var(--z1);border:1px solid var(--z2);border-radius:var(--r);margin-bottom:14px}
+.box.blue{border-left:3px solid var(--blue)}
+.box.violet{border-left:3px solid var(--violet)}
+.box.emerald{border-left:3px solid var(--emerald)}
+.box.amber{border-left:3px solid var(--amber)}
+.box.rose{border-left:3px solid var(--rose)}
+.box.cyan{border-left:3px solid var(--cyan)}
+.box h4{font-family:'Instrument Serif',serif;font-size:14px;color:var(--t0);margin-bottom:6px}
+.box p,.box ul,.box li{font-size:12px;color:var(--t2);line-height:1.65}
+.box ul{padding-left:16px}.box li{margin-bottom:3px}
+.file{font-family:'Space Mono',monospace;font-size:10px;color:var(--t3);margin-top:6px}
+
+/* tables */
+table.t{width:100%;border-collapse:collapse;font-size:12px;margin:8px 0}
+table.t th{text-align:left;padding:7px 10px;color:var(--t3);border-bottom:1px solid var(--z2);font-weight:500;font-size:10px;text-transform:uppercase;letter-spacing:.5px;font-family:'Space Mono',monospace}
+table.t td{padding:7px 10px;border-bottom:1px solid var(--z2);color:var(--t1);vertical-align:top}
+table.t tr:last-child td{border-bottom:none}
+table.t code{background:var(--z0);padding:1px 5px;border-radius:3px;font-size:10.5px;font-family:'Space Mono',monospace}
+
+/* tags */
+.tag{display:inline-block;padding:2px 8px;border-radius:5px;font-size:10px;font-family:'Space Mono',monospace;margin:2px 3px 2px 0;border:1px solid var(--z3);background:var(--z0);color:var(--t2)}
+.tag.blue{border-color:var(--blue);color:var(--blue);background:var(--blue-g)}
+.tag.violet{border-color:var(--violet);color:var(--violet);background:var(--violet-g)}
+.tag.emerald{border-color:var(--emerald);color:var(--emerald);background:var(--emerald-g)}
+.tag.amber{border-color:var(--amber);color:var(--amber);background:var(--amber-g)}
+.tag.rose{border-color:var(--rose);color:var(--rose);background:var(--rose-g)}
+.tag.cyan{border-color:var(--cyan);color:var(--cyan);background:var(--cyan-g)}
+
+/* layout */
+.cols{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+@media(max-width:860px){.cols{grid-template-columns:1fr}}
+.cols-3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px}
+@media(max-width:960px){.cols-3{grid-template-columns:1fr}}
+
+/* mermaid */
+.mmd{background:var(--z1);border:1px solid var(--z2);border-radius:var(--r);padding:24px 16px;overflow-x:auto;margin:14px 0}
+.mmd .mermaid{text-align:center}
+
+/* callstack */
+.stack{display:flex;flex-direction:column;gap:0;position:relative;margin:20px 0}
+.stack::before{content:'';position:absolute;left:23px;top:0;bottom:0;width:1px;background:var(--z3)}
+.stack-frame{display:flex;gap:16px;padding:10px 0;position:relative;z-index:1}
+.stack-dot{width:12px;height:12px;border-radius:50%;border:2px solid var(--z3);background:var(--z0);margin-top:4px;flex-shrink:0;margin-left:18px;z-index:2}
+.stack-dot.blue{border-color:var(--blue);background:var(--blue-g)}
+.stack-dot.violet{border-color:var(--violet);background:var(--violet-g)}
+.stack-dot.emerald{border-color:var(--emerald);background:var(--emerald-g)}
+.stack-dot.amber{border-color:var(--amber);background:var(--amber-g)}
+.stack-dot.rose{border-color:var(--rose);background:var(--rose-g)}
+.stack-dot.cyan{border-color:var(--cyan);background:var(--cyan-g)}
+.stack-body{flex:1;min-width:0}
+.stack-title{font-family:'Space Mono',monospace;font-size:12px;color:var(--t0);margin-bottom:2px}
+.stack-desc{font-size:11px;color:var(--t3);line-height:1.5}
+.stack-io{display:flex;gap:8px;margin-top:6px;flex-wrap:wrap}
+.stack-io .in,.stack-io .out{font-size:10px;font-family:'Space Mono',monospace;padding:3px 8px;border-radius:5px}
+.stack-io .in{background:var(--blue-g);border:1px solid rgba(96,165,250,.2);color:var(--blue)}
+.stack-io .out{background:var(--emerald-g);border:1px solid rgba(52,211,153,.2);color:var(--emerald)}
+
+/* flow strip */
+.flow-strip{display:flex;align-items:stretch;gap:0;overflow-x:auto;padding:14px 0}
+.flow-strip .fn{min-width:100px;padding:12px 14px;background:var(--z1);border:1px solid var(--z2);border-radius:var(--r);text-align:center;flex-shrink:0;transition:all .2s}
+.flow-strip .fn:hover{border-color:var(--blue);transform:translateY(-2px);box-shadow:0 4px 20px var(--blue-g)}
+.flow-strip .fn .name{font-family:'Space Mono',monospace;font-size:11px;color:var(--t0)}
+.flow-strip .fn .sub{font-size:10px;color:var(--t3);margin-top:2px}
+.flow-strip .arr{display:flex;align-items:center;padding:0 4px;color:var(--t3);font-size:14px;flex-shrink:0}
+.flow-strip .fn.p{border-color:var(--violet);background:var(--violet-g)}
+.flow-strip .fn.d{border-color:var(--cyan);background:var(--cyan-g)}
+.flow-strip .fn.e{border-color:var(--amber);background:var(--amber-g)}
+.flow-strip .fn.s{border-color:var(--blue)}
+
+/* reveal */
+.rv{opacity:0;transform:translateY(18px);transition:opacity .5s ease,transform .5s ease}
+.rv.vis{opacity:1;transform:translateY(0)}
+</style>
+</head>
+<body>
+<div class="page">
+
+<h1>Jubilee <em>Callstack &amp; Agent Flow</em></h1>
+<p class="subtitle">
+  Post-refactor architecture. Single entry <code>POST /api/chat</code> &rarr; unified SSE vocabulary &rarr; one reducer.<br>
+  All state keyed by <code>experiment_id</code>. Metadata in Postgres, artifacts in R2. LLM tokens streamed everywhere.
+</p>
+
+<!-- ═══════════════════════════════════════════════════════════════════════ -->
+<section class="rv">
+<h2><span class="n">1</span> Full Callstack: Frontend &rarr; Backend &rarr; LangGraph</h2>
+
+<p style="font-size:12px;color:var(--t2);margin-bottom:16px">
+  Every user interaction follows this stack. The branching point is <code>chat()</code> which routes to the orchestrator (tools + chat) or training graph (pipeline + HITL).
+</p>
+
+<div class="stack">
+
+  <div class="stack-frame">
+    <div class="stack-dot blue"></div>
+    <div class="stack-body">
+      <div class="stack-title">useRealAgent.sendMessage(content)</div>
+      <div class="stack-desc">React hook — pushes user message to state, calls streamChat()</div>
+      <div class="stack-io">
+        <span class="in">IN: content, experimentId</span>
+        <span class="out">OUT: AbortController</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="stack-frame">
+    <div class="stack-dot blue"></div>
+    <div class="stack-body">
+      <div class="stack-title">streamChat(req, onEvent, onError)</div>
+      <div class="stack-desc">Fetch POST + ReadableStream. Parses <code>data: JSON\n\n</code> lines into <code>AgentStreamEvent</code> objects.</div>
+      <div class="stack-io">
+        <span class="in">IN: AgentStreamRequest</span>
+        <span class="out">OUT: stream of AgentStreamEvent</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="stack-frame">
+    <div class="stack-dot violet"></div>
+    <div class="stack-body">
+      <div class="stack-title">POST /api/chat &rarr; chat(request: ChatRequest)</div>
+      <div class="stack-desc">Server-side router. Resolves thread IDs + training context from <code>experiment_id</code>. Three paths:</div>
+      <div class="stack-io">
+        <span class="in">IN: message, experiment_id, linked_datasets?, model_preference?, resume?</span>
+        <span class="out">OUT: StreamingResponse (SSE generator)</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="stack-frame">
+    <div class="stack-dot"></div>
+    <div class="stack-body">
+      <div class="stack-title" style="color:var(--t3)">Branch A: resume &rarr; generate_graph_resume_sse_events()</div>
+      <div class="stack-desc">Looks up agent + checkpointer by graph_thread_id on the experiment, sends <code>Command(resume=...)</code></div>
+      <div class="stack-io">
+        <span class="in">IN: graph_thread_id, approved, feedback</span>
+        <span class="out">OUT: SSE (step.complete | review.required | stream.end)</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="stack-frame">
+    <div class="stack-dot emerald"></div>
+    <div class="stack-body">
+      <div class="stack-title">Branch B: should_route_to_training_graph() &rarr; generate_graph_sse_events()</div>
+      <div class="stack-desc">Creates training agent + MemorySaver, resolves linked datasets, runs the StateGraph</div>
+      <div class="stack-io">
+        <span class="in">IN: goal, linked_datasets, model_preference, experiment_id</span>
+        <span class="out">OUT: SSE (stream.start, dataset.resolved, step.complete, step.skipped, review.required, token, step.progress, stream.end)</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="stack-frame">
+    <div class="stack-dot rose"></div>
+    <div class="stack-body">
+      <div class="stack-title">Branch C: else &rarr; generate_chat_sse()</div>
+      <div class="stack-desc">Orchestrator agent with tools (analyze, search, curate, predict, evaluate, list/get models). Token-streaming LLM.</div>
+      <div class="stack-io">
+        <span class="in">IN: thread_id, message, training_context, experiment_id</span>
+        <span class="out">OUT: SSE (stream.start, token, tool.start, tool.end, predict.start, predict.complete, stream.end)</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="stack-frame">
+    <div class="stack-dot emerald"></div>
+    <div class="stack-body">
+      <div class="stack-title">_iter_graph_sse_lines(agent, config, thread_id, stream_input, experiment_id)</div>
+      <div class="stack-desc">Inner loop shared by start + resume. Iterates <code>agent.stream(stream_mode=["updates","custom"])</code>. Handles interrupts, custom token events, node completions.</div>
+      <div class="stack-io">
+        <span class="in">IN: LangGraph agent, config dict, initial state or Command</span>
+        <span class="out">OUT: yields SSE data lines (step.complete, step.progress, token, review.required, step.skipped)</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="stack-frame">
+    <div class="stack-dot amber"></div>
+    <div class="stack-body">
+      <div class="stack-title">StateGraph[TrainingAgentState] — planner &rarr; dispatcher &rarr; step &rarr; evaluator</div>
+      <div class="stack-desc">LangGraph graph with HITL interrupts. Planner + evaluator LLMs stream tokens via <code>GraphTokenStreamHandler</code> callback.</div>
+      <div class="stack-io">
+        <span class="in">IN: TrainingAgentState (50+ fields incl. resolved_dataset_ref, resolved_model_type)</span>
+        <span class="out">OUT: state updates per node + custom stream events (token, thinking)</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="stack-frame">
+    <div class="stack-dot blue"></div>
+    <div class="stack-body">
+      <div class="stack-title">applyAgentStreamEvent(event) &rarr; React state</div>
+      <div class="stack-desc">Single reducer handles all 15 event types. Dual-name matching (legacy + new). Updates messages, steps, progress, agentState, confirmationRequest.</div>
+      <div class="stack-io">
+        <span class="in">IN: AgentStreamEvent</span>
+        <span class="out">OUT: UI state mutation (messages[], steps[], progress, isRunning, confirmationRequest)</span>
+      </div>
+    </div>
+  </div>
+
+</div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════════════ -->
+<section class="rv">
+<h2><span class="n">2</span> API Contract</h2>
+
+<div class="cols">
+<div class="box blue">
+  <h4>AgentStreamRequest (client &rarr; server)</h4>
+  <table class="t">
+    <tr><th>Field</th><th>Type</th><th>Purpose</th></tr>
+    <tr><td><code>message</code></td><td>string</td><td>Natural-language user input</td></tr>
+    <tr><td><code>experiment_id</code></td><td>string?</td><td>Session scope — server resolves all thread IDs from this</td></tr>
+    <tr><td><code>linked_datasets</code></td><td>string[]?</td><td>Datasets to attach (triggers training graph)</td></tr>
+    <tr><td><code>model_preference</code></td><td>string?</td><td>Preferred ML model family</td></tr>
+    <tr><td><code>resume</code></td><td>{approved, feedback?}?</td><td>HITL resume — server looks up graph thread</td></tr>
+  </table>
+  <div class="file">ui/src/lib/api.ts &rarr; backend/chat/schemas.py</div>
+</div>
+
+<div class="box emerald">
+  <h4>SSE Envelope (server &rarr; client)</h4>
+  <table class="t">
+    <tr><th>Field</th><th>Type</th><th>Always</th></tr>
+    <tr><td><code>type</code></td><td>string</td><td>Yes — dot-namespaced event name</td></tr>
+    <tr><td><code>experiment_id</code></td><td>string?</td><td>Yes — session scope</td></tr>
+    <tr><td><code>ts</code></td><td>string</td><td>Yes — ISO 8601 UTC timestamp</td></tr>
+    <tr><td><code>headline</code></td><td>string</td><td>On step/tool/predict events — human-readable one-liner</td></tr>
+  </table>
+  <div class="file">backend/chat/events.py &rarr; format_sse()</div>
+</div>
+</div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════════════ -->
+<section class="rv">
+<h2><span class="n">3</span> Unified SSE Event Vocabulary (15 types)</h2>
+
+<table class="t">
+  <tr><th>Event type</th><th>Emitted by</th><th>Key payload fields</th><th>UI effect</th></tr>
+  <tr><td><span class="tag blue">stream.start</span></td><td>Both</td><td><code>experiment_id</code></td><td><code>isRunning=true</code></td></tr>
+  <tr><td><span class="tag blue">stream.end</span></td><td>Both</td><td><code>pipeline_completed</code></td><td>If <code>pipeline_completed</code>: progress=100, all steps done. Else: strip streaming flags, save messages.</td></tr>
+  <tr><td><span class="tag rose">token</span></td><td>Both</td><td><code>content</code>, <code>phase?</code></td><td>If <code>phase</code> ∈ {planner, evaluator, select_model}: route to <strong>ThinkingBlock</strong> accordion (collapsed). Otherwise: append to streaming agent message.</td></tr>
+  <tr><td><span class="tag violet">tool.start</span></td><td>Orchestrator</td><td><code>tool, args, headline</code></td><td>System message: "Running analysis..."</td></tr>
+  <tr><td><span class="tag violet">tool.end</span></td><td>Orchestrator</td><td><code>tool, result</code></td><td>No-op (token stream already carries the answer)</td></tr>
+  <tr><td><span class="tag emerald">step.complete</span></td><td>Training graph</td><td><code>node, progress, summary, details, state, headline, stream_step_key</code></td><td>Update step card, progress bar, merge agentState. Dedup via <code>stream_step_key</code>. <strong>planner/dispatcher/evaluator</strong> nodes: state-only update, no chat message.</td></tr>
+  <tr><td><span class="tag">step.skipped</span></td><td>Training graph</td><td><code>node, headline</code></td><td>Mark step as skipped with subtitle</td></tr>
+  <tr><td><span class="tag">step.progress</span></td><td>Training graph</td><td><code>phase, message</code></td><td>Append "... message" to thinking system message</td></tr>
+  <tr><td><span class="tag amber">review.required</span></td><td>Training graph</td><td><code>node, summary, message, state_snapshot, review_prompt</code></td><td>Show confirmation panel (or auto-approve in accept-all mode)</td></tr>
+  <tr><td><span class="tag amber">review.auto_approved</span></td><td>Training graph</td><td><code>node</code></td><td>Log auto-approval</td></tr>
+  <tr><td><span class="tag cyan">predict.start</span></td><td>Orchestrator</td><td><code>model, dataset, headline</code></td><td>System message: "Running predictions..."</td></tr>
+  <tr><td><span class="tag cyan">predict.complete</span></td><td>Orchestrator</td><td><code>model, rows_predicted, headline, result_ref</code></td><td>Render <code>PredictionResultCard</code> with download + evaluate buttons</td></tr>
+  <tr><td><span class="tag emerald">dataset.resolved</span></td><td>Training graph</td><td><code>ref, dataset_info</code></td><td>System message: "Dataset loaded: ..."</td></tr>
+  <tr><td><span class="tag rose">dataset.error</span></td><td>Training graph</td><td><code>ref, error</code></td><td>System message: "Could not load dataset: ..."</td></tr>
+  <tr><td><span class="tag rose">error</span></td><td>Both</td><td><code>error</code></td><td><code>isRunning=false</code>, mark running steps as error</td></tr>
+</table>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════════════ -->
+<section class="rv">
+<h2><span class="n">4</span> Routing &amp; Intent Resolution</h2>
+
+<div class="mmd"><div class="mermaid">
+sequenceDiagram
+  participant UI as useRealAgent
+  participant API as streamChat()
+  participant R as POST /api/chat
+  participant IR as intent_router
+  participant G as Training Graph
+  participant O as Orchestrator Agent
+
+  UI->>API: { message, experiment_id, linked_datasets?, resume? }
+  API->>R: fetch POST + ReadableStream
+
+  alt resume is set
+    R->>R: Lookup experiment → graph_thread_id
+    R->>G: generate_graph_resume_sse_events(thread, approved, feedback)
+  else linked_datasets non-empty
+    R->>G: generate_graph_sse_events(goal, datasets, ...)
+  else
+    R->>IR: should_route_to_training_graph(request)
+    alt LLM classifies as training
+      IR-->>R: True
+      R->>G: generate_graph_sse_events(goal, ...)
+    else
+      IR-->>R: False
+      R->>R: Resolve chat_thread_id from experiment
+      R->>O: generate_chat_sse(thread, message, context)
+    end
+  end
+
+  loop SSE data lines
+    G-->>API: data: { type, headline, ... }
+    O-->>API: data: { type, content/tool, ... }
+  end
+  API-->>UI: AgentStreamEvent → applyAgentStreamEvent()
+</div></div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════════════ -->
+<section class="rv">
+<h2><span class="n">5</span> Training Graph: LangGraph StateGraph Lifecycle</h2>
+
+<div class="flow-strip">
+  <div class="fn" style="border-color:var(--t3)"><div class="name">chat()</div><div class="sub">route to graph</div></div>
+  <div class="arr">&rarr;</div>
+  <div class="fn p"><div class="name">Planner</div><div class="sub">LLM → Plan + HITL</div></div>
+  <div class="arr">&rarr;</div>
+  <div class="fn d"><div class="name">Dispatcher</div><div class="sub">plan[i] → step</div></div>
+  <div class="arr">&rarr;</div>
+  <div class="fn s"><div class="name">Step Node</div><div class="sub">e.g. cleaning</div></div>
+  <div class="arr">&rarr;</div>
+  <div class="fn e"><div class="name">Evaluator</div><div class="sub">LLM → decision</div></div>
+</div>
+<p style="font-size:11px;color:var(--t3);margin-bottom:20px">
+  Evaluator edges: <span style="color:var(--cyan)">continue</span> → Dispatcher,
+  <span style="color:var(--violet)">replan</span> → Planner,
+  <span style="color:var(--amber)">amend</span> → Dispatcher (modified plan),
+  <span style="color:var(--emerald)">done</span> → END.
+</p>
+
+<div class="mmd"><div class="mermaid">
+flowchart TB
+  subgraph graph["StateGraph[TrainingAgentState]"]
+    P["planner_node<br/><small>streaming=True + GraphTokenStreamHandler</small>"]
+    D["dispatcher_node<br/><small>pure routing, no LLM</small>"]
+    S["step node<br/><small>data_collection → generate_report</small>"]
+    E["evaluator_node<br/><small>streaming=True + GraphTokenStreamHandler</small>"]
+    HITL["run_with_hitl<br/><small>interrupt() → state_snapshot</small>"]
+  end
+
+  P --> D
+  D -->|"plan[plan_index]"| S
+  S --> HITL
+  HITL -->|approved| E
+  HITL -->|rejected + feedback| S
+  E -->|continue| D
+  E -->|replan| P
+  E -->|done| FIN([END])
+
+  subgraph sse["SSE Layer"]
+    IGL["_iter_graph_sse_lines()"]
+  end
+
+  graph -.->|"stream_mode=[updates, custom]"| IGL
+  IGL -.->|"step.complete / token / review.required"| Client([useRealAgent])
+</div></div>
+
+<div class="box violet">
+  <h4>Agent lifecycle management</h4>
+  <ul>
+    <li><strong>Creation:</strong> <code>create_training_agent(checkpointer=MemorySaver())</code> inside <code>generate_graph_sse_events</code></li>
+    <li><strong>Storage:</strong> Agent + checkpointer stored in <code>repository.put_simple_agent_store(thread_id, {...})</code> — in-memory dict keyed by thread</li>
+    <li><strong>Resume:</strong> <code>repository.get_simple_agent_store(thread_id)</code> retrieves agent + checkpointer. <code>Command(resume=decision)</code> passed as stream input.</li>
+    <li><strong>Thread binding:</strong> <code>experiment.training_state.graph_thread_id</code> persisted to DB so resume resolves server-side</li>
+    <li><strong>Interrupt tracking:</strong> interrupt IDs saved via <code>repository.save_interrupt_ids(thread_id, ids)</code> — multi-interrupt resume maps each ID to the same decision</li>
+    <li><strong>Final state:</strong> On pipeline completion, <code>_graph_state_snapshot_values()</code> extracts full state → <code>save_training_context()</code> + <code>save_run_dataset_links()</code></li>
+  </ul>
+</div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════════════ -->
+<section class="rv">
+<h2><span class="n">6</span> Pre-Resolved Context &amp; Step Skipping</h2>
+
+<div class="cols">
+<div class="box emerald">
+  <h4>How pre-resolved inputs flow</h4>
+  <ul>
+    <li>Frontend selects dataset → <code>linked_datasets</code> in request (key = <code>file || id || name</code>)</li>
+    <li><code>generate_graph_sse_events</code> → <code>resolve_linked_dataset(key)</code>: in-memory → filesystem → DB name → DB UUID → R2 download via <code>storage_key</code></li>
+    <li>Resolved ref sets <code>resolved_dataset_ref</code> on initial state</li>
+    <li><code>model_preference</code> → <code>resolved_model_type</code> when it's a specific family</li>
+    <li>Planner LLM prompt includes: <em>"Dataset already loaded, do NOT plan data_collection"</em></li>
+    <li><code>_validate_plan()</code> enforces: strips pre-resolved steps from plan + required set</li>
+    <li>Step node fast-path: checks <code>state["resolved_dataset_ref"]</code>, returns immediately</li>
+  </ul>
+  <div class="file">agents/training/core/state.py → planner.py → data_collection.py / select_model.py</div>
+</div>
+
+<div class="box amber">
+  <h4>TrainingAgentState pre-resolved fields</h4>
+  <table class="t">
+    <tr><th>Field</th><th>Effect</th></tr>
+    <tr><td><code>resolved_dataset_ref</code></td><td>Skip <code>data_collection</code> — sets <code>collected_dataset_ref</code> immediately</td></tr>
+    <tr><td><code>resolved_model_type</code></td><td>Skip <code>select_model</code> — sets <code>selected_model</code> immediately</td></tr>
+    <tr><td><code>resolved_target_column</code></td><td>Hint for <code>label_split_definition</code> (optional)</td></tr>
+  </table>
+</div>
+</div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════════════ -->
+<section class="rv">
+<h2><span class="n">7</span> Token Streaming: All LLM Phases</h2>
+
+<div class="mmd"><div class="mermaid">
+flowchart LR
+  LLM["LLM<br/><small>streaming=True</small>"]
+  CB["GraphTokenStreamHandler<br/><small>on_llm_new_token()</small>"]
+  GS["emit_graph_stream()<br/><small>{type: token, content, phase}</small>"]
+  SW["get_stream_writer()<br/><small>LangGraph custom mode</small>"]
+  IT["_iter_graph_sse_lines<br/><small>mode=custom → token check</small>"]
+  FE["format_sse(token_event())<br/><small>data: {type:token,...}</small>"]
+  UI["useRealAgent<br/><small>append to streaming msg</small>"]
+
+  LLM -->|"on_llm_new_token"| CB
+  CB --> GS
+  GS --> SW
+  SW --> IT
+  IT -->|"phase included"| FE
+  FE -->|"phase=planner/evaluator/select_model"| TH["ThinkingBlock<br/><small>collapsed accordion</small>"]
+  FE -->|"no phase (orchestrator)"| UI
+</div></div>
+
+<div class="cols-3">
+<div class="box violet">
+  <h4>Planner</h4>
+  <p><code>streaming=True</code> on <code>init_chat_model</code>.<br>Tokens tagged <code>phase: "planner"</code></p>
+  <div class="file">agents/training/core/planner.py</div>
+</div>
+<div class="box amber">
+  <h4>Evaluator</h4>
+  <p><code>streaming=True</code> on <code>init_chat_model</code>.<br>Tokens tagged <code>phase: "evaluator"</code></p>
+  <div class="file">agents/training/core/evaluator.py</div>
+</div>
+<div class="box blue">
+  <h4>Select Model</h4>
+  <p><code>streaming=True</code> on <code>init_chat_model</code>.<br>Tokens tagged <code>phase: "select_model"</code></p>
+  <div class="file">agents/training/steps/select_model.py</div>
+</div>
+</div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════════════ -->
+<section class="rv">
+<h2><span class="n">8</span> Orchestrator Agent: Tools &amp; Prediction Flow</h2>
+
+<div class="box rose">
+  <h4>Orchestrator tools (agent.py)</h4>
+  <table class="t">
+    <tr><th>Tool</th><th>Purpose</th><th>SSE events</th></tr>
+    <tr><td><code>analyze_data</code></td><td>Statistical analysis, data exploration</td><td><code>tool.start</code> → <code>tool.end</code></td></tr>
+    <tr><td><code>search_datasets</code></td><td>Search Kaggle/HuggingFace/local</td><td><code>tool.start</code> → <code>tool.end</code></td></tr>
+    <tr><td><code>curate_dataset</code></td><td>Download, profile, register datasets</td><td><code>tool.start</code> → <code>tool.end</code></td></tr>
+    <tr><td><code>predict_with_model</code></td><td>Run inference with a trained model</td><td><code>predict.start</code> → <code>predict.complete</code></td></tr>
+    <tr><td><code>evaluate_model</code></td><td>Evaluate model on a labeled dataset</td><td><code>predict.start</code> → <code>predict.complete</code></td></tr>
+    <tr><td><code>list_trained_models</code></td><td>List available trained models</td><td><code>tool.start</code> → <code>tool.end</code></td></tr>
+    <tr><td><code>get_model_info</code></td><td>Detailed info about a specific model</td><td><code>tool.start</code> → <code>tool.end</code></td></tr>
+  </table>
+  <div class="file">agent.py</div>
+</div>
+
+<div class="mmd"><div class="mermaid">
+sequenceDiagram
+  participant U as User
+  participant O as Orchestrator LLM
+  participant T as predict_with_model tool
+  participant SSE as SSE Layer
+
+  U->>O: "Run predictions on test set with LogReg"
+  O->>SSE: tool_call_chunks (name=predict_with_model)
+  SSE-->>U: predict.start { model, dataset, headline }
+  O->>T: invoke(model_name, dataset_ref)
+  T-->>O: { rows_predicted, result_ref }
+  SSE-->>U: predict.complete { model, rows_predicted, headline, result_ref }
+  Note over U: PredictionResultCard renders<br/>with Download + Evaluate buttons
+</div></div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════════════ -->
+<section class="rv">
+<h2><span class="n">9</span> Storage Architecture: Postgres + R2</h2>
+
+<div class="mmd"><div class="mermaid">
+flowchart LR
+  subgraph write["Write path"]
+    RD["register_dataset()"]
+    RM["register_model()"]
+  end
+
+  subgraph storage["Storage"]
+    MEM["In-memory cache<br/><small>_dataset_registry / _model_cache</small>"]
+    PG["Postgres<br/><small>Dataset, ModelVersion,<br/>RunDatasetLink tables</small>"]
+    R2["Cloudflare R2<br/><small>datasets/{type}/{ref}.parquet<br/>models/{name}/{version}.joblib</small>"]
+  end
+
+  subgraph read["Read path"]
+    GD["get_registered_dataset()"]
+    LM["load_model()"]
+  end
+
+  RD --> MEM
+  RD --> PG
+  RD --> R2
+  RM --> PG
+  RM --> R2
+
+  GD -->|"1. cache hit?"| MEM
+  GD -->|"2. PG → storage_key"| PG
+  GD -->|"3. download"| R2
+
+  LM -->|"1. cache hit?"| MEM
+  LM -->|"2. PG → storage_key"| PG
+  LM -->|"3. download"| R2
+</div></div>
+
+<div class="cols">
+<div class="box cyan">
+  <h4>Dataset storage</h4>
+  <ul>
+    <li><strong>Write:</strong> In-memory cache → R2 upload (<code>datasets/{source_type}/{ref}.parquet</code>) → Postgres row with <code>storage_key</code> in properties</li>
+    <li><strong>Read:</strong> In-memory → Postgres lookup → R2 download → cache</li>
+    <li><strong>Derived datasets:</strong> <code>source_type="derived"</code> — hidden from main picker by default</li>
+    <li><strong>Catalog API:</strong> <code>GET /api/datasets?include_derived=false</code> — Postgres-only, no JSON fallback</li>
+  </ul>
+  <div class="file">tools/data-tools/utils.py → backend/catalog/repository.py</div>
+</div>
+<div class="box cyan">
+  <h4>Model storage</h4>
+  <ul>
+    <li><strong>Write:</strong> Postgres <code>ModelVersion</code> → R2 upload at <code>storage_key</code></li>
+    <li><strong>Read:</strong> In-memory <code>_model_cache</code> → Postgres lookup → R2 download to temp → joblib.load</li>
+    <li><strong>Download:</strong> <code>GET /api/trained-models/:name/download</code> → presigned R2 URL</li>
+    <li><strong>No local registry:</strong> <code>registry.json</code> + <code>_load_registry()</code> removed</li>
+  </ul>
+  <div class="file">tools/models-tools/training/model_storage.py → backend/shared/artifact_store.py</div>
+</div>
+</div>
+
+<div class="box blue">
+  <h4>New API endpoints</h4>
+  <table class="t">
+    <tr><th>Endpoint</th><th>Purpose</th></tr>
+    <tr><td><code>GET /api/experiments/:id/artifacts</code></td><td>Datasets + models linked to experiment (via RunDatasetLink + ModelVersion)</td></tr>
+    <tr><td><code>GET /api/trained-models/:name/download</code></td><td>Presigned R2 URL for model joblib artifact</td></tr>
+    <tr><td><code>GET /api/datasets/:ref/download</code></td><td>Presigned R2 URL for dataset parquet file</td></tr>
+    <tr><td><code>GET /api/datasets?include_derived=true</code></td><td>All datasets including intermediaries (default: source only)</td></tr>
+  </table>
+  <div class="file">backend/catalog/routes.py → backend/experiments/routes.py</div>
+</div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════════════ -->
+<section class="rv">
+<h2><span class="n">10</span> State &amp; Deduplication</h2>
+
+<div class="cols">
+<div class="box violet">
+  <h4>Frontend state (useRealAgent)</h4>
+  <table class="t">
+    <tr><td><code>experimentId</code></td><td>Session scope — only ID client tracks</td></tr>
+    <tr><td><code>messages[]</code></td><td>Chat messages (user/agent/system)</td></tr>
+    <tr><td><code>steps[]</code></td><td>9 StepInfo entries with status/timing</td></tr>
+    <tr><td><code>progress</code></td><td>0-100 pipeline progress</td></tr>
+    <tr><td><code>agentState</code></td><td>Full TrainingAgentState snapshot</td></tr>
+    <tr><td><code>isRunning</code></td><td>SSE stream active</td></tr>
+    <tr><td><code>confirmationRequest</code></td><td>HITL panel data (or null)</td></tr>
+    <tr><td><code>acceptAllMode</code></td><td>Auto-approve mode</td></tr>
+  </table>
+  <div class="file">ui/src/hooks/useRealAgent.ts</div>
+</div>
+
+<div class="box amber">
+  <h4>Deduplication: stream_step_key</h4>
+  <ul>
+    <li><strong>Backend:</strong> <code>_pipeline_emit_key()</code> format: <code>{len(plan_history)}:{plan_index}:{node_name}</code></li>
+    <li>After replan, <code>plan_history</code> grows → same step name gets a different key</li>
+    <li><strong>Frontend:</strong> <code>emittedStepsRef</code> (<code>Set&lt;string&gt;</code>) checks <code>event.stream_step_key ?? event.node</code></li>
+    <li>Cleared on each new <code>sendMessage</code> or stream start</li>
+  </ul>
+  <div class="file">backend/training/service.py → ui/src/hooks/useRealAgent.ts</div>
+</div>
+</div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════════════ -->
+<section class="rv">
+<h2><span class="n">11</span> Pipeline Steps (9 nodes)</h2>
+
+<div class="cols-3">
+  <div class="box" style="border-left:3px solid var(--blue)">
+    <h4>data_collection</h4>
+    <p>Load dataset(s). Fast-path if <code>resolved_dataset_ref</code>.</p>
+    <p style="margin-top:4px"><span class="tag emerald">headline</span> "Loaded iris.csv — 150 rows, 5 columns"</p>
+  </div>
+  <div class="box" style="border-left:3px solid var(--blue)">
+    <h4>select_model</h4>
+    <p>Choose model family. Fast-path if <code>resolved_model_type</code>.</p>
+    <p style="margin-top:4px"><span class="tag emerald">headline</span> "Selected random_forest — good fit for tabular data"</p>
+  </div>
+  <div class="box" style="border-left:3px solid var(--blue)">
+    <h4>cleaning</h4>
+    <p>Clean &amp; standardize data via run_cleaning_simple().</p>
+    <p style="margin-top:4px"><span class="tag emerald">headline</span> "Applied 3 transformations — dropped nulls..."</p>
+  </div>
+  <div class="box" style="border-left:3px solid var(--blue)">
+    <h4>label_split_definition</h4>
+    <p>Target column + train/val/test splits.</p>
+    <p style="margin-top:4px"><span class="tag emerald">headline</span> "Target: species (random split)"</p>
+  </div>
+  <div class="box" style="border-left:3px solid var(--blue)">
+    <h4>feature_selection_specification</h4>
+    <p>Analyze data &amp; specify features. Produces FeatureSpec.</p>
+    <p style="margin-top:4px"><span class="tag emerald">headline</span> "Specified 4 features — no leakage warnings"</p>
+  </div>
+  <div class="box" style="border-left:3px solid var(--blue)">
+    <h4>feature_engineering_executor</h4>
+    <p>Apply feature transformations. Validates results.</p>
+    <p style="margin-top:4px"><span class="tag emerald">headline</span> "Created 12 features, validation passed"</p>
+  </div>
+  <div class="box" style="border-left:3px solid var(--amber)">
+    <h4>training_approval</h4>
+    <p>HITL gate — propose hyperparameters for review.</p>
+    <p style="margin-top:4px"><span class="tag emerald">headline</span> "Training config: LogisticRegression, max_iter=1000"</p>
+  </div>
+  <div class="box" style="border-left:3px solid var(--rose)">
+    <h4>training</h4>
+    <p>Train model + evaluate metrics. May request feature redo.</p>
+    <p style="margin-top:4px"><span class="tag emerald">headline</span> "Trained LogReg — accuracy 0.9467, ROC-AUC 0.9912"</p>
+  </div>
+  <div class="box" style="border-left:3px solid var(--emerald)">
+    <h4>generate_report</h4>
+    <p>Save final training report JSON. Evaluator fast-paths to done.</p>
+    <p style="margin-top:4px"><span class="tag emerald">headline</span> "Report saved to reports/iris_20260323.json"</p>
+  </div>
+</div>
+<p style="font-size:10px;color:var(--t3);margin-top:10px">
+  All steps wrapped by <code>run_with_hitl()</code> except dispatcher/evaluator. Constraint order enforced by <code>_validate_plan()</code>. Required steps: data_collection, training, generate_report (unless pre-resolved).
+</p>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════════════ -->
+<section class="rv">
+<h2><span class="n">12</span> File Map</h2>
+
+<div class="cols">
+<div class="box">
+  <h4 style="color:var(--blue)">Frontend</h4>
+  <table class="t">
+    <tr><td><code>ui/src/lib/api.ts</code></td><td>streamChat(), AgentStreamEvent, AgentStreamRequest</td></tr>
+    <tr><td><code>ui/src/hooks/useRealAgent.ts</code></td><td>Unified hook — applyAgentStreamEvent, sendMessage, handleConfirmation</td></tr>
+    <tr><td><code>ui/src/types/agent.ts</code></td><td>ChatMessage, StepInfo, TrainingAgentState, PredictionResult</td></tr>
+    <tr><td><code>ui/src/components/ChatPanel.tsx</code></td><td>Chat UI — messages, phases, PredictionResultCard</td></tr>
+    <tr><td><code>ui/src/components/chat/ChatInput.tsx</code></td><td>Input + dataset picker with experiment artifacts</td></tr>
+    <tr><td><code>ui/src/components/chat/MessageBubble.tsx</code></td><td>Message rendering — ReactMarkdown + JSON sanitizer + ThinkingBlock for graph reasoning</td></tr>
+    <tr><td><code>ui/src/components/chat/ThinkingBlock.tsx</code></td><td>Cursor-style collapsed accordion for planner/evaluator LLM tokens</td></tr>
+  </table>
+</div>
+<div class="box">
+  <h4 style="color:var(--violet)">Backend — Chat/Routing</h4>
+  <table class="t">
+    <tr><td><code>backend/chat/events.py</code></td><td>15 typed event builders + format_sse()</td></tr>
+    <tr><td><code>backend/chat/schemas.py</code></td><td>ChatRequest (5 fields) + ResumePayload</td></tr>
+    <tr><td><code>backend/chat/service.py</code></td><td>chat() router + generate_chat_sse()</td></tr>
+    <tr><td><code>backend/chat/intent_router.py</code></td><td>should_route_to_training_graph()</td></tr>
+    <tr><td><code>agent.py</code></td><td>Orchestrator agent (7 tools)</td></tr>
+  </table>
+</div>
+<div class="box">
+  <h4 style="color:var(--emerald)">Backend — Training Graph</h4>
+  <table class="t">
+    <tr><td><code>backend/training/service.py</code></td><td>generate_graph_sse_events, _iter_graph_sse_lines, resume</td></tr>
+    <tr><td><code>agents/training/core/state.py</code></td><td>TrainingAgentState (50+ fields) + create_initial_state</td></tr>
+    <tr><td><code>agents/training/core/planner.py</code></td><td>Planner node — LLM → Plan + pre-resolved skip</td></tr>
+    <tr><td><code>agents/training/core/evaluator.py</code></td><td>Evaluator node — decision routing</td></tr>
+    <tr><td><code>agents/training/core/dispatcher.py</code></td><td>Dispatcher — pure plan[i] routing</td></tr>
+    <tr><td><code>agents/training/utils/streaming.py</code></td><td>build_node_update() with headlines</td></tr>
+    <tr><td><code>agents/training/utils/graph_stream_hooks.py</code></td><td>emit_graph_stream() + GraphTokenStreamHandler</td></tr>
+  </table>
+</div>
+<div class="box">
+  <h4 style="color:var(--cyan)">Backend — Storage</h4>
+  <table class="t">
+    <tr><td><code>tools/data-tools/utils.py</code></td><td>register_dataset (PG+R2), get_registered_dataset</td></tr>
+    <tr><td><code>tools/models-tools/.../model_storage.py</code></td><td>register_model, load_model (PG+R2), prediction tools</td></tr>
+    <tr><td><code>backend/shared/artifact_store.py</code></td><td>R2ArtifactStore + presigned URLs</td></tr>
+    <tr><td><code>backend/catalog/repository.py</code></td><td>get_datasets(include_derived), get_trained_models</td></tr>
+    <tr><td><code>scripts/seed_catalog.py</code></td><td>Catalog CSV entries → parquet on R2 (<code>datasets/catalog/*.parquet</code>) + Postgres metadata; skips rows if upload fails; SQL/HF Python entries skipped</td></tr>
+  </table>
+</div>
+</div>
+</section>
+
+<footer style="margin-top:48px;padding-top:16px;border-top:1px solid var(--z2);font-size:10px;color:var(--t3);font-family:'Space Mono',monospace">
+  Jubilee architecture reference — post-refactor. Single SSE vocabulary, server-side thread resolution, Postgres+R2 storage. March 2026.
+</footer>
+
+</div>
+
+<script>
+const rv = document.querySelectorAll('.rv');
+const obs = new IntersectionObserver(ee => {
+  ee.forEach(e => { if (e.isIntersecting) { e.target.classList.add('vis'); obs.unobserve(e.target); } });
+}, { threshold: 0.04, rootMargin: '160px' });
+rv.forEach(el => obs.observe(el));
+requestAnimationFrame(() => {
+  rv.forEach((el, i) => {
+    if (el.getBoundingClientRect().top < innerHeight + 100)
+      setTimeout(() => el.classList.add('vis'), i * 100);
+  });
+});
+</script>
+</body>
+</html>

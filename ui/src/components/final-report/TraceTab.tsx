@@ -43,7 +43,7 @@ export function TraceTab({ steps, agentState }: TraceTabProps) {
                 className="w-full flex items-center justify-between p-4 hover:bg-muted/30 transition-colors text-left"
               >
                 <div className="flex items-center gap-3">
-                  <CheckCircle2 className="h-4 w-4 text-green-600" />
+                  <CheckCircle2 className="h-4 w-4 text-success" />
                   <span className="font-medium">{step.name}</span>
                 </div>
                 <div className="flex items-center gap-3">
@@ -344,7 +344,7 @@ function FeatureSelectionStepContent({ agentState }: { agentState: TrainingAgent
               <div key={i} className="flex justify-between text-sm bg-muted/30 rounded px-3 py-1.5">
                 <span className="font-mono text-xs">{corr.feature}</span>
                 <span
-                  className={`font-medium ${corr.correlation >= 0 ? "text-green-600" : "text-red-600"}`}
+                  className={`font-medium ${corr.correlation >= 0 ? "text-success" : "text-destructive"}`}
                 >
                   {corr.correlation >= 0 ? "+" : ""}
                   {corr.correlation.toFixed(4)}
@@ -598,7 +598,7 @@ function TrainingIterationRow({
     <div
       className={`p-3 rounded-lg ${
         isBest
-          ? "bg-green-500/10 ring-1 ring-green-500/20"
+          ? "bg-success/10 ring-1 ring-success/20"
           : iterMetrics.success === false
             ? "bg-destructive/10"
             : "bg-muted/30"
@@ -610,7 +610,7 @@ function TrainingIterationRow({
           {isBest && (
             <Badge
               variant="secondary"
-              className="text-xs bg-green-500/20 text-green-700 dark:text-green-400"
+              className="text-xs bg-success/15 text-success dark:bg-success/20"
             >
               Best
             </Badge>

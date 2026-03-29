@@ -1,4 +1,4 @@
-import React, { useState } from "react"
+import React, { useEffect, useMemo, useState } from "react"
 import { Textarea } from "@/components/ui/textarea"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -14,9 +14,16 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip"
-import { Send, Database, Cpu, X, ShieldCheck } from "lucide-react"
+import {
+  Accordion,
+  AccordionContent,
+  AccordionItem,
+  AccordionTrigger,
+} from "@/components/ui/accordion"
+import { Send, Database, Cpu, X, ShieldCheck, ChevronRight, Download, CheckCircle2, Sparkles } from "lucide-react"
+import { cn } from "@/lib/utils"
 import type { Dataset } from "@/types/agent"
-import type { Dataset as ApiDataset, ModelType } from "@/lib/api"
+import { getTrainedModels, type Dataset as ApiDataset, type ModelType } from "@/lib/api"
 
 interface ChatInputProps {
   draft: string
@@ -34,6 +41,15 @@ interface ChatInputProps {
   availableModels: ModelType[]
   useHitl: boolean
   onToggleHitl: () => void
+  experimentId?: string | null
+}
+
+interface TrainedModelInfo {
+  name: string
+  type: string | null
+  accuracy?: number
+  roc_auc?: number
+  r2?: number
 }
 
 export function ChatInput({
@@ -52,9 +68,68 @@ export function ChatInput({
   availableModels,
   useHitl,
   onToggleHitl,
+  experimentId,
 }: ChatInputProps) {
   const [showDatasetPicker, setShowDatasetPicker] = useState(false)
   const [showModelPicker, setShowModelPicker] = useState(false)
+  const [artifacts, setArtifacts] = useState<{ datasets: Array<{ id?: string; ref?: string; name?: string; role?: string; rows?: number }>; models: Array<{ name: string; metrics?: { accuracy?: number } }> }>({ datasets: [], models: [] })
+  const [showArtifacts, setShowArtifacts] = useState(false)
+  const [trainedModels, setTrainedModels] = useState<TrainedModelInfo[]>([])
+
+  useEffect(() => {
+    if (experimentId) {
+      fetch(`/api/experiments/${experimentId}/artifacts`)
+        .then(r => r.json())
+        .then(setArtifacts)
+        .catch(() => {})
+    } else {
+      setArtifacts({ datasets: [], models: [] })
+    }
+  }, [experimentId])
+
+  useEffect(() => {
+    if (!showModelPicker) return
+    getTrainedModels()
+      .then((raw) => {
+        const records = Array.isArray(raw)
+          ? (raw as Record<string, unknown>[])
+          : Object.entries(raw).map(([name, value]) => {
+              const entry = (value && typeof value === "object" ? value : {}) as Record<string, unknown>
+              return { ...entry, model_name: entry.model_name ?? name }
+            })
+        const parsed: TrainedModelInfo[] = records
+          .map((entry) => {
+            const rec = entry as Record<string, unknown>
+            const m = (rec.metrics && typeof rec.metrics === "object" ? rec.metrics : {}) as Record<string, unknown>
+            return {
+              name: String(rec.model_name || rec.name || ""),
+              type: rec.model_type ? String(rec.model_type) : null,
+              accuracy: typeof m.test_accuracy === "number" ? m.test_accuracy : undefined,
+              roc_auc: typeof m.test_roc_auc === "number" ? m.test_roc_auc : undefined,
+              r2: typeof m.test_r2 === "number" ? m.test_r2 : undefined,
+            }
+          })
+          .filter((m) => m.name)
+        setTrainedModels(parsed)
+      })
+      .catch(() => setTrainedModels([]))
+  }, [showModelPicker])
+
+  const datasetChipLabel = useMemo(() => {
+    const lookup = new Map<string, string>()
+    for (const d of availableDatasets) {
+      if (d.file) lookup.set(d.file, d.name)
+      if (d.id) lookup.set(d.id, d.name)
+      if (d.name) lookup.set(d.name, d.name)
+    }
+    return (key: string) => lookup.get(key) ?? key.split("/").pop() ?? key
+  }, [availableDatasets])
+
+  const modelChipLabel = useMemo(() => {
+    if (!selectedModel) return null
+    const m = availableModels.find((x) => x.id === selectedModel)
+    return m?.name ?? selectedModel
+  }, [selectedModel, availableModels])
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
@@ -76,9 +151,9 @@ export function ChatInput({
   return (
     <div className="flex-shrink-0 z-10 border-t border-border/20 bg-background/95 backdrop-blur-md px-5 pt-3 pb-5 max-w-3xl mx-auto w-full supports-[backdrop-filter]:bg-background/80">
       <div className="rounded-2xl bg-card/95 backdrop-blur-sm border border-border/25 shadow-[0_2px_20px_-4px_rgba(0,0,0,0.06),0_0_0_1px_hsl(var(--border)/0.25)] transition-shadow duration-300 ease-out focus-within:border-border/40 focus-within:shadow-[0_0_0_1px_hsl(var(--primary)/0.18),0_0_24px_-4px_hsl(var(--primary)/0.14),0_12px_40px_-12px_rgba(0,0,0,0.08)]">
-        {/* Selected items */}
+        {/* Linked datasets + model: pinned above the reply field for the session */}
         {(selectedDatasets.length > 0 || selectedModel) && (
-          <div className="flex items-center gap-2 px-3 pt-2.5 pb-1 flex-wrap">
+          <div className="flex items-center gap-2 px-4 py-2 flex-wrap border-b border-border/20 bg-muted/5">
             {selectedDatasets.filter(Boolean).map((ds) => (
               <Badge 
                 key={ds} 
@@ -86,8 +161,9 @@ export function ChatInput({
                 className="gap-1.5 h-7 text-xs font-normal rounded-full pl-3 pr-2"
               >
                 <Database className="h-3 w-3 text-muted-foreground" />
-                {ds.split("/").pop()}
+                {datasetChipLabel(ds)}
                 <button
+                  type="button"
                   onClick={() => onDatasetRemove(ds)}
                   className="ml-0.5 hover:text-foreground text-muted-foreground"
                 >
@@ -95,14 +171,15 @@ export function ChatInput({
                 </button>
               </Badge>
             ))}
-            {selectedModel && (
+            {selectedModel && modelChipLabel && (
               <Badge 
                 variant="secondary" 
                 className="gap-1.5 h-7 text-xs font-normal rounded-full pl-3 pr-2"
               >
                 <Cpu className="h-3 w-3 text-muted-foreground" />
-                {selectedModel}
+                {modelChipLabel}
                 <button
+                  type="button"
                   onClick={onModelRemove}
                   className="ml-0.5 hover:text-foreground text-muted-foreground"
                 >
@@ -113,7 +190,6 @@ export function ChatInput({
           </div>
         )}
 
-        {/* Textarea */}
         <Textarea
           value={draft}
           onChange={(e) => onDraftChange(e.target.value)}
@@ -140,19 +216,90 @@ export function ChatInput({
                 <DialogHeader>
                   <DialogTitle className="text-lg font-medium">Select Dataset</DialogTitle>
                 </DialogHeader>
-                <div className="space-y-1 max-h-[350px] overflow-y-auto -mx-2">
-                  {availableDatasets.map((ds) => (
+                <div className="space-y-1 max-h-[400px] overflow-y-auto -mx-2">
+                  <div className="flex items-center gap-2 px-4 pt-1 pb-1.5">
+                    <Database className="h-3.5 w-3.5 text-primary/50" />
+                    <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+                      Source Datasets
+                    </span>
+                    <span className="ml-auto text-[10px] tabular-nums text-muted-foreground/50">
+                      {availableDatasets.filter((ds) => ds.trainable !== false).length}
+                    </span>
+                  </div>
+                  {availableDatasets.filter((ds) => ds.trainable !== false).map((ds) => (
                     <button
-                      key={ds.file}
-                      className="w-full text-left px-4 py-3 rounded-xl hover:bg-muted/60 transition-colors"
+                      key={ds.id || ds.file || ds.name}
+                      className="w-full text-left px-4 py-2.5 rounded-xl hover:bg-muted/60 transition-colors"
                       onClick={() => handleDatasetSelect(ds)}
                     >
-                      <div className="font-medium">{ds.name}</div>
-                      <div className="text-sm text-muted-foreground mt-0.5">
-                        {ds.rows?.toLocaleString()} rows
+                      <div className="flex items-center justify-between gap-3">
+                        <span className="font-medium truncate">{ds.name}</span>
+                        {ds.format && (
+                          <span className="shrink-0 text-[10px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground font-medium uppercase">
+                            {ds.format}
+                          </span>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-2 text-sm text-muted-foreground mt-0.5">
+                        {ds.rows != null && <span>{ds.rows.toLocaleString()} rows</span>}
+                        {ds.columns && ds.columns.length > 0 && (
+                          <span className="text-muted-foreground/60">· {ds.columns.length} cols</span>
+                        )}
                       </div>
                     </button>
                   ))}
+
+                  {experimentId && (artifacts.datasets.length > 0 || artifacts.models.length > 0) && (
+                    <div className="border-t border-border/30 pt-2 mt-2 mx-2">
+                      <button
+                        onClick={() => setShowArtifacts(!showArtifacts)}
+                        className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
+                      >
+                        <ChevronRight className={cn("h-3 w-3 transition-transform", showArtifacts && "rotate-90")} />
+                        Experiment artifacts ({artifacts.datasets.length} datasets, {artifacts.models.length} models)
+                      </button>
+                      {showArtifacts && (
+                        <div className="mt-1 space-y-1">
+                          {artifacts.datasets.map(d => (
+                            <button
+                              key={d.ref || d.id}
+                              className="w-full text-left px-4 py-2.5 rounded-xl hover:bg-muted/60 transition-colors"
+                              onClick={() => handleDatasetSelect({ file: d.ref || d.id || "", name: d.name, rows: d.rows } as ApiDataset)}
+                            >
+                              <div className="flex items-center gap-2">
+                                <span className="font-medium text-sm">{d.name || d.ref}</span>
+                                {d.role && (
+                                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground">
+                                    {d.role}
+                                  </span>
+                                )}
+                              </div>
+                              {d.rows != null && (
+                                <div className="text-xs text-muted-foreground mt-0.5">
+                                  {d.rows.toLocaleString()} rows
+                                </div>
+                              )}
+                            </button>
+                          ))}
+
+                          {artifacts.models.map(m => (
+                            <div key={m.name} className="flex items-center justify-between px-4 py-2 text-sm">
+                              <span className="text-foreground">
+                                {m.name} — {m.metrics?.accuracy ? `acc: ${(m.metrics.accuracy * 100).toFixed(1)}%` : "No metrics"}
+                              </span>
+                              <a
+                                href={`/api/trained-models/${m.name}/download`}
+                                className="inline-flex items-center gap-1 text-xs text-primary hover:underline"
+                              >
+                                <Download className="h-3 w-3" />
+                                Download
+                              </a>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
               </DialogContent>
             </Dialog>
@@ -167,24 +314,93 @@ export function ChatInput({
                   <Cpu className="h-4 w-4" />
                 </Button>
               </DialogTrigger>
-              <DialogContent className="sm:max-w-md">
-                <DialogHeader>
+              <DialogContent className="flex max-h-[min(90vh,720px)] w-full max-w-2xl flex-col gap-4 overflow-hidden p-6 sm:max-w-2xl">
+                <DialogHeader className="shrink-0 text-left">
                   <DialogTitle className="text-lg font-medium">Select Model</DialogTitle>
                 </DialogHeader>
-                <div className="space-y-1 -mx-2">
-                  {availableModels.map((model) => (
-                    <button
-                      key={model.id}
-                      className="w-full text-left px-4 py-3 rounded-xl hover:bg-muted/60 transition-colors"
-                      onClick={() => handleModelSelect(model.id)}
-                    >
-                      <div className="font-medium">{model.name}</div>
-                      <div className="text-sm text-muted-foreground mt-0.5">
-                        {model.description}
+                <Accordion
+                  type="multiple"
+                  defaultValue={["train-new"]}
+                  className="min-h-0 flex-1 overflow-hidden px-1 -mx-1"
+                >
+                  {trainedModels.length > 0 && (
+                    <AccordionItem value="trained" className="border-border/30">
+                      <AccordionTrigger className="py-3 hover:no-underline [&[data-state=open]]:pb-2">
+                        <div className="flex flex-1 items-center gap-2 pr-2 text-left">
+                          <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-emerald-500" />
+                          <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+                            Trained
+                          </span>
+                          <span className="ml-auto text-[10px] tabular-nums text-muted-foreground/50">
+                            {trainedModels.length}
+                          </span>
+                        </div>
+                      </AccordionTrigger>
+                      <AccordionContent className="pb-2 pt-0">
+                        <div className="max-h-[min(42vh,380px)] space-y-1 overflow-y-auto pr-1 -mr-1">
+                          {trainedModels.map((model) => {
+                            const metric =
+                              model.accuracy != null
+                                ? { label: `${(model.accuracy * 100).toFixed(1)}% acc`, cls: "bg-emerald-500/10 text-emerald-600" }
+                                : model.roc_auc != null
+                                  ? { label: `AUC ${model.roc_auc.toFixed(3)}`, cls: "bg-violet-500/10 text-violet-600" }
+                                  : model.r2 != null
+                                    ? { label: `R² ${model.r2.toFixed(3)}`, cls: "bg-blue-500/10 text-blue-600" }
+                                    : null
+                            return (
+                              <button
+                                key={model.name}
+                                type="button"
+                                className="w-full rounded-xl px-4 py-2.5 text-left transition-colors hover:bg-muted/60"
+                                onClick={() => handleModelSelect(model.name)}
+                              >
+                                <div className="flex items-center justify-between gap-3">
+                                  <span className="font-medium truncate">{model.name}</span>
+                                  {metric && (
+                                    <span className={cn("shrink-0 text-[10px] px-2 py-0.5 rounded-full font-medium", metric.cls)}>
+                                      {metric.label}
+                                    </span>
+                                  )}
+                                </div>
+                                {model.type && (
+                                  <div className="mt-0.5 text-xs text-muted-foreground">{model.type}</div>
+                                )}
+                              </button>
+                            )
+                          })}
+                        </div>
+                      </AccordionContent>
+                    </AccordionItem>
+                  )}
+
+                  <AccordionItem value="train-new" className="border-border/30">
+                    <AccordionTrigger className="py-3 hover:no-underline [&[data-state=open]]:pb-2">
+                      <div className="flex flex-1 items-center gap-2 pr-2 text-left">
+                        <Sparkles className="h-3.5 w-3.5 shrink-0 text-primary/50" />
+                        <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+                          Train New
+                        </span>
                       </div>
-                    </button>
-                  ))}
-                </div>
+                    </AccordionTrigger>
+                    <AccordionContent className="pb-2 pt-0">
+                      <div className="max-h-[min(42vh,380px)] space-y-1 overflow-y-auto pr-1 -mr-1">
+                        {availableModels.map((model) => (
+                          <button
+                            key={model.id}
+                            type="button"
+                            className="w-full rounded-xl px-4 py-2.5 text-left transition-colors hover:bg-muted/60"
+                            onClick={() => handleModelSelect(model.id)}
+                          >
+                            <div className="font-medium">{model.name}</div>
+                            <div className="mt-0.5 text-sm text-muted-foreground">
+                              {model.description}
+                            </div>
+                          </button>
+                        ))}
+                      </div>
+                    </AccordionContent>
+                  </AccordionItem>
+                </Accordion>
               </DialogContent>
             </Dialog>
 

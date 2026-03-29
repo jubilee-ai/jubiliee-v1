@@ -47,7 +47,7 @@ export function MetricRow({
   return (
     <div className="flex justify-between items-center">
       <span className="text-muted-foreground">{label}</span>
-      <span className={`text-xl font-semibold ${highlight ? "text-green-600" : ""}`}>{value}</span>
+      <span className={`text-xl font-semibold ${highlight ? "text-success" : ""}`}>{value}</span>
     </div>
   )
 }
@@ -84,7 +84,7 @@ export function InfoBox({
     <div className={`bg-muted/50 rounded-lg ${small ? "px-2 py-1.5" : "px-3 py-2"}`}>
       <div className={`text-muted-foreground ${small ? "text-xs" : "text-sm"} mb-0.5`}>{label}</div>
       <div
-        className={`${mono ? "font-mono text-xs" : small ? "text-sm" : ""} ${highlight ? "text-green-600 font-medium" : ""} break-all`}
+        className={`${mono ? "font-mono text-xs" : small ? "text-sm" : ""} ${highlight ? "text-success font-medium" : ""} break-all`}
       >
         {value || "N/A"}
       </div>

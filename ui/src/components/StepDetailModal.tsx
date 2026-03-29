@@ -91,8 +91,8 @@ export function StepDetailModal({ stepId, agentState, steps, onClose }: StepDeta
         {/* Header */}
         <div className="flex-shrink-0 flex items-center justify-between px-6 py-4 border-b">
           <div className="flex items-center gap-3">
-            <div className="w-8 h-8 rounded-full bg-green-100 dark:bg-green-900/30 flex items-center justify-center">
-              <CheckCircle2 className="h-4 w-4 text-green-600" />
+            <div className="w-8 h-8 rounded-full bg-success/10 dark:bg-success/15 flex items-center justify-center">
+              <CheckCircle2 className="h-4 w-4 text-success" />
             </div>
             <div>
               <h2 className="text-lg font-semibold tracking-tight">{getStepTitle()}</h2>
@@ -161,15 +161,15 @@ function ModelSelectionDetail({ agentState, audit }: { agentState: TrainingAgent
         <div className="text-sm font-medium mb-2">Key Decision Factors</div>
         <ul className="space-y-2 text-sm text-muted-foreground">
           <li className="flex gap-2">
-            <span className="text-green-600">✓</span>
+            <span className="text-success">✓</span>
             Matches the task type (classification/regression)
           </li>
           <li className="flex gap-2">
-            <span className="text-green-600">✓</span>
+            <span className="text-success">✓</span>
             Interpretability requirements considered
           </li>
           <li className="flex gap-2">
-            <span className="text-green-600">✓</span>
+            <span className="text-success">✓</span>
             Dataset size and feature characteristics evaluated
           </li>
         </ul>
@@ -344,14 +344,14 @@ function LabelSplitDetail({ agentState }: { agentState: TrainingAgentState; audi
           <div className="flex items-center gap-3">
             <div className="w-20 text-sm text-muted-foreground">Validation</div>
             <div className="flex-1 h-6 bg-muted/30 rounded-full overflow-hidden">
-              <div className="h-full bg-green-500/70 rounded-full" style={{ width: "15%" }} />
+              <div className="h-full bg-success/65 rounded-full" style={{ width: "15%" }} />
             </div>
             <span className="text-sm font-medium w-12 text-right">15%</span>
           </div>
           <div className="flex items-center gap-3">
             <div className="w-20 text-sm text-muted-foreground">Test</div>
             <div className="flex-1 h-6 bg-muted/30 rounded-full overflow-hidden">
-              <div className="h-full bg-orange-500/70 rounded-full" style={{ width: "15%" }} />
+              <div className="h-full bg-primary/45 rounded-full" style={{ width: "15%" }} />
             </div>
             <span className="text-sm font-medium w-12 text-right">15%</span>
           </div>
@@ -487,7 +487,7 @@ function FeatureSelectionDetail({ agentState }: { agentState: TrainingAgentState
                   <div className="flex-1 h-4 bg-muted/30 rounded-full overflow-hidden relative">
                     {isPositive ? (
                       <div
-                        className="absolute left-1/2 h-full bg-green-500/70 rounded-r-full"
+                        className="absolute left-1/2 h-full bg-success/65 rounded-r-full"
                         style={{ width: `${(absCorr * 50)}%` }}
                       />
                     ) : (
@@ -498,7 +498,7 @@ function FeatureSelectionDetail({ agentState }: { agentState: TrainingAgentState
                     )}
                     <div className="absolute left-1/2 top-0 bottom-0 w-px bg-border" />
                   </div>
-                  <span className={`w-14 text-xs font-mono text-right ${isPositive ? 'text-green-600' : 'text-red-600'}`}>
+                  <span className={`w-14 text-xs font-mono text-right ${isPositive ? 'text-success' : 'text-destructive'}`}>
                     {isPositive ? '+' : ''}{corrValue.toFixed(3)}
                   </span>
                 </div>
@@ -648,10 +648,10 @@ function FeatureEngineeringDetail({ agentState, audit }: { agentState: TrainingA
   return (
     <div className="space-y-6">
       {/* Validation Status */}
-      <div className={`rounded-xl p-4 ${agentState.feature_validation_passed ? 'bg-green-50 dark:bg-green-950/30' : 'bg-yellow-50 dark:bg-yellow-950/30'}`}>
+      <div className={`rounded-xl p-4 ${agentState.feature_validation_passed ? 'bg-success/8 dark:bg-success/12' : 'bg-yellow-50 dark:bg-yellow-950/30'}`}>
         <div className="flex items-center gap-2">
-          <CheckCircle2 className={`h-5 w-5 ${agentState.feature_validation_passed ? 'text-green-600' : 'text-yellow-600'}`} />
-          <span className={`font-medium ${agentState.feature_validation_passed ? 'text-green-700 dark:text-green-300' : 'text-yellow-700 dark:text-yellow-300'}`}>
+          <CheckCircle2 className={`h-5 w-5 ${agentState.feature_validation_passed ? 'text-success' : 'text-yellow-600'}`} />
+          <span className={`font-medium ${agentState.feature_validation_passed ? 'text-foreground dark:text-success' : 'text-yellow-700 dark:text-yellow-300'}`}>
             {agentState.feature_validation_passed ? "Feature Validation Passed" : "Validation Issues Found"}
           </span>
         </div>
@@ -901,10 +901,10 @@ function TrainingDetail({ agentState }: { agentState: TrainingAgentState }) {
   return (
     <div className="space-y-6">
       {/* Status */}
-      <div className={`rounded-xl p-4 ${metrics?.success ? 'bg-green-50 dark:bg-green-950/30' : 'bg-red-50 dark:bg-red-950/30'}`}>
+      <div className={`rounded-xl p-4 ${metrics?.success ? 'bg-success/8 dark:bg-success/12' : 'bg-red-50 dark:bg-red-950/30'}`}>
         <div className="flex items-center gap-2">
-          <CheckCircle2 className={`h-5 w-5 ${metrics?.success ? 'text-green-600' : 'text-red-600'}`} />
-          <span className={`font-medium ${metrics?.success ? 'text-green-700 dark:text-green-300' : 'text-red-700 dark:text-red-300'}`}>
+          <CheckCircle2 className={`h-5 w-5 ${metrics?.success ? 'text-success' : 'text-destructive'}`} />
+          <span className={`font-medium ${metrics?.success ? 'text-foreground dark:text-success' : 'text-red-700 dark:text-red-300'}`}>
             {metrics?.success ? "Training Successful" : "Training Completed"}
           </span>
         </div>
@@ -1204,9 +1204,9 @@ function TrainingDetail({ agentState }: { agentState: TrainingAgentState }) {
 
       {/* Recommendations */}
       {metrics?.recommendations && (
-        <div className="bg-blue-50 dark:bg-blue-950/30 rounded-lg p-4">
-          <div className="text-sm font-medium text-blue-700 dark:text-blue-300 mb-2">Recommendations</div>
-          <p className="text-sm text-blue-600 dark:text-blue-400">{metrics.recommendations}</p>
+        <div className="bg-primary/6 dark:bg-primary/12 rounded-lg p-4 border border-border/50">
+          <div className="text-sm font-medium text-foreground mb-2">Recommendations</div>
+          <p className="text-sm text-primary">{metrics.recommendations}</p>
         </div>
       )}
     </div>
@@ -1218,10 +1218,10 @@ function ReportDetail({ agentState }: { agentState: TrainingAgentState }) {
   return (
     <div className="space-y-6">
       {/* Success Message */}
-      <div className="bg-green-50 dark:bg-green-950/30 rounded-xl p-4">
+      <div className="bg-success/8 dark:bg-success/12 rounded-xl p-4">
         <div className="flex items-center gap-2">
-          <CheckCircle2 className="h-5 w-5 text-green-600" />
-          <span className="font-medium text-green-700 dark:text-green-300">Experiment complete</span>
+          <CheckCircle2 className="h-5 w-5 text-success" />
+          <span className="font-medium text-foreground dark:text-success">Experiment complete</span>
         </div>
       </div>
 
@@ -1249,18 +1249,18 @@ function ReportDetail({ agentState }: { agentState: TrainingAgentState }) {
       <div>
         <div className="text-sm font-medium mb-2">Report Includes</div>
         <ul className="text-sm text-muted-foreground space-y-1">
-          <li className="flex gap-2"><span className="text-green-600">✓</span> Model performance metrics</li>
-          <li className="flex gap-2"><span className="text-green-600">✓</span> Feature importance rankings</li>
-          <li className="flex gap-2"><span className="text-green-600">✓</span> Data pipeline documentation</li>
-          <li className="flex gap-2"><span className="text-green-600">✓</span> Training configuration</li>
-          <li className="flex gap-2"><span className="text-green-600">✓</span> Audit trace of all steps</li>
+          <li className="flex gap-2"><span className="text-success">✓</span> Model performance metrics</li>
+          <li className="flex gap-2"><span className="text-success">✓</span> Feature importance rankings</li>
+          <li className="flex gap-2"><span className="text-success">✓</span> Data pipeline documentation</li>
+          <li className="flex gap-2"><span className="text-success">✓</span> Training configuration</li>
+          <li className="flex gap-2"><span className="text-success">✓</span> Audit trace of all steps</li>
         </ul>
       </div>
 
       {/* Next steps */}
-      <div className="bg-blue-50 dark:bg-blue-950/30 rounded-lg p-4">
-        <div className="text-sm font-medium text-blue-700 dark:text-blue-300 mb-2">Next Steps</div>
-        <ul className="text-sm text-blue-600 dark:text-blue-400 space-y-1">
+      <div className="bg-primary/6 dark:bg-primary/12 rounded-lg p-4 border border-border/50">
+        <div className="text-sm font-medium text-foreground mb-2">Next Steps</div>
+        <ul className="text-sm text-muted-foreground space-y-1">
           <li>• Review the full report for detailed insights</li>
           <li>• Deploy the model for inference</li>
           <li>• Monitor model performance in production</li>

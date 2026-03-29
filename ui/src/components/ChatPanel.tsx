@@ -15,6 +15,7 @@ import {
   detectStepFromMessage,
   STEP_KEYWORDS,
 } from "./chat"
+import { PredictionResultCard } from "./chat/PredictionResultCard"
 import type { ResolvedConfirmation } from "./chat"
 
 const STEP_TO_PHASE: Record<string, string> = {
@@ -33,9 +34,12 @@ interface ChatPanelProps {
   messages: ChatMessage[]
   confirmationRequest: ConfirmationRequest | null
   isRunning: boolean
-  onSendMessage: (content: string) => void
+  onSendMessage: (content: string, opts?: { user_model_preference?: string }) => void
   onConfirmation: (action: ConfirmationAction, comment?: string) => void
-  onStartAgent: (goal: string, datasets?: string[], modelPreference?: string, hitl?: boolean) => void
+  linkedDatasets: string[]
+  onLinkedDatasetsChange: (ids: string[]) => void
+  linkedModelId: string | null
+  onLinkedModelChange: (id: string | null) => void
   datasets?: ApiDataset[]
   modelTypes?: ModelType[]
   highlightedMessageId?: string | null
@@ -44,6 +48,7 @@ interface ChatPanelProps {
   agentState?: TrainingAgentState
   steps?: StepInfo[]
   hasExperimentChecklist?: boolean
+  experimentId?: string | null
 }
 
 export interface ChatPanelRef {
@@ -57,7 +62,10 @@ export const ChatPanel = forwardRef<ChatPanelRef, ChatPanelProps>(function ChatP
   isRunning,
   onSendMessage,
   onConfirmation,
-  onStartAgent,
+  linkedDatasets,
+  onLinkedDatasetsChange,
+  linkedModelId,
+  onLinkedModelChange,
   datasets: propDatasets,
   modelTypes: propModelTypes,
   highlightedMessageId,
@@ -66,6 +74,7 @@ export const ChatPanel = forwardRef<ChatPanelRef, ChatPanelProps>(function ChatP
   agentState,
   steps,
   hasExperimentChecklist,
+  experimentId,
 }, ref) {
   const availableDatasets = propDatasets && propDatasets.length > 0 
     ? propDatasets 
@@ -76,8 +85,6 @@ export const ChatPanel = forwardRef<ChatPanelRef, ChatPanelProps>(function ChatP
 
   const [draft, setDraft] = useState("")
   const [selectedStepId, setSelectedStepId] = useState<string | null>(null)
-  const [selectedDatasets, setSelectedDatasets] = useState<string[]>([])
-  const [selectedModel, setSelectedModel] = useState<string | null>(null)
   const [useHitl, setUseHitl] = useState(true)
   
   const messageRefs = useRef<Map<string, HTMLDivElement>>(new Map())
@@ -164,26 +171,24 @@ export const ChatPanel = forwardRef<ChatPanelRef, ChatPanelProps>(function ChatP
     const text = draft.trim()
     if (!text) return
 
-    if (selectedDatasets.length > 0) {
-      onStartAgent(text, selectedDatasets, selectedModel || undefined, useHitl)
-      setSelectedDatasets([])
-      setSelectedModel(null)
-    } else {
-      onSendMessage(text)
-    }
+    onSendMessage(text)
     setDraft("")
-  }, [draft, onStartAgent, onSendMessage, selectedDatasets, selectedModel, useHitl])
+  }, [draft, onSendMessage])
 
   const handleDatasetSelect = useCallback((dataset: Dataset) => {
-    const key = dataset.file ?? dataset.name
-    if (key && !selectedDatasets.includes(key)) {
-      setSelectedDatasets(prev => [...prev, key])
+    const key = dataset.name || dataset.file || dataset.id
+    if (!key) {
+      console.warn("Dataset has no usable identifier, skipping")
+      return
     }
-  }, [selectedDatasets])
+    if (!linkedDatasets.includes(key)) {
+      onLinkedDatasetsChange([...linkedDatasets, key])
+    }
+  }, [linkedDatasets, onLinkedDatasetsChange])
 
   const handleDatasetRemove = useCallback((datasetFile: string) => {
-    setSelectedDatasets(prev => prev.filter(d => d !== datasetFile))
-  }, [])
+    onLinkedDatasetsChange(linkedDatasets.filter((d) => d !== datasetFile))
+  }, [linkedDatasets, onLinkedDatasetsChange])
 
   const handleContainerClick = useCallback(() => {
     if (highlightedMessageId && onClearHighlight) {
@@ -233,18 +238,25 @@ export const ChatPanel = forwardRef<ChatPanelRef, ChatPanelProps>(function ChatP
             return (
               <React.Fragment key={msg.id}>
                 {phaseMarker && <PhaseMarker phase={phaseMarker} />}
-                <MessageBubble 
-                  message={msg} 
-                  isHighlighted={highlightedMessageId === msg.id}
-                  onViewReport={onViewReport}
-                  stepId={detectedStep}
-                  isClickable={isClickable}
-                  onStepClick={isClickable ? () => setSelectedStepId(detectedStep) : undefined}
-                  ref={(el) => {
-                    if (el) messageRefs.current.set(msg.id, el)
-                    else messageRefs.current.delete(msg.id)
-                  }}
-                />
+                {msg.prediction ? (
+                  <PredictionResultCard
+                    result={msg.prediction}
+                    onEvaluate={(model) => onSendMessage(`Evaluate model ${model}`)}
+                  />
+                ) : (
+                  <MessageBubble 
+                    message={msg} 
+                    isHighlighted={highlightedMessageId === msg.id}
+                    onViewReport={onViewReport}
+                    stepId={detectedStep}
+                    isClickable={isClickable}
+                    onStepClick={isClickable ? () => setSelectedStepId(detectedStep) : undefined}
+                    ref={(el) => {
+                      if (el) messageRefs.current.set(msg.id, el)
+                      else messageRefs.current.delete(msg.id)
+                    }}
+                  />
+                )}
                 
                 {confsAfterThis.map((conf, index) => (
                   <PastConfirmation
@@ -283,16 +295,17 @@ export const ChatPanel = forwardRef<ChatPanelRef, ChatPanelProps>(function ChatP
         onSend={handleSend}
         isDisabled={isRunning && !confirmationRequest}
         placeholder={messages.length === 0 ? "Ask a question or attach a dataset to train..." : "Send a message..."}
-        selectedDatasets={selectedDatasets}
+        selectedDatasets={linkedDatasets}
         onDatasetSelect={handleDatasetSelect}
         onDatasetRemove={handleDatasetRemove}
-        selectedModel={selectedModel}
-        onModelSelect={setSelectedModel}
-        onModelRemove={() => setSelectedModel(null)}
+        selectedModel={linkedModelId}
+        onModelSelect={(id) => onLinkedModelChange(id)}
+        onModelRemove={() => onLinkedModelChange(null)}
         availableDatasets={availableDatasets}
         availableModels={availableModels}
         useHitl={useHitl}
         onToggleHitl={() => setUseHitl(v => !v)}
+        experimentId={experimentId}
       />
 
       {selectedStepId && agentState && steps && (

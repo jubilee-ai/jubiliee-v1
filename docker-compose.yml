@@ -50,16 +50,16 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
-  ui:
-    build:
-      context: ./ui
-      dockerfile: Dockerfile
-    container_name: jubilee-ui
-    depends_on:
-      - backend
-    ports:
-      - "5173:80"
-    restart: unless-stopped
+  # ui:
+  #   build:
+  #     context: ./ui
+  #     dockerfile: Dockerfile
+  #   container_name: jubilee-ui
+  #   depends_on:
+  #     - backend
+  #   ports:
+  #     - "5173:80"
+  #   restart: unless-stopped
 
 volumes:
   redis_data:

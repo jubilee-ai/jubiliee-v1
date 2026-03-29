@@ -28,6 +28,7 @@ class ArtifactStoreProtocol(Protocol):
     def exists(self, key: str) -> bool: ...
     def delete(self, key: str) -> None: ...
     def checksum(self, local_path: Path) -> str: ...
+    def get_presigned_url(self, key: str, expires_in: int = 3600) -> str: ...
 
 
 class R2ArtifactStore:
@@ -72,6 +73,13 @@ class R2ArtifactStore:
     def delete(self, key: str) -> None:
         self._client.delete_object(Bucket=self._bucket, Key=key)
 
+    def get_presigned_url(self, key: str, expires_in: int = 3600) -> str:
+        return self._client.generate_presigned_url(
+            "get_object",
+            Params={"Bucket": self._bucket, "Key": key},
+            ExpiresIn=expires_in,
+        )
+
     def checksum(self, local_path: Path) -> str:
         return _sha256(local_path)
 
@@ -109,6 +117,13 @@ class LocalArtifactStore:
         path = self._resolve(key)
         if path.exists():
             path.unlink()
+
+    def get_presigned_url(self, key: str, expires_in: int = 3600) -> str:
+        """Return a file:// URI for local dev; no real signing needed."""
+        path = self._resolve(key)
+        if not path.exists():
+            raise FileNotFoundError(f"Local artifact not found: {path}")
+        return path.as_uri()
 
     def checksum(self, local_path: Path) -> str:
         return _sha256(local_path)

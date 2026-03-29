@@ -25,7 +25,7 @@ export function CorrelationBar({
         <div className="flex-1 h-5 bg-muted/30 rounded-full overflow-hidden relative">
           {isPositive ? (
             <div
-              className="absolute left-1/2 h-full bg-green-500/70 rounded-r-full transition-all"
+              className="absolute left-1/2 h-full bg-success/65 rounded-r-full transition-all"
               style={{ width: `${width / 2}%` }}
             />
           ) : (
@@ -38,7 +38,7 @@ export function CorrelationBar({
           <div className="absolute left-1/2 top-0 bottom-0 w-px bg-border" />
         </div>
         <span
-          className={`w-14 text-xs font-mono text-right ${isPositive ? "text-green-600" : "text-red-600"}`}
+          className={`w-14 text-xs font-mono text-right ${isPositive ? "text-success" : "text-destructive"}`}
         >
           {isPositive ? "+" : ""}
           {correlation.toFixed(3)}

@@ -4,14 +4,10 @@ Provides streaming functions for real-time progress updates and HITL support.
 """
 
 import logging
-import traceback
 import uuid
-from typing import Any, Generator
+from typing import Any
 
-from langgraph.types import Command
-
-from ..core.graph import create_training_agent
-from ..core.state import STEP_ORDER, TrainingAgentState, create_initial_state
+from ..core.state import STEP_ORDER
 
 # Configure logger
 logger = logging.getLogger(__name__)
@@ -28,8 +24,9 @@ def _get_or_empty(d: dict, key: str) -> dict:
 
 
 def _get_audit_entry(node_output: dict, step: str) -> dict:
-    """Get audit trace entry for a specific step."""
-    return next((t for t in node_output.get("audit_trace", []) if t.get("step") == step), {})
+    """Get the latest audit trace entry for a specific step (most recent run wins)."""
+    matches = [t for t in node_output.get("audit_trace", []) if t.get("step") == step]
+    return matches[-1] if matches else {}
 
 
 def _format_shape(shapes: dict, key: str) -> str:
@@ -95,6 +92,10 @@ def build_node_update(node_name: str, node_output: dict[str, Any]) -> dict[str, 
             "description": f"Selected **{node_output.get('selected_model', 'unknown')}** as the model family for this task.",
             "reasoning": node_output.get("model_explanation", "No explanation provided."),
         }
+        _sel = node_output.get("selected_model") or "unknown"
+        _expl = node_output.get("model_explanation") or ""
+        _expl_snip = (_expl[:80] + "…") if len(_expl) > 80 else _expl
+        update["headline"] = f"Selected {_sel} — {_expl_snip}"
 
     elif node_name == "data_collection":
         audit = _get_audit_entry(node_output, "data_collection")
@@ -105,6 +106,10 @@ def build_node_update(node_name: str, node_output: dict[str, Any]) -> dict[str, 
             "description": f"Loaded dataset: **{node_output.get('collected_dataset_ref', 'unknown')}**",
             "stats": {"rows": audit.get("rows", "unknown"), "columns": len(cols) if cols else "unknown", "column_names": cols},
         }
+        _ds_ref = node_output.get("collected_dataset_ref") or "unknown"
+        _rows = audit.get("rows") or "N/A"
+        _ncols = len(cols) if cols else "N/A"
+        update["headline"] = f"Loaded {_ds_ref} — {_rows} rows, {_ncols} columns"
 
     elif node_name in ("cleaning", "cleaning_and_standardization"):
         transforms = node_output.get("cleaning_transformations", [])
@@ -128,6 +133,9 @@ def build_node_update(node_name: str, node_output: dict[str, Any]) -> dict[str, 
             "cleaning_summary": summary_text,
             "transformations_applied": [t if isinstance(t, dict) else {"op": str(t)} for t in transforms],
         }
+        _snippet = reason or summary_text or "N/A"
+        _snippet = (_snippet[:80] + "…") if len(_snippet) > 80 else _snippet
+        update["headline"] = f"Applied {len(transforms)} transformation(s) — {_snippet}"
 
     elif node_name == "label_split_definition":
         ld = _get_or_empty(node_output, "label_definition")
@@ -141,6 +149,7 @@ def build_node_update(node_name: str, node_output: dict[str, Any]) -> dict[str, 
             "label_definition": {"target": ld.get("target_column"), "strategy": ld.get("split_strategy"), "grain": ld.get("grain"), "forbidden_columns": ld.get("forbidden_columns", [])},
             "datasets": {"train": node_output.get("train_dataset_ref"), "validation": node_output.get("val_dataset_ref"), "test": node_output.get("test_dataset_ref")},
         }
+        update["headline"] = f"Target: {ld.get('target_column') or 'unknown'} ({ld.get('split_strategy') or 'unknown'} split)"
 
     elif node_name == "feature_selection_specification":
         fs = _get_or_empty(node_output, "feature_spec")
@@ -162,6 +171,9 @@ def build_node_update(node_name: str, node_output: dict[str, Any]) -> dict[str, 
             "features": [{"name": f.get("name"), "encoding": f.get("encoding"), "formula": str(f.get("formula")) if f.get("formula") else None} for f in features],
             "key_stats": ks, "analysis_trace": trace,
         }
+        _leakage = ks.get("leakage_warnings", [])
+        _lw = f" — {len(_leakage)} leakage warning(s)" if _leakage else " — no leakage warnings"
+        update["headline"] = f"Specified {len(features)} features{_lw}"
 
     elif node_name == "feature_engineering_executor":
         audit = _get_audit_entry(node_output, "feature_engineering_executor")
@@ -185,6 +197,8 @@ def build_node_update(node_name: str, node_output: dict[str, Any]) -> dict[str, 
             "dataset_shapes": {"train": _format_shape(shapes, "train"), "validation": _format_shape(shapes, "val"), "test": _format_shape(shapes, "test")},
             "errors": audit.get("errors", []),
         }
+        _passed = node_output.get("feature_validation_passed")
+        update["headline"] = f"Created {len(created)} features, validation {'passed' if _passed else 'failed'}"
 
     elif node_name == "training_approval":
         tp = _get_or_empty(node_output, "training_plan")
@@ -199,6 +213,10 @@ def build_node_update(node_name: str, node_output: dict[str, Any]) -> dict[str, 
             "description": f"Training will use **{tp.get('model_type', 'unknown')}** with approved hyperparameters.",
             "training_plan": tp, "hyperparameters": hp, "data_summary": ds,
         }
+        _mtype = tp.get("model_type") or "unknown"
+        _hp_parts = [f"{k}={v}" for k, v in list(hp.items())[:3]]
+        _hp_summary = ", ".join(_hp_parts) if _hp_parts else "default params"
+        update["headline"] = f"Training config: {_mtype}, {_hp_summary}"
 
     elif node_name == "training":
         m = _get_or_empty(node_output, "training_metrics")
@@ -219,6 +237,21 @@ def build_node_update(node_name: str, node_output: dict[str, Any]) -> dict[str, 
             "iterations": [{"model_name": it.get("model_name"), "tool": it.get("tool"), "success": it.get("success"), "val_r2": it.get("val_r2"), "test_r2": it.get("test_r2")} for it in iters],
             "summary": m.get("summary"), "recommendations": m.get("recommendations"),
         }
+        _mname = m.get("model_name") or "unknown"
+        _t_acc = m.get("test_accuracy")
+        _t_auc = m.get("test_roc_auc")
+        _t_r2 = m.get("test_r2")
+        _t_rmse = m.get("test_rmse")
+        if _t_acc is not None or _t_auc is not None:
+            _acc_s = f"{_t_acc:.4f}" if _t_acc is not None else "N/A"
+            _auc_s = f"{_t_auc:.4f}" if _t_auc is not None else "N/A"
+            update["headline"] = f"Trained {_mname} — test accuracy {_acc_s}, ROC-AUC {_auc_s}"
+        elif _t_r2 is not None or _t_rmse is not None:
+            _r2_s = f"{_t_r2:.4f}" if _t_r2 is not None else "N/A"
+            _rmse_s = f"{_t_rmse:.4f}" if _t_rmse is not None else "N/A"
+            update["headline"] = f"Trained {_mname} — test R² {_r2_s}, RMSE {_rmse_s}"
+        else:
+            update["headline"] = f"Trained {_mname}"
 
     elif node_name == "generate_report":
         update["summary"] = {"report_path": node_output.get("report_path"), "model_path": node_output.get("model_weights_path")}
@@ -228,148 +261,6 @@ def build_node_update(node_name: str, node_output: dict[str, Any]) -> dict[str, 
             "report_path": node_output.get("report_path"), "model_weights_path": node_output.get("model_weights_path"),
             "audit_trace_length": len(node_output.get("audit_trace", [])),
         }
+        update["headline"] = f"Report saved to {node_output.get('report_path') or 'unknown'}"
 
     return update
-
-
-# =============================================================================
-# CORE STREAMING HELPERS
-# =============================================================================
-
-
-def _stream_values(agent, input_data, config: dict, thread_id: str) -> Generator[dict[str, Any], None, TrainingAgentState]:
-    """Core streaming logic with 'values' mode."""
-    final_state = None
-    try:
-        for event in agent.stream(input_data, config=config, stream_mode="values"):
-            if "__interrupt__" in event:
-                yield {"type": "interrupt", "interrupt": event["__interrupt__"], "thread_id": thread_id}
-                return event
-            yield {"type": "state_update", "node": event.get("current_step", "unknown"), "state": event, "thread_id": thread_id}
-            final_state = event
-    except Exception as e:
-        error_msg = f"Error in streaming (values mode): {e}"
-        logger.error(error_msg)
-        logger.error(traceback.format_exc())
-        print(f"[STREAMING ERROR] {error_msg}")
-        print(traceback.format_exc())
-        yield {"type": "error", "error": str(e), "traceback": traceback.format_exc(), "thread_id": thread_id}
-    return final_state
-
-
-def _stream_updates(agent, input_data, config: dict, thread_id: str, include_thread_id: bool = False) -> Generator[dict[str, Any], None, None]:
-    """Core streaming logic with 'updates' mode."""
-    try:
-        for event in agent.stream(input_data, config=config, stream_mode="updates"):
-            if "__interrupt__" in event:
-                yield {"type": "interrupt", "thread_id": thread_id, **extract_interrupt_info(event["__interrupt__"])}
-                return
-            for node_name, node_output in event.items():
-                update = build_node_update(node_name, node_output)
-                if include_thread_id:
-                    update["thread_id"] = thread_id
-                yield update
-    except Exception as e:
-        error_msg = f"Error in streaming (updates mode): {e}"
-        logger.error(error_msg)
-        logger.error(traceback.format_exc())
-        print(f"[STREAMING ERROR] {error_msg}")
-        print(traceback.format_exc())
-        yield {"type": "error", "error": str(e), "traceback": traceback.format_exc(), "thread_id": thread_id}
-
-
-# =============================================================================
-# STREAMING FUNCTIONS
-# =============================================================================
-
-
-def stream_training_agent(
-    goal: str,
-    linked_datasets: list[str] | None = None,
-    user_model_preference: str | None = None,
-    thread_id: str | None = None,
-) -> Generator[dict[str, Any], None, TrainingAgentState]:
-    """Stream the training agent with the given inputs (values mode)."""
-    thread_id = thread_id or _gen_thread_id()
-    try:
-        yield from _stream_values(
-            create_training_agent(),
-            create_initial_state(goal, linked_datasets, user_model_preference),
-            {"configurable": {"thread_id": thread_id}},
-            thread_id,
-        )
-    except Exception as e:
-        logger.error(f"Error starting training agent: {e}")
-        logger.error(traceback.format_exc())
-        print(f"[STREAMING ERROR] Error starting training agent: {e}")
-        print(traceback.format_exc())
-        yield {"type": "error", "error": str(e), "traceback": traceback.format_exc(), "thread_id": thread_id}
-
-
-def stream_resume_training_agent(
-    decision: Any,
-    thread_id: str,
-) -> Generator[dict[str, Any], None, TrainingAgentState]:
-    """Resume streaming the training agent after an interrupt (values mode)."""
-    try:
-        yield from _stream_values(
-            create_training_agent(),
-            Command(resume=decision),
-            {"configurable": {"thread_id": thread_id}},
-            thread_id,
-        )
-    except Exception as e:
-        logger.error(f"Error resuming training agent: {e}")
-        logger.error(traceback.format_exc())
-        print(f"[STREAMING ERROR] Error resuming training agent: {e}")
-        print(traceback.format_exc())
-        yield {"type": "error", "error": str(e), "traceback": traceback.format_exc(), "thread_id": thread_id}
-
-
-def stream_training_agent_with_updates(
-    goal: str,
-    linked_datasets: list[str] | None = None,
-    user_model_preference: str | None = None,
-    thread_id: str | None = None,
-) -> Generator[dict[str, Any], None, None]:
-    """Stream the training agent and yield structured updates (updates mode)."""
-    thread_id = thread_id or _gen_thread_id()
-    
-    yield {"type": "started", "node": "init", "progress": 0, "message": "Training agent started", "thread_id": thread_id}
-    
-    try:
-        yield from _stream_updates(
-            create_training_agent(),
-            create_initial_state(goal, linked_datasets, user_model_preference),
-            {"configurable": {"thread_id": thread_id}},
-            thread_id,
-        )
-        yield {"type": "completed", "node": "end", "progress": 100, "message": "Training completed"}
-    except Exception as e:
-        logger.error(f"Error in training agent with updates: {e}")
-        logger.error(traceback.format_exc())
-        print(f"[STREAMING ERROR] Error in training agent with updates: {e}")
-        print(traceback.format_exc())
-        yield {"type": "error", "error": str(e), "traceback": traceback.format_exc(), "thread_id": thread_id}
-
-
-def stream_resume_training_agent_with_updates(
-    decision: Any,
-    thread_id: str,
-) -> Generator[dict[str, Any], None, None]:
-    """Resume streaming the training agent after an interrupt (updates mode)."""
-    try:
-        yield from _stream_updates(
-            create_training_agent(),
-            Command(resume=decision),
-            {"configurable": {"thread_id": thread_id}},
-            thread_id,
-            include_thread_id=True,
-        )
-        yield {"type": "completed", "node": "end", "progress": 100, "message": "Training completed", "thread_id": thread_id}
-    except Exception as e:
-        logger.error(f"Error resuming training agent with updates: {e}")
-        logger.error(traceback.format_exc())
-        print(f"[STREAMING ERROR] Error resuming training agent with updates: {e}")
-        print(traceback.format_exc())
-        yield {"type": "error", "error": str(e), "traceback": traceback.format_exc(), "thread_id": thread_id}

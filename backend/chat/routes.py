@@ -14,12 +14,7 @@ def get_chat_service() -> ChatServiceInterface:
 
 @router.post("/api/chat")
 async def chat(request: ChatRequest, service: ChatServiceInterface = Depends(get_chat_service)):
-    thread_id, generator = service.chat(
-        request.message,
-        request.thread_id,
-        request.training_context,
-        experiment_id=request.experiment_id,
-    )
+    thread_id, generator = service.chat(request)
     return StreamingResponse(
         generator,
         media_type="text/event-stream",

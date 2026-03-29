@@ -1,72 +1,90 @@
-@import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
 
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 @layer base {
+  /* Jubilee product theme — aligned with marketing (cool clinical blues, navy type). */
   :root {
-    --background: 210 17% 98%;
-    --foreground: 195 8% 19%;
+    /* #f6f9ff */
+    --background: 223 47% 98%;
+    /* #0a1a36 */
+    --foreground: 222 69% 13%;
     --card: 0 0% 100%;
-    --card-foreground: 195 8% 19%;
+    --card-foreground: 222 69% 13%;
     --popover: 0 0% 100%;
-    --popover-foreground: 195 8% 19%;
-    --primary: 227 22% 42%;
-    --primary-foreground: 260 100% 99%;
-    --secondary: 130 34% 86%;
-    --secondary-foreground: 136 14% 30%;
-    --muted: 210 14% 93%;
-    --muted-foreground: 195 4% 37%;
-    --accent: 229 78% 87%;
-    --accent-foreground: 224 38% 24%;
+    --popover-foreground: 222 69% 13%;
+    /* Primary: links, progress, accents (readable on light bg) */
+    --primary: 218 50% 48%;
+    --primary-foreground: 220 100% 98%;
+    /* Filled actions: pale periwinkle + navy icons/text */
+    --primary-subtle: 222 36% 81%;
+    --primary-subtle-foreground: 222 58% 24%;
+    /* #edf3ff */
+    --secondary: 223 100% 96%;
+    --secondary-foreground: 222 50% 22%;
+    /* #eaf1ff */
+    --muted: 223 100% 95%;
+    /* #5b6f95 */
+    --muted-foreground: 222 32% 47%;
+    /* #dfe9ff — chips / hover blocks */
+    --accent: 221 100% 93%;
+    --accent-foreground: 222 69% 13%;
     --destructive: 349 52% 44%;
     --destructive-foreground: 0 100% 98%;
-    --border: 195 5% 69%;
-    --input: 195 5% 69%;
-    --ring: 227 22% 42%;
+    /* #d7e4ff */
+    --border: 221 100% 92%;
+    --input: 221 100% 92%;
+    --ring: 218 40% 58%;
     --radius: 0.5rem;
 
-    --success: 136 12% 35%;
-    --success-foreground: 0 0% 100%;
+    /* Highlights & “success” — brand blue (#2e7cf2), not green */
+    --success: 217 88% 57%;
+    --success-foreground: 220 100% 98%;
 
-    --sidebar-bg: 195 18% 95%;
+    /* #edf3ff */
+    --sidebar-bg: 223 100% 96%;
 
-    --step-active: 227 22% 42%;
-    --step-complete: 136 12% 35%;
-    --step-pending: 195 4% 50%;
+    --step-active: 218 50% 48%;
+    --step-complete: 217 88% 57%;
+    --step-pending: 222 24% 62%;
     --step-error: 349 52% 44%;
   }
 
   .dark {
-    --background: 240 6% 7%;
-    --foreground: 220 9% 91%;
-    --card: 240 4% 11%;
-    --card-foreground: 220 9% 91%;
-    --popover: 240 4% 11%;
-    --popover-foreground: 220 9% 91%;
-    --primary: 229 55% 78%;
-    --primary-foreground: 240 27% 14%;
-    --secondary: 140 10% 18%;
-    --secondary-foreground: 130 30% 80%;
-    --muted: 240 4% 13%;
-    --muted-foreground: 220 6% 55%;
-    --accent: 229 20% 20%;
-    --accent-foreground: 229 70% 85%;
+    /* #12141c */
+    --background: 225 15% 8%;
+    --foreground: 220 14% 92%;
+    /* #1a1d27 */
+    --card: 226 17% 13%;
+    --card-foreground: 220 14% 92%;
+    --popover: 226 17% 13%;
+    --popover-foreground: 220 14% 92%;
+    --primary: 224 32% 72%;
+    --primary-foreground: 226 25% 10%;
+    --primary-subtle: 226 22% 30%;
+    --primary-subtle-foreground: 224 28% 88%;
+    --secondary: 226 18% 16%;
+    --secondary-foreground: 220 14% 88%;
+    --muted: 226 14% 14%;
+    --muted-foreground: 220 10% 58%;
+    --accent: 226 18% 18%;
+    --accent-foreground: 224 35% 88%;
     --destructive: 352 55% 65%;
     --destructive-foreground: 0 0% 98%;
-    --border: 240 4% 20%;
-    --input: 240 4% 20%;
-    --ring: 229 55% 78%;
+    --border: 226 12% 22%;
+    --input: 226 12% 22%;
+    --ring: 224 28% 75%;
 
-    --success: 130 30% 55%;
-    --success-foreground: 0 0% 100%;
+    --success: 217 85% 62%;
+    --success-foreground: 226 25% 10%;
 
-    --sidebar-bg: 240 5% 9%;
+    --sidebar-bg: 225 16% 10%;
 
-    --step-active: 229 55% 75%;
-    --step-complete: 130 30% 55%;
-    --step-pending: 220 6% 45%;
+    --step-active: 224 32% 72%;
+    --step-complete: 217 85% 62%;
+    --step-pending: 220 10% 48%;
     --step-error: 352 55% 65%;
   }
 }
@@ -127,10 +145,69 @@ textarea.composer-textarea:focus-visible {
   @apply transition-colors duration-150;
 }
 
-/* Dot grid background */
-.dot-grid {
-  background-image: radial-gradient(circle, hsl(var(--muted-foreground) / 0.15) 1px, transparent 1px);
+/* Dot grid — 24×24px, ~22% muted dot (matches marketing utility name) */
+.dot-grid,
+.jubilee-dot-grid {
+  background-color: hsl(var(--background));
+  background-image: radial-gradient(
+    circle,
+    color-mix(in srgb, hsl(var(--muted-foreground)) 22%, transparent) 1px,
+    transparent 1px
+  );
   background-size: 24px 24px;
+}
+
+/* Clerk SignIn: align inner layout with Jubilee card (full-width column, centered social row) */
+.jubilee-signin-gate .cl-rootBox {
+  width: 100%;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.jubilee-signin-gate .cl-cardBox,
+.jubilee-signin-gate .cl-card,
+.jubilee-signin-gate .cl-main {
+  width: 100%;
+  max-width: 100%;
+}
+
+.jubilee-signin-gate .cl-socialButtons {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+  width: 100%;
+}
+
+.jubilee-signin-gate .cl-socialButtonsBlockButton {
+  width: 100%;
+  max-width: none;
+}
+
+.jubilee-signin-gate .cl-dividerRow {
+  width: 100%;
+}
+
+.jubilee-signin-gate .cl-footer {
+  width: 100%;
+  max-width: 100%;
+}
+
+/* Prose table styling for react-markdown GFM tables */
+.prose table {
+  @apply w-full text-sm border-collapse my-3;
+}
+.prose thead th {
+  @apply text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider
+         border-b border-border/40 pb-2 px-3;
+}
+.prose tbody td {
+  @apply px-3 py-1.5 border-b border-border/20 text-foreground/90;
+}
+.prose tbody tr:last-child td {
+  @apply border-b-0;
+}
+.prose tbody tr:hover {
+  @apply bg-muted/30;
 }
 
 /* Thinking wave bars */

@@ -24,6 +24,12 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("OPENAI_API_KEY"),
     )
 
+    # POST /api/chat — LLM classifies training graph vs orchestrator when mode is unset
+    CHAT_INTENT_ROUTER_MODEL: str = Field(
+        default="openai:gpt-5.4-mini",
+        description="LangChain init_chat_model id for HTTP-layer chat intent (override if unavailable)",
+    )
+
     # Database
     DATABASE_URL: str = Field(
         default="sqlite:///jubilee.db",
@@ -90,14 +96,6 @@ class Settings(BaseSettings):
     @property
     def datasets_dir(self) -> Path:
         return self.project_root / "datasets"
-
-    @property
-    def datasets_catalog_path(self) -> Path:
-        return self.datasets_dir / "catalog.json"
-
-    @property
-    def models_registry_path(self) -> Path:
-        return self.project_root / "trained_models" / "registry.json"
 
     @property
     def cors_origins(self) -> list[str]:

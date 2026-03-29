@@ -7,19 +7,15 @@ specialised sub-agents on demand:
   1. Analysis sub-agent  (agents/analysis_agent_v2)
      → statistical analysis, pretrained-model inference, data exploration
 
-  2. Training sub-agent  (agents/training/agent_simple)
-     → full ML pipeline: model selection → data collection → cleaning →
-       label/split → feature engineering → training → report
-
-  3. Dataset Curator  (agents/dataset_curator)
+  2. Dataset Curator  (agents/dataset_curator)
      → search Kaggle / HuggingFace, download, profile, register datasets
+
+Training is handled by the intent router + training graph (not the orchestrator).
 """
 
 import asyncio
-import json
 import sys
-import uuid
-from typing import Any, Optional
+from typing import Optional
 
 from dotenv import load_dotenv
 from pathlib import Path
@@ -35,6 +31,16 @@ from pydantic import BaseModel, Field
 # ---------------------------------------------------------------------------
 _ROOT = Path(__file__).parent
 load_dotenv(_ROOT / ".env")
+
+_MODEL_TOOLS_DIR = _ROOT / "tools" / "models-tools" / "training"
+if str(_MODEL_TOOLS_DIR) not in sys.path:
+    sys.path.insert(0, str(_MODEL_TOOLS_DIR))
+from model_storage import (
+    predict_with_model_tool,
+    evaluate_model_tool,
+    list_trained_models_tool,
+    get_model_info_tool,
+)
 
 # ---------------------------------------------------------------------------
 # LLM
@@ -63,7 +69,7 @@ def analyze_data(question: str) -> str:
     - Dataset exploration and lookup
 
     DO NOT USE FOR:
-    - Training custom models  → use train_model
+    - Training custom models (handled by the training pipeline)
     """
     from agents.analysis_agent_v2 import agent as analysis_agent
 
@@ -296,8 +302,7 @@ def curate_dataset(goal: str, source: str, identifier: str) -> str:
     For external datasets: downloads, profiles, and registers them.
 
     Use this after the user picks a dataset from search_datasets results.
-    Returns the registered dataset reference name that can be passed to
-    train_model via linked_datasets.
+    Returns the registered dataset reference name that can be used for training.
     """
     _DATA_TOOLS_DIR = _ROOT / "tools" / "data-tools"
     if str(_DATA_TOOLS_DIR) not in sys.path:
@@ -314,7 +319,7 @@ def curate_dataset(goal: str, source: str, identifier: str) -> str:
 
         return (
             f"Dataset **{identifier}** is already available locally ({len(df):,} rows, {len(df.columns)} cols).\n\n"
-            f"You can train on it with: train_model(linked_datasets=[\"{identifier}\"])\n\n"
+            f"Ready to use for training — reference it as `{identifier}`.\n\n"
             f"### Profile\n{profile_result}"
         )
 
@@ -349,7 +354,7 @@ def curate_dataset(goal: str, source: str, identifier: str) -> str:
 
         return (
             f"Dataset registered as **{best_ref}** ({best_rows:,} rows)\n\n"
-            f"You can now train on it with: train_model(linked_datasets=[\"{best_ref}\"])\n\n"
+            f"Ready to use for training — reference it as `{best_ref}`.\n\n"
             f"### Profile\n{profile_result}\n\n"
             f"### All registered files\n{dl_result}"
         )
@@ -379,235 +384,13 @@ def curate_dataset(goal: str, source: str, identifier: str) -> str:
 
         return (
             f"Dataset registered as **{best_ref}** ({best_rows:,} rows)\n\n"
-            f"You can now train on it with: train_model(linked_datasets=[\"{best_ref}\"])\n\n"
+            f"Ready to use for training — reference it as `{best_ref}`.\n\n"
             f"### Profile\n{profile_result}\n\n"
             f"### All registered files\n{dl_result}"
         )
 
     else:
         return f"Unknown source '{source}'. Use 'kaggle' or 'huggingface'."
-
-
-# ============================================================================
-# Tool 4 — Model Training (delegates to the training LangGraph pipeline)
-# ============================================================================
-
-class TrainModelInput(BaseModel):
-    goal: str = Field(
-        description="Training objective (e.g. 'Train a loan-default prediction model on the Loan_default dataset')"
-    )
-    linked_datasets: Optional[list[str]] = Field(
-        default=None,
-        description="Dataset references the agent should use (e.g. ['csv_Loan_default', 'kaggle_my_data'])",
-    )
-    model_preference: Optional[str] = Field(
-        default=None,
-        description="Preferred model family: supervised | unsupervised | neural_networks",
-    )
-    use_external_sources: bool = Field(
-        default=False,
-        description="If True, the data collection step will also search Kaggle/HuggingFace "
-        "when local data is insufficient. Set to True when the user wants to "
-        "find data automatically or has no local datasets.",
-    )
-
-
-import queue as _queue_mod
-from threading import Thread as _Thread
-
-_training_states: dict[str, dict[str, Any]] = {}
-_training_progress_queues: dict[str, _queue_mod.Queue] = {}
-_thread_to_experiment: dict[str, str] = {}
-
-# Backward compat alias — some code reads this; prefer _training_states instead.
-_last_training_state: dict[str, Any] = {}
-
-
-def _run_training_with_progress(
-    experiment_id: str,
-    goal: str,
-    linked_datasets: Optional[list[str]],
-    model_preference: Optional[str],
-    use_external_sources: bool = False,
-) -> dict[str, Any]:
-    """Run the simple training agent, streaming step events to a progress queue.
-
-    The chat SSE generator polls this queue so the user sees real-time updates.
-    """
-    from agents.training.agent_simple import create_simple_training_agent
-    from agents.training.utils.streaming import build_node_update
-    from backend.shared.state import TOOL_TO_STEP
-
-    progress_q: _queue_mod.Queue = _queue_mod.Queue()
-    _training_progress_queues[experiment_id] = progress_q
-
-    thread_id = f"orch-{uuid.uuid4().hex[:8]}"
-    agent, shared_state = create_simple_training_agent(
-        goal=goal,
-        linked_datasets=linked_datasets,
-        user_model_preference=model_preference,
-        hitl=False,
-        use_external_sources=use_external_sources,
-    )
-
-    config = {"configurable": {"thread_id": thread_id}}
-    emitted: set[str] = set()
-
-    try:
-        for event in agent.stream(
-            {"messages": [{"role": "user", "content": goal}]},
-            config=config,
-            stream_mode="updates",
-        ):
-            if "tools" in event:
-                tool_msgs = event["tools"].get("messages", [])
-                if tool_msgs:
-                    tool_name = getattr(tool_msgs[0], "name", "")
-                    step_name = TOOL_TO_STEP.get(tool_name)
-                    if step_name and step_name not in emitted:
-                        emitted.add(step_name)
-                        try:
-                            update = build_node_update(step_name, dict(shared_state))
-                            progress_q.put({
-                                "type": "training_step",
-                                "step": step_name,
-                                "update": update,
-                            })
-                        except Exception:
-                            progress_q.put({
-                                "type": "training_step",
-                                "step": step_name,
-                                "update": {"type": "node_complete", "node": step_name},
-                            })
-
-        final_state = dict(shared_state)
-        _training_states[experiment_id] = final_state
-        _last_training_state.clear()
-        _last_training_state.update(final_state)
-
-        completed_steps = [
-            s for s in ["selected_model", "collected_dataset_ref", "training_metrics", "report_path"]
-            if final_state.get(s) is not None
-        ]
-        print(f"[train_model] Pipeline finished. Populated: {completed_steps}", flush=True)
-        progress_q.put({"type": "training_done", "state": final_state})
-        return final_state
-    except Exception as e:
-        print(f"[train_model] Error: {e}", flush=True)
-        progress_q.put({"type": "training_error", "error": str(e)})
-        raise
-    finally:
-        _training_progress_queues.pop(experiment_id, None)
-
-
-def _run_training_to_completion(
-    goal: str,
-    linked_datasets: Optional[list[str]],
-    model_preference: Optional[str],
-    use_external_sources: bool = False,
-    experiment_id: Optional[str] = None,
-) -> dict[str, Any]:
-    """Run the training agent. If experiment_id is provided, streams progress via queue."""
-    exp_id = experiment_id or f"ephemeral-{uuid.uuid4().hex[:8]}"
-    return _run_training_with_progress(exp_id, goal, linked_datasets, model_preference, use_external_sources)
-
-
-@tool(args_schema=TrainModelInput)
-def train_model(
-    goal: str,
-    linked_datasets: Optional[list[str]] = None,
-    model_preference: Optional[str] = None,
-    use_external_sources: bool = False,
-) -> str:
-    """Train a new ML model using the training sub-agent.
-
-    Runs the full pipeline: model selection → data collection → cleaning →
-    label/split definition → feature engineering → training → evaluation → report.
-
-    IMPORTANT: Do NOT call this in the same turn as curate_dataset.
-    If using an external dataset, first call curate_dataset, wait for it to
-    return, then call train_model in a SEPARATE response using the exact
-    linked_datasets ref that curate_dataset returned.
-
-    This tool may take several minutes. Use it only after confirming with the
-    user that they want to proceed with training.
-    """
-    try:
-        experiment_id = _thread_to_experiment.get(
-            __import__("threading").current_thread().name
-        )
-        result = _run_training_to_completion(
-            goal, linked_datasets, model_preference, use_external_sources,
-            experiment_id=experiment_id,
-        )
-
-        selected_model = result.get("selected_model", "unknown")
-        model_explanation = result.get("model_explanation", "")
-        metrics = result.get("training_metrics") or {}
-        report = result.get("report_path", "")
-        model_weights = result.get("model_weights_path", "")
-
-        if not metrics:
-            error = result.get("error")
-            return (
-                f"Training pipeline did not produce results. "
-                f"The agent may have stopped before reaching the training step.\n"
-                f"Model family selected: {selected_model}\n"
-                f"Error: {error}" if error else
-                f"Training pipeline did not produce results. "
-                f"The agent may have stopped before reaching the training step.\n"
-                f"Model family selected: {selected_model}\n"
-                f"Please try again or check LangSmith traces for details."
-            )
-
-        if not metrics.get("success", True) and not model_weights:
-            summary = metrics.get("summary", "")
-            recs = metrics.get("recommendations", "")
-            return (
-                f"Training failed.\n"
-                f"  Model: {metrics.get('model_name', 'N/A')}\n"
-                f"  Summary: {summary}\n"
-                f"  Recommendations: {recs}\n"
-                f"  Report: {report}"
-            )
-
-        parts = [
-            "Training completed successfully!",
-            f"  Model family : {selected_model}",
-            f"  Explanation  : {model_explanation}" if model_explanation else None,
-            f"  Model name   : {metrics.get('model_name', 'N/A')}",
-            f"  Model type   : {metrics.get('model_type', 'N/A')}",
-        ]
-
-        for key, label in [
-            ("val_accuracy", "Val Accuracy"),
-            ("val_roc_auc", "Val ROC-AUC"),
-            ("test_accuracy", "Test Accuracy"),
-            ("test_roc_auc", "Test ROC-AUC"),
-            ("val_r2", "Val R²"),
-            ("test_r2", "Test R²"),
-            ("val_rmse", "Val RMSE"),
-            ("test_rmse", "Test RMSE"),
-            ("silhouette_score", "Silhouette"),
-            ("davies_bouldin", "Davies-Bouldin"),
-            ("inertia", "Inertia"),
-            ("reconstruction_loss", "Recon. Loss"),
-        ]:
-            v = metrics.get(key)
-            if v is not None:
-                parts.append(f"  {label:14s}: {v:.4f}" if isinstance(v, (int, float)) else f"  {label:14s}: {v}")
-
-        if metrics.get("summary"):
-            parts.append(f"\n  Summary: {metrics['summary']}")
-        if metrics.get("recommendations"):
-            parts.append(f"  Recommendations: {metrics['recommendations']}")
-        if report:
-            parts.append(f"\n  Report: {report}")
-
-        return "\n".join(p for p in parts if p is not None)
-
-    except Exception as exc:
-        return f"Training failed: {type(exc).__name__}: {exc}"
 
 
 # ============================================================================
@@ -624,7 +407,16 @@ You are **Jubilee**, an AI assistant for data analysis and machine learning.
 | `search_datasets` | User wants to find, browse, or discover datasets — searches **local storage first**, then Kaggle and HuggingFace |
 | `curate_dataset` | User picked a dataset — profiles local ones or downloads external ones |
 | `analyze_data` | Analytical questions: statistics, trends, pretrained-model inference, data exploration |
-| `train_model` | User explicitly wants to train / build a custom ML model |
+| `predict_with_model` | Run predictions on a dataset using a trained model |
+| `evaluate_model` | Evaluate a trained model's performance on a labeled dataset |
+| `list_trained_models` | List all trained models with their metrics |
+| `get_model_info` | Get detailed info about a specific trained model |
+
+## Prediction & Model Tools
+- **predict_with_model**: Run predictions on a dataset using a trained model. Use when the user wants to make predictions, score new data, or test a model on a dataset. Requires a model name and a registered dataset ref.
+- **evaluate_model**: Evaluate a trained model's performance on a labeled dataset. Use when the user asks about model accuracy, performance metrics, or wants to compare how a model performs. Supports threshold optimization for imbalanced classification.
+- **list_trained_models**: List all trained models with their metrics. Use when the user asks what models are available, wants to see trained models, or needs to pick a model for prediction.
+- **get_model_info**: Get detailed info about a specific trained model. Use when the user asks about a specific model's features, hyperparameters, or training details.
 
 ## Decision Flow
 
@@ -641,39 +433,40 @@ You are **Jubilee**, an AI assistant for data analysis and machine learning.
    external ones get downloaded and registered).
 3. **Analytical question** (e.g. "what trends …", "analyze …", "what is the distribution …")
    → `analyze_data`
-4. **User wants to train a model** → Use `train_model` to run the full pipeline.
-   Warn the user this can take several minutes. The user may optionally specify a
-   dataset, but it is not required — the pipeline can discover suitable data on
-   its own.  Model families available: supervised, unsupervised, neural_networks.
-   If the user doesn't specify, the pipeline selects the best fit automatically.
-   If the user wants to find data externally AND train in one step, set
-   `use_external_sources=True` so data collection searches Kaggle/HuggingFace.
-5. **Ambiguous request** → ask clarifying questions (target variable? prediction
+4. **User wants to train a model** → Training is handled by a dedicated pipeline
+   outside this agent. Let the user know that training will be routed automatically
+   when they confirm they want to proceed.
+5. **User wants predictions / scoring** → `list_trained_models` to find the right
+   model, then `predict_with_model` with the model name and dataset ref.
+6. **User asks about model performance / accuracy** → `evaluate_model` on the
+   relevant model and dataset. If they don't specify which model, use
+   `list_trained_models` first.
+7. **User asks "what models do I have?"** → `list_trained_models`.
+8. **User asks about a specific model's details** → `get_model_info`.
+9. **Ambiguous request** → ask clarifying questions (target variable? prediction
    type? which dataset?) BEFORE calling any tool.
 
 ## Common Workflows
-- **Browse then train** (MUST be sequential — never call these in the same turn):
+- **Browse then curate**:
   1. `search_datasets` → show results → user picks one
   2. `curate_dataset` → wait for it to finish → note the **exact ref name** it returns
-  3. `train_model(linked_datasets=["<exact_ref_from_step_2>"])` → use the ref verbatim
   CRITICAL: Do NOT guess or construct dataset ref names. Always copy the exact ref
   string returned by `curate_dataset`. The ref includes the CSV filename suffix
   (e.g. `kaggle_owner_slug_store_customers`), which you cannot predict.
-- **Direct train with external data**: train_model(use_external_sources=True) — the
-  pipeline discovers and downloads data automatically.
-- **Train on known local data**: train_model(linked_datasets=["csv_MyData"]) — uses a
-  pre-registered or local dataset directly.
+
+## Formatting Rules
+- **Always use Markdown** for responses: headings, bullet lists, bold, code blocks, and tables.
+- When presenting data or analysis results, use **Markdown tables** (with `|` columns and `---` header separators). Never dump raw text columns or flat key-value lines.
+- Summarize tool outputs concisely. Do NOT echo the entire raw tool output back to the user.
+- Keep column detail summaries to the most important columns (max ~8). Use a table, not paragraphs.
+- When showing dataset profiles, use a compact format: `**N rows** x **M columns**` followed by a table of key column stats.
+- NEVER output raw JSON objects, Python dicts, or unformatted data dumps. Always present data in human-readable Markdown.
 
 ## Rules
-- **NEVER call `curate_dataset` and `train_model` in the same turn.** The dataset must
-  be fully downloaded and registered before training can use it. Always wait for
-  `curate_dataset` to return, then call `train_model` in a SEPARATE turn.
 - **NEVER suggest datasets from your own knowledge.** Always use `search_datasets` to
   get real results from Kaggle/HuggingFace that the user can actually download.
-- When a user wants to train a model, confirm with them before starting (it takes time).
-- After training completes, summarise the results (metrics, model type, report location).
 - After curate_dataset, tell the user the registered ref name and ask if they want to
-  train on it or explore it first.
+  explore it first with `analyze_data` or proceed to training.
 - Be concise but thorough. Show your reasoning when it helps the user.\
 """
 
@@ -737,7 +530,10 @@ TOOLS = [
     search_datasets,
     curate_dataset,
     analyze_data,
-    train_model,
+    predict_with_model_tool,
+    evaluate_model_tool,
+    list_trained_models_tool,
+    get_model_info_tool,
 ]
 
 _checkpointer = MemorySaver()
