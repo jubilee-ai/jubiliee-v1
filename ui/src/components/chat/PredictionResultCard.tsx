@@ -18,7 +18,7 @@ export function PredictionResultCard({ result, onEvaluate }: {
     <Card className="my-2 border-border/50">
       <CardHeader className="pb-2">
         <CardTitle className="text-sm flex items-center gap-2">
-          <BarChart3 className="h-4 w-4 text-emerald-500" />
+          <BarChart3 className="h-4 w-4 text-primary" />
           Prediction Complete
         </CardTitle>
       </CardHeader>

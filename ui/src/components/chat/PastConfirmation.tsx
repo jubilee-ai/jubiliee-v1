@@ -31,7 +31,7 @@ export function PastConfirmation({
         {/* Summary bubble - styling based on action */}
         <div className={cn(
           "rounded-2xl px-4 py-3 bg-muted/50 border",
-          isRedo ? "border-amber-500/20" : "border-green-500/20"
+          isRedo ? "border-amber-500/20" : "border-success/20"
         )}>
           <div className="flex items-center gap-2 mb-2">
             <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
@@ -42,7 +42,7 @@ export function PastConfirmation({
                 (Redo requested. Feedback: "{redoComment}")
               </span>
             ) : (
-              <span className="flex items-center gap-1 text-xs text-green-600 dark:text-green-500">
+              <span className="flex items-center gap-1 text-xs text-success">
                 <Check className="h-3 w-3" />
                 Accepted
               </span>

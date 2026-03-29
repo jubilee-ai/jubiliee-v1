@@ -100,7 +100,7 @@ export const MessageBubble = forwardRef<HTMLDivElement, MessageBubbleProps>(
           }}
           className={cn(
           "flex items-center justify-center gap-1.5 text-xs py-2 select-none",
-          isStepAccepted && "text-green-600 dark:text-green-400",
+          isStepAccepted && "text-success",
           isRedo && "text-amber-600 dark:text-amber-400",
           !isStepAccepted && !isRedo && "text-muted-foreground/60"
         )}>
@@ -177,7 +177,7 @@ export const MessageBubble = forwardRef<HTMLDivElement, MessageBubbleProps>(
                 e.stopPropagation()
                 onViewReport()
               }}
-              className="mt-3 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors"
+              className="mt-3 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-primary-subtle text-primary-subtle-foreground text-sm font-medium hover:bg-primary-subtle/88 transition-colors"
             >
               <FileText className="h-3.5 w-3.5" />
               View Report

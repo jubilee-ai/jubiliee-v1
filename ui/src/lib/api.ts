@@ -24,6 +24,21 @@ export interface ModelType {
   description?: string
 }
 
+export interface TrainedModelEntry {
+  model_name: string
+  model_type: string
+  description?: string
+  metrics: Record<string, number>
+  feature_names: string[]
+  target_column: string
+  hyperparameters: Record<string, unknown>
+  training_samples: number
+  classes: string[]
+  created_at: string
+  updated_at: string
+  version: number
+}
+
 /** Unified SSE payloads from POST /api/chat (orchestrator and/or training graph). */
 export interface AgentStreamEvent {
   type: string
@@ -108,8 +123,8 @@ export async function getModelTypes(): Promise<ModelType[]> {
   return res.json()
 }
 
-/** Trained model registry entries keyed by model name (same shape as backend catalog). */
-export async function getTrainedModels(): Promise<Record<string, unknown>> {
+/** Trained model registry entries keyed by model name. */
+export async function getTrainedModels(): Promise<Record<string, TrainedModelEntry>> {
   const res = await fetch(`${API_BASE}/api/trained-models`)
   if (!res.ok) throw new Error(`Failed to fetch trained models: ${res.status}`)
   return res.json()

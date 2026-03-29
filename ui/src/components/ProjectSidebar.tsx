@@ -36,7 +36,7 @@ interface ProjectSidebarProps {
 function statusIcon(status: Project["status"]) {
   switch (status) {
     case "completed":
-      return <CheckCircle2 className="h-3.5 w-3.5 text-green-500 flex-shrink-0" />
+      return <CheckCircle2 className="h-3.5 w-3.5 text-success flex-shrink-0" />
     case "running":
       return <Loader2 className="h-3.5 w-3.5 text-blue-500 animate-spin flex-shrink-0" />
     case "error":

@@ -9,25 +9,25 @@ if (!publishableKey) {
   throw new Error('Missing VITE_CLERK_PUBLISHABLE_KEY')
 }
 
-/** Matches Jubilee dark palette so Clerk surfaces (UserButton, UserProfile, etc.) aren’t default light theme. */
+/** Matches Jubilee product palette (light shell + clinical blues). */
 const clerkAppearance = {
   theme: 'simple' as const,
   variables: {
-    colorPrimary: 'hsl(229 55% 78%)',
-    colorPrimaryForeground: 'hsl(240 27% 14%)',
-    colorForeground: 'hsl(220 9% 91%)',
-    colorMutedForeground: 'hsl(220 6% 55%)',
-    colorBackground: 'hsl(240 4% 11%)',
-    colorInput: 'hsl(240 4% 13%)',
-    colorInputForeground: 'hsl(220 9% 91%)',
-    colorNeutral: 'hsl(240 4% 20%)',
-    colorBorder: 'hsl(240 4% 20%)',
-    colorRing: 'hsl(229 55% 78%)',
-    colorDanger: 'hsl(352 55% 65%)',
-    colorSuccess: 'hsl(130 30% 55%)',
+    colorPrimary: 'hsl(222 36% 81%)',
+    colorPrimaryForeground: 'hsl(222 58% 24%)',
+    colorForeground: 'hsl(222 69% 13%)',
+    colorMutedForeground: 'hsl(222 32% 47%)',
+    colorBackground: 'hsl(0 0% 100%)',
+    colorInput: 'hsl(223 100% 96%)',
+    colorInputForeground: 'hsl(222 69% 13%)',
+    colorNeutral: 'hsl(221 100% 92%)',
+    colorBorder: 'hsl(221 100% 92%)',
+    colorRing: 'hsl(218 62% 53%)',
+    colorDanger: 'hsl(349 52% 44%)',
+    colorSuccess: 'hsl(217 88% 57%)',
     colorWarning: 'hsl(42 96% 58%)',
-    colorShadow: 'rgba(0, 0, 0, 0.45)',
-    colorModalBackdrop: 'rgba(8, 8, 12, 0.72)',
+    colorShadow: 'rgba(18, 86, 210, 0.12)',
+    colorModalBackdrop: 'rgba(10, 26, 54, 0.35)',
     fontFamily: 'Inter, system-ui, -apple-system, sans-serif',
     fontFamilyButtons: 'Inter, system-ui, -apple-system, sans-serif',
     borderRadius: '0.75rem',

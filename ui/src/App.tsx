@@ -17,6 +17,8 @@ import { RotateCcw, FileText, Search, Bell, ArrowLeft } from "lucide-react"
 import type { StepInfo, TrainingAgentState, ConfirmationAction } from "@/types/agent"
 import { createExperiment } from "@/lib/api"
 import { cn } from "@/lib/utils"
+import { DatasetsPage } from "@/components/DatasetsPage"
+import { ModelsPage } from "@/components/ModelsPage"
 import { Show, SignIn, UserButton, useAuth } from "@clerk/react"
 
 export default function App() {
@@ -40,12 +42,12 @@ export default function App() {
 function SignInGate() {
   return (
     <div className="fixed inset-0 z-[100] overflow-hidden bg-background">
-      <div className="dot-grid absolute inset-0 opacity-60" />
-      <div className="absolute inset-0 bg-[radial-gradient(circle_at_top,_hsl(var(--primary)/0.18),_transparent_35%),radial-gradient(circle_at_bottom_right,_hsl(var(--accent-foreground)/0.12),_transparent_28%)]" />
+      <div className="jubilee-dot-grid absolute inset-0 opacity-[0.72]" />
+      <div className="absolute inset-0 bg-[radial-gradient(circle_at_top,_rgba(18,86,210,0.14),_transparent_38%),radial-gradient(circle_at_bottom_right,_hsl(var(--primary)/0.08),_transparent_30%)]" />
 
       <div className="relative flex min-h-screen items-center justify-center px-4 py-10">
         <div className="mx-auto w-full max-w-[440px]">
-          <div className="overflow-hidden rounded-[28px] border border-border/60 bg-card/90 shadow-[0_28px_120px_rgba(0,0,0,0.45)] backdrop-blur-xl">
+          <div className="overflow-hidden rounded-[28px] border border-border/60 bg-card/95 shadow-[0_24px_80px_-12px_rgba(18,86,210,0.18),0_8px_40px_rgba(10,26,54,0.06)] backdrop-blur-xl">
             <div className="px-6 pt-8 pb-2 text-center">
               <p className="text-[11px] font-medium uppercase tracking-[0.24em] text-muted-foreground">
                 Sign in / Sign up
@@ -65,21 +67,21 @@ function SignInGate() {
               appearance={{
                 theme: "simple",
                 variables: {
-                  colorPrimary: "hsl(229 55% 78%)",
-                  colorPrimaryForeground: "hsl(240 27% 14%)",
-                  colorForeground: "hsl(220 9% 91%)",
-                  colorMutedForeground: "hsl(220 6% 55%)",
-                  colorBackground: "hsl(240 4% 11%)",
-                  colorInput: "hsl(240 4% 13%)",
-                  colorInputForeground: "hsl(220 9% 91%)",
-                  colorNeutral: "hsl(240 4% 20%)",
-                  colorBorder: "hsl(240 4% 20%)",
-                  colorRing: "hsl(229 55% 78%)",
-                  colorDanger: "hsl(352 55% 65%)",
-                  colorSuccess: "hsl(130 30% 55%)",
+                  colorPrimary: "hsl(222 36% 81%)",
+                  colorPrimaryForeground: "hsl(222 58% 24%)",
+                  colorForeground: "hsl(222 69% 13%)",
+                  colorMutedForeground: "hsl(222 32% 47%)",
+                  colorBackground: "hsl(0 0% 100%)",
+                  colorInput: "hsl(223 100% 96%)",
+                  colorInputForeground: "hsl(222 69% 13%)",
+                  colorNeutral: "hsl(221 100% 92%)",
+                  colorBorder: "hsl(221 100% 92%)",
+                  colorRing: "hsl(218 62% 53%)",
+                  colorDanger: "hsl(349 52% 44%)",
+                  colorSuccess: "hsl(217 88% 57%)",
                   colorWarning: "hsl(42 96% 58%)",
-                  colorShadow: "rgba(0, 0, 0, 0.45)",
-                  colorModalBackdrop: "rgba(8, 8, 12, 0.72)",
+                  colorShadow: "rgba(18, 86, 210, 0.12)",
+                  colorModalBackdrop: "rgba(10, 26, 54, 0.35)",
                   fontFamily: "Inter, system-ui, -apple-system, sans-serif",
                   fontFamilyButtons: "Inter, system-ui, -apple-system, sans-serif",
                   borderRadius: "0.9rem",
@@ -107,7 +109,7 @@ function SignInGate() {
                   formFieldInputShowPasswordButton:
                     "text-muted-foreground hover:text-foreground",
                   formButtonPrimary:
-                    "h-11 rounded-xl border-0 bg-primary text-primary-foreground shadow-none hover:bg-primary/90",
+                    "h-11 rounded-xl border-0 bg-primary-subtle text-primary-subtle-foreground shadow-none hover:bg-primary-subtle/88",
                   footerActionText: "text-muted-foreground",
                   footerActionLink: "text-primary hover:text-primary/90 font-medium",
                   identityPreviewText: "text-foreground",
@@ -117,7 +119,7 @@ function SignInGate() {
                     "rounded-xl border border-input bg-muted/60 text-foreground shadow-none",
                   alertText: "text-sm",
                   footer:
-                    "mt-6 w-full border-t border-border/50 bg-[linear-gradient(180deg,transparent,rgba(255,184,77,0.06))] px-0 pb-0 pt-5",
+                    "mt-6 w-full border-t border-border/50 bg-[linear-gradient(180deg,transparent,rgba(18,86,210,0.04))] px-0 pb-0 pt-5",
                 },
               }}
             />
@@ -261,7 +263,7 @@ function AuthenticatedApp() {
     <TooltipProvider>
       <div className="h-screen bg-background flex flex-col overflow-hidden">
         {/* Top Navigation Bar */}
-        <nav className="fixed top-0 w-full z-50 bg-background/80 backdrop-blur-xl shadow-[0_1px_0_hsl(var(--border)/0.3)] flex items-center justify-between px-6 h-14">
+        <nav className="fixed top-0 w-full z-50 border-b border-border/60 bg-background/90 backdrop-blur-xl shadow-[0_1px_0_hsl(var(--border)/0.35),0_12px_40px_-12px_rgba(18,86,210,0.07)] flex items-center justify-between px-6 h-14">
           <div className="font-headline text-xl font-bold tracking-tight text-foreground">Jubilee</div>
 
           <div className="flex items-center gap-1.5">
@@ -409,27 +411,9 @@ function AuthenticatedApp() {
                 </div>
               </div>
             ) : activeTab === "datasets" ? (
-              <div className="flex-1 overflow-auto">
-                <div className="max-w-5xl mx-auto px-8 py-10">
-                  <span className="text-[10px] font-bold text-muted-foreground tracking-widest uppercase">Data Management</span>
-                  <h1 className="font-headline text-3xl font-semibold text-foreground tracking-tight mt-1">Data Assets</h1>
-                  <p className="mt-3 text-muted-foreground text-sm leading-relaxed max-w-lg">Manage and explore your datasets for training and evaluation.</p>
-                  <div className="mt-10 rounded-xl bg-card p-8 text-center text-muted-foreground text-sm">
-                    Coming soon.
-                  </div>
-                </div>
-              </div>
+              <DatasetsPage datasets={realAgent.datasets} />
             ) : activeTab === "models" ? (
-              <div className="flex-1 overflow-auto">
-                <div className="max-w-5xl mx-auto px-8 py-10">
-                  <span className="text-[10px] font-bold text-muted-foreground tracking-widest uppercase">Model Management</span>
-                  <h1 className="font-headline text-3xl font-semibold text-foreground tracking-tight mt-1">Model Registry</h1>
-                  <p className="mt-3 text-muted-foreground text-sm leading-relaxed max-w-lg">Monitor deployments, track performance metrics, and manage your model lifecycle.</p>
-                  <div className="mt-10 rounded-xl bg-card p-8 text-center text-muted-foreground text-sm">
-                    Coming soon.
-                  </div>
-                </div>
-              </div>
+              <ModelsPage modelTypes={realAgent.modelTypes} />
             ) : activeTab === "settings" ? (
               <div className="flex-1 overflow-auto">
                 <div className="max-w-5xl mx-auto px-8 py-10">
