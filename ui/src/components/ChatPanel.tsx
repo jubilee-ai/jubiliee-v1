@@ -24,6 +24,7 @@ const STEP_TO_PHASE: Record<string, string> = {
   cleaning: "Preparation",
   label_split_definition: "Preparation",
   feature_selection_specification: "Features",
+  feature_specification_and_engineering: "Features",
   feature_engineering_executor: "Features",
   training_approval: "Training",
   training: "Training",
@@ -49,6 +50,8 @@ interface ChatPanelProps {
   steps?: StepInfo[]
   hasExperimentChecklist?: boolean
   experimentId?: string | null
+  /** Current pipeline activity label (shown beside the loading wave) */
+  runningStepHint?: string | null
 }
 
 export interface ChatPanelRef {
@@ -75,6 +78,7 @@ export const ChatPanel = forwardRef<ChatPanelRef, ChatPanelProps>(function ChatP
   steps,
   hasExperimentChecklist,
   experimentId,
+  runningStepHint,
 }, ref) {
   const availableDatasets = propDatasets && propDatasets.length > 0 
     ? propDatasets 
@@ -198,12 +202,17 @@ export const ChatPanel = forwardRef<ChatPanelRef, ChatPanelProps>(function ChatP
 
   const confirmationsMap = getConfirmationsAfterMessage()
 
+  const resolveAgentStep = useCallback((msg: ChatMessage) => {
+    if (msg.role !== "agent") return null
+    return msg.stepId ?? detectStepFromMessage(msg.content)
+  }, [])
+
   const phaseMarkers = useMemo(() => {
     const markers = new Map<string, string>()
     let lastPhase: string | null = null
     for (const msg of messages) {
       if (msg.role === "agent") {
-        const step = detectStepFromMessage(msg.content)
+        const step = msg.stepId ?? detectStepFromMessage(msg.content)
         const phase = step ? STEP_TO_PHASE[step] : null
         if (phase && phase !== lastPhase) {
           markers.set(msg.id, phase)
@@ -229,7 +238,7 @@ export const ChatPanel = forwardRef<ChatPanelRef, ChatPanelProps>(function ChatP
           )}
 
           {messages.map((msg) => {
-            const detectedStep = msg.role === "agent" ? detectStepFromMessage(msg.content) : null
+            const detectedStep = resolveAgentStep(msg)
             const stepInfo = detectedStep && steps ? steps.find(s => s.id === detectedStep) : null
             const isClickable = !!detectedStep && !!agentState && !!steps && stepInfo?.status === "completed"
             const confsAfterThis = confirmationsMap.get(msg.id) || []
@@ -272,7 +281,7 @@ export const ChatPanel = forwardRef<ChatPanelRef, ChatPanelProps>(function ChatP
           })}
 
           {isRunning && !confirmationRequest && (
-            <LoadingIndicator />
+            <LoadingIndicator label={runningStepHint} />
           )}
 
           {confirmationRequest && (

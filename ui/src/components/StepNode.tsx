@@ -25,6 +25,7 @@ const STEP_ICONS: Record<string, React.ComponentType<{ className?: string }>> = 
   cleaning: Sparkles,
   label_split_definition: GitBranch,
   feature_selection_specification: BarChart3,
+  feature_specification_and_engineering: Wrench,
   feature_engineering_executor: Wrench,
   training_approval: ClipboardCheck,
   training: Zap,

@@ -22,6 +22,7 @@ export function StepDetailModal({ stepId, agentState, steps, onClose }: StepDeta
     "cleaning": "cleaning_and_standardization",
     "label_split_definition": "label_split_definition",
     "feature_selection_specification": "feature_selection_specification",
+    "feature_specification_and_engineering": "feature_engineering_executor",
     "feature_engineering_executor": "feature_engineering_executor",
     "training_approval": "training_approval",
     "training": "training",
@@ -38,6 +39,7 @@ export function StepDetailModal({ stepId, agentState, steps, onClose }: StepDeta
       case "cleaning": return "Data Cleaning & Standardization"
       case "label_split_definition": return "Label & Split Definition"
       case "feature_selection_specification": return "Feature Selection"
+      case "feature_specification_and_engineering": return "Features (spec + build)"
       case "feature_engineering_executor": return "Feature Engineering"
       case "training_approval": return "Training Configuration"
       case "training": return "Model Training"
@@ -58,6 +60,13 @@ export function StepDetailModal({ stepId, agentState, steps, onClose }: StepDeta
         return <LabelSplitDetail agentState={agentState} audit={audit} />
       case "feature_selection_specification":
         return <FeatureSelectionDetail agentState={agentState} />
+      case "feature_specification_and_engineering":
+        return (
+          <>
+            <FeatureSelectionDetail agentState={agentState} />
+            <FeatureEngineeringDetail agentState={agentState} audit={audit} />
+          </>
+        )
       case "feature_engineering_executor":
         return <FeatureEngineeringDetail agentState={agentState} audit={audit} />
       case "training_approval":

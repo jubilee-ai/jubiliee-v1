@@ -94,6 +94,8 @@ export interface AgentStreamRequest {
   experiment_id?: string
   linked_datasets?: string[] | null
   model_preference?: string | null
+  /** Prior lab chat turns so the training planner can synthesize from the full dialogue */
+  conversation?: Array<{ role: string; content: string }>
   resume?: {
     approved: boolean
     feedback?: string

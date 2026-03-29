@@ -634,7 +634,11 @@ def list_datasets_tool() -> str:
     if datasets["registered"]:
         output_lines.append("### From Previous Operations")
         for ds in datasets["registered"]:
-            output_lines.append(f"- `{ds['ref']}`: {ds['rows']:,} rows × {ds['columns']} columns")
+            rows = ds.get("rows")
+            cols = ds.get("columns")
+            rows_s = f"{rows:,}" if isinstance(rows, int) else str(rows or "?")
+            cols_s = str(cols) if cols is not None else "?"
+            output_lines.append(f"- `{ds['ref']}`: {rows_s} rows × {cols_s} columns")
         output_lines.append("")
     
     # SQL tables

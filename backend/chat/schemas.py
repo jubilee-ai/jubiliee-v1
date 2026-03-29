@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Any, Optional
 
 from pydantic import BaseModel, model_validator
 
@@ -10,12 +10,17 @@ class ResumePayload(BaseModel):
 
 
 class ChatRequest(BaseModel):
-    """Unified agent stream: conversational orchestrator and/or training graph."""
+    """Unified agent stream: conversational orchestrator and/or training graph.
+
+    When routing to the training graph, ``conversation`` carries prior user/agent turns
+    so the planner can synthesize the run from the full dialogue.
+    """
     message: str = ""
     experiment_id: Optional[str] = None
     linked_datasets: Optional[list[str]] = None
     model_preference: Optional[str] = None
     resume: Optional[ResumePayload] = None
+    conversation: Optional[list[dict[str, Any]]] = None
 
     @model_validator(mode="after")
     def require_message_unless_resume(self) -> "ChatRequest":

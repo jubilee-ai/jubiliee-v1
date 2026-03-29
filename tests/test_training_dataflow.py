@@ -361,8 +361,8 @@ def test_full_pipeline_data_lineage():
               f"val={len(val_df)}, test={len(test_df)})")
         print(f"         All splits contain the _was_cleaned marker")
 
-        # --- Step 5: feature_selection_specification ---
-        result = tools["tool_feature_selection_specification"]()
+        # --- Step 5–6: feature_specification_and_engineering (selection + execution) ---
+        result = tools["tool_feature_specification_and_engineering"]()
 
         h.mock_feature_spec.assert_called_once()
         feat_spec_kwargs = h.mock_feature_spec.call_args.kwargs
@@ -373,10 +373,7 @@ def test_full_pipeline_data_lineage():
         )
         assert state["feature_spec"] is not None
         assert len(state["feature_spec"]["features"]) == 3
-        print(f"  [PASS] feature_selection_specification -> received train_ref='{expected_train_ref}'")
-
-        # --- Step 6: feature_engineering_executor ---
-        result = tools["tool_feature_engineering_executor"]()
+        print(f"  [PASS] feature_spec -> received train_ref='{expected_train_ref}'")
 
         h.mock_feature_exec.assert_called_once()
         feat_exec_kwargs = h.mock_feature_exec.call_args.kwargs
@@ -530,8 +527,7 @@ def test_training_never_sees_raw_or_cleaned_data():
         tools["tool_select_model"]()
         tools["tool_cleaning"]()
         tools["tool_label_split_definition"]()
-        tools["tool_feature_selection_specification"]()
-        tools["tool_feature_engineering_executor"]()
+        tools["tool_feature_specification_and_engineering"]()
         tools["tool_training_approval"]()
         tools["tool_training"]()
 
@@ -596,15 +592,10 @@ def test_skip_guards_without_prerequisites():
         assert "SKIP" in result, f"label_split without cleaning should SKIP, got: {result[:100]}"
         print(f"  [PASS] label_split_definition skips when cleaning hasn't run")
 
-        # feature_selection without label_split
-        result = tools["tool_feature_selection_specification"]()
-        assert "SKIP" in result, f"feature_spec without label_split should SKIP, got: {result[:100]}"
-        print(f"  [PASS] feature_selection_specification skips when label_split hasn't run")
-
-        # feature_executor without feature_spec
-        result = tools["tool_feature_engineering_executor"]()
-        assert "SKIP" in result, f"feature_exec without feature_spec should SKIP, got: {result[:100]}"
-        print(f"  [PASS] feature_engineering_executor skips when feature_spec hasn't run")
+        # feature pipeline without label_split
+        result = tools["tool_feature_specification_and_engineering"]()
+        assert "SKIP" in result, f"feature pipeline without label_split should SKIP, got: {result[:100]}"
+        print(f"  [PASS] feature_specification_and_engineering skips when label_split hasn't run")
 
         # training without feature_engineering
         result = tools["tool_training"]()
@@ -632,8 +623,7 @@ def test_downstream_invalidation_on_cleaning_rerun():
         tools["tool_select_model"]()
         tools["tool_cleaning"]()
         tools["tool_label_split_definition"]()
-        tools["tool_feature_selection_specification"]()
-        tools["tool_feature_engineering_executor"]()
+        tools["tool_feature_specification_and_engineering"]()
         tools["tool_training_approval"]()
         tools["tool_training"]()
 
@@ -718,8 +708,7 @@ def test_downstream_invalidation_on_cleaning_rerun():
             "New train split must have the v2 cleaning marker"
         )
 
-        tools["tool_feature_selection_specification"]()
-        tools["tool_feature_engineering_executor"]()
+        tools["tool_feature_specification_and_engineering"]()
         tools["tool_training_approval"]()
         tools["tool_training"]()
 
@@ -806,8 +795,7 @@ def test_feature_engineering_operates_on_cleaned_splits():
         tools["tool_select_model"]()
         tools["tool_cleaning"]()
         tools["tool_label_split_definition"]()
-        tools["tool_feature_selection_specification"]()
-        tools["tool_feature_engineering_executor"]()
+        tools["tool_feature_specification_and_engineering"]()
 
         exec_kwargs = h.mock_feature_exec.call_args.kwargs
 

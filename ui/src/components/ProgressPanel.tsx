@@ -15,7 +15,7 @@ interface ProgressPanelProps {
 const STEP_GROUPS: Array<{ label: string; ids: string[] }> = [
   { label: "Setup", ids: ["select_model", "data_collection"] },
   { label: "Preparation", ids: ["cleaning", "label_split_definition"] },
-  { label: "Features", ids: ["feature_selection_specification", "feature_engineering_executor"] },
+  { label: "Features", ids: ["feature_specification_and_engineering", "feature_selection_specification", "feature_engineering_executor"] },
   { label: "Training", ids: ["training_approval", "training"] },
   { label: "Output", ids: ["generate_report"] },
 ]

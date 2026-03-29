@@ -332,6 +332,12 @@ export interface ChatMessage {
   _streaming?: boolean
   /** Populated for prediction-complete events rendered as a card */
   prediction?: PredictionResult
+  /** Stable pipeline step id for “View step details” (avoids regex mismatches) */
+  stepId?: string
+  /** Expandable markdown: transforms, feature analysis, training runs */
+  detailMarkdown?: string
+  /** Show “View Report” CTA at the bottom of the bubble (run finished) */
+  showReportButton?: boolean
   links?: Array<{
     type: "dataset" | "model" | "step"
     id: string

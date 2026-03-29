@@ -7,7 +7,7 @@ import { FileText, ChevronRight, Check, RotateCcw, Info } from "lucide-react"
 import type { ChatMessage } from "@/types/agent"
 import { ThinkingBlock } from "./ThinkingBlock"
 
-const MAX_CONTENT_LENGTH = 400
+const MAX_CONTENT_LENGTH = 1200
 
 function sanitizeAgentContent(content: string): string {
   const trimmed = content.trim()
@@ -56,9 +56,11 @@ export const MessageBubble = forwardRef<HTMLDivElement, MessageBubbleProps>(
     const isUser = message.role === "user"
     const isSystem = message.role === "system"
     
-    const hasViewReport = !isUser && !isSystem && 
-      (message.content.toLowerCase().includes("view report") || 
-       message.content.toLowerCase().includes("training completed"))
+    const showReportCta =
+      !isUser &&
+      !isSystem &&
+      message.showReportButton === true &&
+      Boolean(onViewReport)
 
     const shouldTruncate = message.content.length > MAX_CONTENT_LENGTH
     const displayContent = shouldTruncate && !isExpanded
@@ -151,6 +153,21 @@ export const MessageBubble = forwardRef<HTMLDivElement, MessageBubbleProps>(
               <ReactMarkdown remarkPlugins={[remarkGfm]}>{sanitizeAgentContent(displayContent)}</ReactMarkdown>
             </div>
           )}
+
+          {message.detailMarkdown?.trim() && (
+            <details
+              className="mt-3 rounded-lg border border-border/60 bg-muted/30 px-3 py-2 text-[13px] group/details"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <summary className="cursor-pointer list-none font-medium text-foreground/90 flex items-center gap-1.5 [&::-webkit-details-marker]:hidden">
+                <ChevronRight className="h-3.5 w-3.5 text-muted-foreground transition-transform group-open/details:rotate-90" />
+                What happened (details)
+              </summary>
+              <div className="mt-2 pl-4 border-l-2 border-border/50 text-muted-foreground prose prose-sm dark:prose-invert max-w-none prose-p:my-1 prose-headings:my-2 prose-ul:my-1 prose-li:my-0 prose-code:text-[12px]">
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.detailMarkdown}</ReactMarkdown>
+              </div>
+            </details>
+          )}
           
           {shouldTruncate && (
             <button
@@ -166,18 +183,18 @@ export const MessageBubble = forwardRef<HTMLDivElement, MessageBubbleProps>(
           
           {isClickable && (
             <div className="mt-3 flex items-center gap-1.5 text-xs text-muted-foreground group-hover:text-foreground transition-colors">
-              <span>Click for details</span>
+              <span>Open full step view</span>
               <ChevronRight className="h-3 w-3 group-hover:translate-x-0.5 transition-transform" />
             </div>
           )}
           
-          {hasViewReport && onViewReport && (
+          {showReportCta && (
             <button
               onClick={(e) => {
                 e.stopPropagation()
-                onViewReport()
+                onViewReport?.()
               }}
-              className="mt-3 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-primary-subtle text-primary-subtle-foreground text-sm font-medium hover:bg-primary-subtle/88 transition-colors"
+              className="mt-4 w-full sm:w-auto inline-flex items-center justify-center gap-1.5 px-4 py-2 rounded-lg bg-primary-subtle text-primary-subtle-foreground text-sm font-medium hover:bg-primary-subtle/88 transition-colors"
             >
               <FileText className="h-3.5 w-3.5" />
               View Report

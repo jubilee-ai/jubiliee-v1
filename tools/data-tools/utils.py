@@ -27,6 +27,16 @@ from dotenv import load_dotenv
 
 logger = logging.getLogger(__name__)
 
+
+def _sql_query_mod():
+    """Load sql_query whether ``utils`` is a package submodule or top-level (sys.path)."""
+    try:
+        from . import sql_query as sq
+    except ImportError:
+        import sql_query as sq
+    return sq
+
+
 # =============================================================================
 # CONFIGURATION
 # =============================================================================
@@ -406,7 +416,9 @@ def _download_parquet_from_r2(storage_key: str):
 # DATASET REGISTRY (In-Memory + R2 Persistence)
 # =============================================================================
 
+import threading as _threading
 _dataset_registry: dict = {}
+_registry_lock = _threading.Lock()
 
 
 def _sanitize_ref_for_sql(ref: str) -> str:
@@ -450,7 +462,8 @@ def register_dataset(
     """
     import pandas as pd
     
-    _dataset_registry[ref] = df
+    with _registry_lock:
+        _dataset_registry[ref] = df
     
     storage_key = f"datasets/{source_type}/{ref}.parquet"
 
@@ -539,11 +552,9 @@ def _dedupe_column_names(df) -> "pd.DataFrame":
 def _register_in_sql_warehouse(ref: str, df) -> None:
     """Register a DataFrame as a table in the SQL warehouse."""
     from sqlalchemy import text
-    
-    # Import here to avoid circular imports
-    from .sql_query import get_warehouse
-    
-    warehouse = get_warehouse()
+
+    sq = _sql_query_mod()
+    warehouse = sq.get_warehouse()
     table_name = _sanitize_ref_for_sql(ref)
     
     # Dedupe column names for SQL (SQLite is case-insensitive)
@@ -560,8 +571,7 @@ def _register_in_sql_warehouse(ref: str, df) -> None:
         for c in inspector.get_columns(table_name)
     ]
     
-    from .sql_query import TableInfo
-    warehouse.tables[table_name] = TableInfo(
+    warehouse.tables[table_name] = sq.TableInfo(
         name=table_name,
         columns=columns,
         row_count=len(df)
@@ -583,8 +593,9 @@ def get_registered_dataset(ref: str):
     Returns:
         The DataFrame or None if not found
     """
-    if ref in _dataset_registry:
-        return _dataset_registry[ref]
+    with _registry_lock:
+        if ref in _dataset_registry:
+            return _dataset_registry[ref]
     
     # Try Postgres + R2
     try:
@@ -596,7 +607,8 @@ def get_registered_dataset(ref: str):
             if row and row.properties and row.properties.get("storage_key"):
                 df = _download_parquet_from_r2(row.properties["storage_key"])
                 if df is not None:
-                    _dataset_registry[ref] = df
+                    with _registry_lock:
+                        _dataset_registry[ref] = df
                     return df
     except Exception as e:
         logger.debug(f"Postgres/R2 lookup for {ref}: {e}")
@@ -611,7 +623,8 @@ def list_registered_datasets() -> list[str]:
     Returns:
         List of reference IDs
     """
-    refs = set(_dataset_registry.keys())
+    with _registry_lock:
+        refs = set(_dataset_registry.keys())
 
     try:
         from backend.shared.database import get_db_session
@@ -635,13 +648,13 @@ def clear_registry(clear_sql: bool = True) -> None:
     """
     global _derived_sql_tables
     
-    _dataset_registry.clear()
+    with _registry_lock:
+        _dataset_registry.clear()
     
     if clear_sql and _derived_sql_tables:
         try:
             from sqlalchemy import text
-            from .sql_query import get_warehouse
-            warehouse = get_warehouse()
+            warehouse = _sql_query_mod().get_warehouse()
             with warehouse.engine.connect() as conn:
                 for table_name in list(_derived_sql_tables):
                     try:
@@ -670,14 +683,14 @@ def clear_dataset_registry(prefix: str = None, clear_sql: bool = True) -> int:
     global _derived_sql_tables
     
     if prefix is None:
-        count = len(_dataset_registry)
-        _dataset_registry.clear()
+        with _registry_lock:
+            count = len(_dataset_registry)
+            _dataset_registry.clear()
         
         if clear_sql and _derived_sql_tables:
             try:
                 from sqlalchemy import text
-                from .sql_query import get_warehouse
-                warehouse = get_warehouse()
+                warehouse = _sql_query_mod().get_warehouse()
                 with warehouse.engine.connect() as conn:
                     for table_name in list(_derived_sql_tables):
                         try:
@@ -695,16 +708,16 @@ def clear_dataset_registry(prefix: str = None, clear_sql: bool = True) -> int:
         return count
     
     count = 0
-    to_remove = [k for k in _dataset_registry if k.startswith(prefix)]
-    for k in to_remove:
-        del _dataset_registry[k]
-        count += 1
+    with _registry_lock:
+        to_remove = [k for k in _dataset_registry if k.startswith(prefix)]
+        for k in to_remove:
+            del _dataset_registry[k]
+            count += 1
     
     if clear_sql:
         try:
             from sqlalchemy import text
-            from .sql_query import get_warehouse
-            warehouse = get_warehouse()
+            warehouse = _sql_query_mod().get_warehouse()
             safe_prefix = _sanitize_ref_for_sql(prefix)
             with warehouse.engine.connect() as conn:
                 for table_name in list(_derived_sql_tables):
@@ -727,18 +740,66 @@ def clear_dataset_registry(prefix: str = None, clear_sql: bool = True) -> int:
 def get_registered_dataset_info(ref: str) -> Optional[dict]:
     """
     Get info about a registered dataset.
-    
+
+    Prefers in-memory, then Postgres metadata only (fast — no R2 download).
+    Falls back to full resolution only when metadata is missing or incomplete.
+
     Args:
         ref: Reference ID of the dataset
-    
+
     Returns:
         Dict with 'rows', 'columns', and 'persisted' status, or None if not found
     """
+    storage_key: Optional[str] = None
+
+    with _registry_lock:
+        if ref in _dataset_registry:
+            df = _dataset_registry[ref]
+            try:
+                from backend.shared.database import get_db_session
+                from backend.shared.models import Dataset
+
+                with get_db_session() as session:
+                    row = session.query(Dataset).filter(Dataset.name == ref).first()
+                    if row and row.properties:
+                        storage_key = row.properties.get("storage_key")
+            except Exception:
+                pass
+            return {
+                "rows": len(df),
+                "columns": len(df.columns),
+                "column_names": list(df.columns),
+                "persisted": storage_key is not None,
+                "storage_key": storage_key,
+            }
+
+    # Postgres metadata only — avoids HeadObject/R2 for every stale ref when listing
+    try:
+        from backend.shared.database import get_db_session
+        from backend.shared.models import Dataset
+
+        with get_db_session() as session:
+            row = session.query(Dataset).filter(Dataset.name == ref).first()
+            if row and row.properties:
+                props = row.properties or {}
+                storage_key = props.get("storage_key")
+                cols = props.get("columns")
+                nrows = props.get("row_count")
+                if isinstance(cols, list) and cols and nrows is not None:
+                    return {
+                        "rows": int(nrows),
+                        "columns": len(cols),
+                        "column_names": cols,
+                        "persisted": storage_key is not None,
+                        "storage_key": storage_key,
+                    }
+    except Exception:
+        pass
+
     df = get_registered_dataset(ref)
     if df is None:
         return None
 
-    storage_key = None
     try:
         from backend.shared.database import get_db_session
         from backend.shared.models import Dataset
@@ -814,8 +875,7 @@ def get_all_available_datasets() -> dict[str, list[dict]]:
     
     # SQL warehouse tables (lazy import to avoid circular deps)
     try:
-        from .sql_query import get_warehouse
-        warehouse = get_warehouse()
+        warehouse = _sql_query_mod().get_warehouse()
         for t in warehouse.get_all_tables():
             result["sql_tables"].append({
                 "ref": t.name,
@@ -851,8 +911,7 @@ def list_all_dataset_refs() -> list[str]:
     
     # SQL tables
     try:
-        from .sql_query import list_tables
-        refs.extend(list_tables())
+        refs.extend(_sql_query_mod().list_tables())
     except Exception:
         pass
     

@@ -468,10 +468,11 @@ def generate_simple_sse_events(
     yield f"data: {json.dumps(started_payload)}\n\n"
 
     try:
-        for event in agent.stream(
+        for ns, event in agent.stream(
             {"messages": [{"role": "user", "content": goal}]},
             config=config,
             stream_mode="updates",
+            subgraphs=True,
         ):
             if "__interrupt__" in event:
                 info = _extract_simple_interrupt(event["__interrupt__"], thread_id)
@@ -551,10 +552,11 @@ def generate_simple_resume_sse_events(
     )
 
     try:
-        for event in agent.stream(
+        for ns, event in agent.stream(
             Command(resume=resume_value),
             config=config,
             stream_mode="updates",
+            subgraphs=True,
         ):
             if "__interrupt__" in event:
                 info = _extract_simple_interrupt(event["__interrupt__"], thread_id)
@@ -604,13 +606,16 @@ def generate_graph_sse_events(
     model_pref: Optional[str],
     thread_id: Optional[str] = None,
     experiment_id: Optional[str] = None,
+    conversation: Optional[list[dict]] = None,
 ):
     """SSE generator using the agentic graph (planner + executor + evaluator)."""
+    from agents.training.core.conversation_context import normalize_conversation_turns
     from agents.training.core.graph import create_training_agent
     from agents.training.core.state import create_initial_state
     from langgraph.checkpoint.memory import MemorySaver
 
     thread_id = thread_id or f"graph-{uuid.uuid4().hex[:8]}"
+    goal = (goal or "").strip() or "Training run"
 
     if experiment_id:
         exp = repository.get_experiment(experiment_id)
@@ -643,12 +648,17 @@ def generate_graph_sse_events(
     resolved_ds = registered_refs[0] if len(registered_refs) == 1 else None
     checkpointer = MemorySaver()
     agent = create_training_agent(checkpointer=checkpointer)
+    conversation_turns = normalize_conversation_turns(
+        conversation,
+        triggering_message=goal,
+    )
     initial_state = create_initial_state(
         goal=goal,
         linked_datasets=final_linked,
         user_model_preference=model_pref,
         resolved_dataset_ref=resolved_ds,
         resolved_model_type=model_pref,
+        conversation_history=conversation_turns,
     )
 
     emitted_steps: set[str] = set()
@@ -825,6 +835,7 @@ def get_training_status(job_id: str) -> JobStatus:
         "data_collection": 20,
         "cleaning": 35,
         "label_split_definition": 45,
+        "feature_specification_and_engineering": 62,
         "feature_selection_specification": 55,
         "feature_engineering_executor": 70,
         "training": 85,

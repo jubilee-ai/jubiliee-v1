@@ -10,6 +10,7 @@ export const STEP_DEFINITIONS: Array<{ id: string; name: string; description: st
   { id: "select_model", name: "Model Selection", description: "Choose the ML model type for this task" },
   { id: "cleaning", name: "Cleaning", description: "Clean and standardize the data" },
   { id: "label_split_definition", name: "Label & Split", description: "Define target column and train/val/test splits" },
+  { id: "feature_specification_and_engineering", name: "Features", description: "Specify features and build transformed datasets" },
   { id: "feature_selection_specification", name: "Feature Selection", description: "Analyze data and specify features" },
   { id: "feature_engineering_executor", name: "Feature Engineering", description: "Execute feature transformations" },
   { id: "training_approval", name: "Training Config", description: "Propose hyperparameters and strategy" },

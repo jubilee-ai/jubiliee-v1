@@ -24,9 +24,26 @@ def _get_or_empty(d: dict, key: str) -> dict:
 
 
 def _get_audit_entry(node_output: dict, step: str) -> dict:
-    """Get the latest audit trace entry for a specific step (most recent run wins)."""
+    """Get the best audit trace row for ``step`` (prefers rows/columns + matching ref).
+
+    When external curator runs after a successful local retrieval, the trace may
+    contain multiple ``data_collection`` rows; the last one can be a failure with
+    no stats while ``collected_dataset_ref`` still points at the local dataset.
+    """
     matches = [t for t in node_output.get("audit_trace", []) if t.get("step") == step]
-    return matches[-1] if matches else {}
+    if not matches:
+        return {}
+    ref = node_output.get("collected_dataset_ref")
+    if ref:
+        for t in reversed(matches):
+            if t.get("dataset_ref") == ref and (
+                t.get("rows") is not None or t.get("columns")
+            ):
+                return t
+    for t in reversed(matches):
+        if t.get("rows") is not None or t.get("columns"):
+            return t
+    return matches[-1]
 
 
 def _format_shape(shapes: dict, key: str) -> str:
@@ -55,6 +72,11 @@ def _gen_thread_id() -> str:
 
 def calculate_progress(node_name: str) -> int:
     """Calculate progress percentage for a node (0-100)."""
+    if node_name in (
+        "feature_selection_specification",
+        "feature_engineering_executor",
+    ):
+        node_name = "feature_specification_and_engineering"
     try:
         return int(((STEP_ORDER.index(node_name) + 1) / len(STEP_ORDER)) * 100)
     except ValueError:
@@ -93,9 +115,7 @@ def build_node_update(node_name: str, node_output: dict[str, Any]) -> dict[str, 
             "reasoning": node_output.get("model_explanation", "No explanation provided."),
         }
         _sel = node_output.get("selected_model") or "unknown"
-        _expl = node_output.get("model_explanation") or ""
-        _expl_snip = (_expl[:80] + "…") if len(_expl) > 80 else _expl
-        update["headline"] = f"Selected {_sel} — {_expl_snip}"
+        update["headline"] = f"Selected **{_sel}** — best fit for this task."
 
     elif node_name == "data_collection":
         audit = _get_audit_entry(node_output, "data_collection")
@@ -103,13 +123,13 @@ def build_node_update(node_name: str, node_output: dict[str, Any]) -> dict[str, 
         update["summary"] = {"dataset": node_output.get("collected_dataset_ref"), "rows": audit.get("rows"), "columns": cols, "source": audit.get("source", "collected")}
         update["details"] = {
             "title": "Data Collection Complete",
-            "description": f"Loaded dataset: **{node_output.get('collected_dataset_ref', 'unknown')}**",
+            "description": f"Loaded a dataset with **{audit.get('rows', 'unknown')}** rows and **{len(cols) if cols else 'unknown'}** columns.",
             "stats": {"rows": audit.get("rows", "unknown"), "columns": len(cols) if cols else "unknown", "column_names": cols},
         }
-        _ds_ref = node_output.get("collected_dataset_ref") or "unknown"
         _rows = audit.get("rows") or "N/A"
         _ncols = len(cols) if cols else "N/A"
-        update["headline"] = f"Loaded {_ds_ref} — {_rows} rows, {_ncols} columns"
+        _rows_fmt = f"{_rows:,}" if isinstance(_rows, int) else str(_rows)
+        update["headline"] = f"Loaded **{_rows_fmt} rows** across **{_ncols} columns**"
 
     elif node_name in ("cleaning", "cleaning_and_standardization"):
         transforms = node_output.get("cleaning_transformations", [])
@@ -133,9 +153,10 @@ def build_node_update(node_name: str, node_output: dict[str, Any]) -> dict[str, 
             "cleaning_summary": summary_text,
             "transformations_applied": [t if isinstance(t, dict) else {"op": str(t)} for t in transforms],
         }
-        _snippet = reason or summary_text or "N/A"
-        _snippet = (_snippet[:80] + "…") if len(_snippet) > 80 else _snippet
-        update["headline"] = f"Applied {len(transforms)} transformation(s) — {_snippet}"
+        if transforms:
+            update["headline"] = f"Cleaned the data — {len(transforms)} transformation(s) applied"
+        else:
+            update["headline"] = "Cleaned the data — no issues found"
 
     elif node_name == "label_split_definition":
         ld = _get_or_empty(node_output, "label_definition")
@@ -149,7 +170,7 @@ def build_node_update(node_name: str, node_output: dict[str, Any]) -> dict[str, 
             "label_definition": {"target": ld.get("target_column"), "strategy": ld.get("split_strategy"), "grain": ld.get("grain"), "forbidden_columns": ld.get("forbidden_columns", [])},
             "datasets": {"train": node_output.get("train_dataset_ref"), "validation": node_output.get("val_dataset_ref"), "test": node_output.get("test_dataset_ref")},
         }
-        update["headline"] = f"Target: {ld.get('target_column') or 'unknown'} ({ld.get('split_strategy') or 'unknown'} split)"
+        update["headline"] = f"Target: **{ld.get('target_column') or 'unknown'}** — {ld.get('split_strategy') or 'unknown'} split"
 
     elif node_name == "feature_selection_specification":
         fs = _get_or_empty(node_output, "feature_spec")
@@ -172,8 +193,8 @@ def build_node_update(node_name: str, node_output: dict[str, Any]) -> dict[str, 
             "key_stats": ks, "analysis_trace": trace,
         }
         _leakage = ks.get("leakage_warnings", [])
-        _lw = f" — {len(_leakage)} leakage warning(s)" if _leakage else " — no leakage warnings"
-        update["headline"] = f"Specified {len(features)} features{_lw}"
+        _lw = f" — {len(_leakage)} leakage warning(s)" if _leakage else ""
+        update["headline"] = f"Selected **{len(features)} features** for modeling{_lw}"
 
     elif node_name == "feature_engineering_executor":
         audit = _get_audit_entry(node_output, "feature_engineering_executor")
@@ -198,7 +219,91 @@ def build_node_update(node_name: str, node_output: dict[str, Any]) -> dict[str, 
             "errors": audit.get("errors", []),
         }
         _passed = node_output.get("feature_validation_passed")
-        update["headline"] = f"Created {len(created)} features, validation {'passed' if _passed else 'failed'}"
+        _spec_n = len(spec_features)
+        _created_n = len(created)
+        update["headline"] = (
+            f"Features for training: **{_spec_n}** inputs → **{_created_n}** columns "
+            f"({'validation passed' if _passed else 'validation issues'})"
+        )
+
+    elif node_name == "feature_specification_and_engineering":
+        fs = _get_or_empty(node_output, "feature_spec")
+        features = fs.get("features", [])
+        trace = node_output.get("analysis_trace", [])
+        ks = trace[0].get("key_stats", {}) if trace else {}
+        audit = _get_audit_entry(node_output, "feature_engineering_executor")
+        shapes = audit.get("shapes", {})
+        created = audit.get("features_created", [])
+        spec_features = fs.get("features", [])
+        exp = _get_or_empty(node_output, "experiment_result")
+        rankings = node_output.get("feature_rankings") or {}
+        update["summary"] = {
+            "num_features": len(features),
+            "feature_names": [f.get("name") for f in features[:10]],
+            "train_ref": node_output.get("transformed_train_ref"),
+            "val_ref": node_output.get("transformed_val_ref"),
+            "test_ref": node_output.get("transformed_test_ref"),
+            "validation_passed": node_output.get("feature_validation_passed"),
+            "features_created": created,
+            "shapes": shapes,
+            "num_spec_features": len(spec_features),
+            "experiment_result": exp if exp else None,
+            "feature_rankings": dict(list(rankings.items())[:10]) if rankings else None,
+            **{k: ks.get(k, [] if k != "dataset_overview" and k != "target_analysis" and k != "correlation_matrix" else {})
+               for k in ["dataset_overview", "target_analysis", "numeric_summaries", "feature_correlations", "correlation_matrix",
+                         "high_correlation_pairs", "leakage_warnings", "feature_health", "distribution_stats",
+                         "group_summaries", "concentration_analysis", "categorical_summaries", "schema", "summary_text"]},
+        }
+        exp_details = {}
+        if exp:
+            exp_details = {
+                "best_variant": exp.get("best_variant_name"),
+                "best_metric": exp.get("best_metric"),
+                "total_variants": exp.get("total_variants"),
+                "total_scouts": exp.get("total_scouts"),
+                "signal_features": exp.get("signal_features", []),
+                "dropped_features": exp.get("dropped_features", []),
+                "wall_time_seconds": exp.get("wall_time_seconds"),
+                "feature_rankings": dict(list(rankings.items())[:10]) if rankings else {},
+            }
+        update["details"] = {
+            "title": "Features Specified & Engineered",
+            "description": f"Specified {len(features)} features; created {len(created)} columns after transforms.",
+            "features": [{"name": f.get("name"), "encoding": f.get("encoding"), "formula": str(f.get("formula")) if f.get("formula") else None} for f in features],
+            "key_stats": ks, "analysis_trace": trace,
+            "features_created": created, "num_spec_features": len(spec_features),
+            "dataset_shapes": {"train": _format_shape(shapes, "train"), "validation": _format_shape(shapes, "val"), "test": _format_shape(shapes, "test")},
+            "errors": audit.get("errors", []),
+            "experiment_grid": exp_details if exp_details else None,
+        }
+        _passed = node_output.get("feature_validation_passed")
+        update["headline"] = (
+            f"Selected **{len(features)} features**, built **{len(created)} columns** "
+            f"— validation {'passed' if _passed else 'failed'}"
+        )
+
+    elif node_name == "evaluate_models":
+        comparison = node_output.get("model_comparison", [])
+        successful = [r for r in comparison if r.get("success")]
+        best = successful[0] if successful else {}
+        update["summary"] = {
+            "num_models": len(comparison),
+            "best_model": best.get("name"),
+            "results": comparison,
+        }
+        update["details"] = {
+            "title": "Model Comparison Complete",
+            "description": f"Evaluated {len(comparison)} models in parallel.",
+            "results": comparison,
+        }
+        if best:
+            metric_parts = []
+            for k in ("accuracy", "roc_auc", "r2", "rmse"):
+                if best.get(k) is not None:
+                    metric_parts.append(f"{k}={best[k]}")
+            update["headline"] = f"Best: {best['name']} — {', '.join(metric_parts)}"
+        else:
+            update["headline"] = "Model comparison complete (no successful models)"
 
     elif node_name == "training_approval":
         tp = _get_or_empty(node_output, "training_plan")
@@ -214,9 +319,7 @@ def build_node_update(node_name: str, node_output: dict[str, Any]) -> dict[str, 
             "training_plan": tp, "hyperparameters": hp, "data_summary": ds,
         }
         _mtype = tp.get("model_type") or "unknown"
-        _hp_parts = [f"{k}={v}" for k, v in list(hp.items())[:3]]
-        _hp_summary = ", ".join(_hp_parts) if _hp_parts else "default params"
-        update["headline"] = f"Training config: {_mtype}, {_hp_summary}"
+        update["headline"] = f"Ready to train **{_mtype}** with {len(hp)} hyperparameters"
 
     elif node_name == "training":
         m = _get_or_empty(node_output, "training_metrics")
@@ -234,7 +337,18 @@ def build_node_update(node_name: str, node_output: dict[str, Any]) -> dict[str, 
                 "validation": {"accuracy": m.get("val_accuracy"), "roc_auc": m.get("val_roc_auc"), "r2": m.get("val_r2"), "rmse": m.get("val_rmse"), "mae": m.get("val_mae")},
                 "test": {"accuracy": m.get("test_accuracy"), "roc_auc": m.get("test_roc_auc"), "r2": m.get("test_r2"), "rmse": m.get("test_rmse"), "mae": m.get("test_mae")},
             },
-            "iterations": [{"model_name": it.get("model_name"), "tool": it.get("tool"), "success": it.get("success"), "val_r2": it.get("val_r2"), "test_r2": it.get("test_r2")} for it in iters],
+            "iterations": [
+                {
+                    "model_name": it.get("model_name"),
+                    "tool": it.get("tool"),
+                    "success": it.get("success"),
+                    "val_accuracy": it.get("val_accuracy"),
+                    "val_roc_auc": it.get("val_roc_auc"),
+                    "val_r2": it.get("val_r2"),
+                    "test_r2": it.get("test_r2"),
+                }
+                for it in iters
+            ],
             "summary": m.get("summary"), "recommendations": m.get("recommendations"),
         }
         _mname = m.get("model_name") or "unknown"
@@ -243,24 +357,30 @@ def build_node_update(node_name: str, node_output: dict[str, Any]) -> dict[str, 
         _t_r2 = m.get("test_r2")
         _t_rmse = m.get("test_rmse")
         if _t_acc is not None or _t_auc is not None:
-            _acc_s = f"{_t_acc:.4f}" if _t_acc is not None else "N/A"
-            _auc_s = f"{_t_auc:.4f}" if _t_auc is not None else "N/A"
-            update["headline"] = f"Trained {_mname} — test accuracy {_acc_s}, ROC-AUC {_auc_s}"
+            _parts = []
+            if _t_acc is not None:
+                _parts.append(f"**{_t_acc * 100:.1f}% accuracy**")
+            if _t_auc is not None:
+                _parts.append(f"ROC-AUC {_t_auc:.3f}")
+            update["headline"] = f"Trained **{_mname}** — {', '.join(_parts)}"
         elif _t_r2 is not None or _t_rmse is not None:
-            _r2_s = f"{_t_r2:.4f}" if _t_r2 is not None else "N/A"
-            _rmse_s = f"{_t_rmse:.4f}" if _t_rmse is not None else "N/A"
-            update["headline"] = f"Trained {_mname} — test R² {_r2_s}, RMSE {_rmse_s}"
+            _parts = []
+            if _t_r2 is not None:
+                _parts.append(f"R² {_t_r2:.4f}")
+            if _t_rmse is not None:
+                _parts.append(f"RMSE {_t_rmse:.0f}")
+            update["headline"] = f"Trained **{_mname}** — {', '.join(_parts)}"
         else:
-            update["headline"] = f"Trained {_mname}"
+            update["headline"] = f"Trained **{_mname}** successfully"
 
     elif node_name == "generate_report":
         update["summary"] = {"report_path": node_output.get("report_path"), "model_path": node_output.get("model_weights_path")}
         update["details"] = {
             "title": "Report Generated",
-            "description": f"Final report saved to: **{node_output.get('report_path', 'unknown')}**",
+            "description": "Final report generated with detailed metrics, feature importance, and recommendations.",
             "report_path": node_output.get("report_path"), "model_weights_path": node_output.get("model_weights_path"),
             "audit_trace_length": len(node_output.get("audit_trace", [])),
         }
-        update["headline"] = f"Report saved to {node_output.get('report_path') or 'unknown'}"
+        update["headline"] = "Report saved — view for detailed metrics and recommendations"
 
     return update

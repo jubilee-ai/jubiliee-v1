@@ -24,6 +24,7 @@ export function TraceTab({ steps, agentState }: TraceTabProps) {
       cleaning: "cleaning_and_standardization",
       label_split_definition: "label_split_definition",
       feature_selection_specification: "feature_selection_specification",
+      feature_specification_and_engineering: "feature_engineering_executor",
       feature_engineering_executor: "feature_engineering_executor",
       training: "training",
       generate_report: "generate_report",
@@ -155,6 +156,15 @@ function StepContent({
 
   if (stepId === "feature_selection_specification") {
     return <FeatureSelectionStepContent agentState={agentState} />
+  }
+
+  if (stepId === "feature_specification_and_engineering") {
+    return (
+      <div className="space-y-6">
+        <FeatureSelectionStepContent agentState={agentState} />
+        <FeatureEngineeringStepContent agentState={agentState} audit={audit} />
+      </div>
+    )
   }
 
   if (stepId === "feature_engineering_executor") {

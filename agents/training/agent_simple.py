@@ -1,9 +1,8 @@
 """
 Simple ML Training Agent using LangChain's create_agent.
 
-Uses a single tool-calling agent whose LLM decides step ordering,
-guided by a system prompt.
-All 9 pipeline steps are exposed as tools with shared state via closure.
+Prep and training are separate tool-calling agents on a shared state graph.
+The training agent merges feature specification and feature execution into one tool.
 """
 
 import json
@@ -16,7 +15,9 @@ from typing import Literal, Optional
 
 from langchain.agents import create_agent
 from langchain.chat_models import init_chat_model
+from langchain_core.messages import HumanMessage
 from langgraph.checkpoint.memory import MemorySaver
+from langgraph.graph import END, MessagesState, StateGraph
 from langgraph.types import interrupt
 from pydantic import BaseModel, Field
 
@@ -31,6 +32,7 @@ from .steps.cleaning_simple import run_cleaning_simple
 from .steps.data_collection import data_collection as _data_collection_impl
 from .steps.feature_engineering_executor import execute_feature_spec_split
 from .steps.feature_engineering_simple import run_feature_engineering_simple
+from .steps.feature_experiment_runner import run_experiment_grid
 from .steps.label_and_split import (apply_split, compute_split_indices,
                                     run_label_split_definition)
 from .steps.orchestrator import _infer_target_column
@@ -65,37 +67,65 @@ class TrainingPlan(BaseModel):
     expected_metrics: str = Field(description="Expected range of validation metrics for this task")
 
 
-SYSTEM_PROMPT = """\
-You are an ML pipeline agent. Execute the pipeline steps to train the best model.
+PREP_SYSTEM_PROMPT = """\
+You are an ML data preparation agent. Execute these steps IN ORDER:
 
-## CRITICAL RULES
-1. Call EXACTLY ONE tool at a time. NEVER call multiple tools simultaneously.
-2. Wait for each tool to return before calling the next.
-3. Do NOT skip steps. Do NOT repeat a step that already succeeded.
-4. After each tool returns, briefly note the result, then call the next tool.
-
-## First Pass — Execute in THIS EXACT ORDER
-1. data_collection — Retrieve the dataset(s) and load it
-2. select_model — Choose the model family (supervised, unsupervised, or neural_networks) based on the goal
+1. data_collection — Load the dataset
+2. select_model — Choose the model family (supervised, unsupervised, or neural_networks)
 3. cleaning — Clean and standardize the data
-4. label_split_definition — Define target column and train/val/test splits
-5. feature_selection_specification — Analyze data and specify features
-6. feature_engineering_executor — Execute feature transformations
-7. training_approval — Propose training configuration
-8. training — Train the model and evaluate metrics
-9. generate_report — Save the final report
+4. label_split_definition — Define target column and create train/val/test splits
 
-## After Training — Optimization (Optional)
-After training completes, evaluate the metrics. If they are unsatisfactory:
-- Weak features → go back to feature_selection_specification
-- Wrong model family → go back to select_model
-- Poor hyperparameters → go back to training_approval
-- Unsuitable dataset (near-zero R² or accuracy near random) → go back to data_collection
-After changing any step, re-run all downstream steps in order.
-Do not loop more than 4 total training iterations.
+## Rules
+- Call EXACTLY ONE tool at a time.
+- Wait for each tool to return before calling the next.
+- Do NOT skip steps. Do NOT repeat a step that already succeeded.
+- After all four steps complete, you are done — output a brief summary of what was prepared.
+"""
 
-## After generate_report
-Summarize the final results.
+FEATURE_TRAINING_SYSTEM_PROMPT = """\
+You are an ML feature engineering and training agent. Your goal is to find the \
+best combination of features and model configuration through systematic experimentation.
+
+## Tools
+- feature_specification_and_engineering — Analyze data, specify features, execute them, \
+and automatically run a parallel feature experiment grid (tests feature-set variants \
+with lightweight scout models). Returns the winning feature set, signal/noise features, \
+and importance rankings.
+- evaluate_models — Train up to 3 sklearn models IN PARALLEL and compare results \
+on the current feature set. Good for quick model family comparison.
+- training_approval — Propose a training plan for human review.
+- training — Full hyperparameter-tuned training with the best model. The training \
+agent can use batch_train_with_skill internally to train 2-3 estimators in parallel \
+per iteration, making the search faster.
+- generate_report — Save the final report.
+
+## Strategy: Iterate Like a Data Scientist
+
+### Round 1: Baseline
+1. Call feature_specification_and_engineering to specify and materialize features. \
+The tool automatically runs a feature experiment grid that tests subsets (MI top-k, \
+decorrelated, ablation) with HistGradientBoosting and RandomForest scouts in parallel. \
+Review the experiment results: signal features, dropped features, best variant.
+2. Call evaluate_models with 2-3 model families to compare on the winning feature set.
+3. Analyze the results: which model is best? Do the experiment grid insights suggest issues?
+
+### Round 2+: Iterate (if needed)
+If performance is unsatisfactory, call feature_specification_and_engineering again \
+with a revised feature set — the experiment grid will re-run automatically. Use \
+insights from signal/noise features and importance rankings to guide your revisions.
+
+### Finalize
+When you are satisfied (or after 3 feature iterations):
+1. Call training_approval with the best model configuration.
+2. Call training for full hyperparameter-tuned training (uses parallel batch training internally).
+3. Call generate_report.
+
+## Rules
+- Call ONE tool at a time. Wait for results before deciding the next action.
+- Max 3 feature engineering iterations.
+- For evaluate_models, pass 2-3 model names as a comma-separated string.
+- After each evaluate_models call, explicitly reason about what to try next.
+- Always call generate_report at the end.
 """
 
 
@@ -145,6 +175,10 @@ def create_simple_training_agent(
         """Interrupt for human review after a step completes. Returns the decision."""
         if not hitl:
             return {"approved": True}
+        if _phase == "training" and node_name in (
+            "feature_specification_and_engineering",
+        ):
+            return {"approved": True}
         decision = interrupt({
             "node": node_name,
             "summary": summary,
@@ -160,6 +194,7 @@ def create_simple_training_agent(
 
     # Track which steps have successfully completed to prevent redundant calls
     _completed_steps: set[str] = set()
+    _phase = "prep"
 
     # Keys produced by each step, used to invalidate downstream state on re-runs
     _STEP_OUTPUTS = {
@@ -180,6 +215,22 @@ def create_simple_training_agent(
             "transformed_test_ref", "transformed_dataset_ref",
             "feature_validation_passed",
         ],
+        "feature_specification_and_engineering": [
+            "feature_spec", "analysis_trace",
+            "feature_redo_requested", "feature_redo_recommendation",
+            "feature_redo_reason", "feature_redo_iteration",
+            "transformed_train_ref", "transformed_val_ref",
+            "transformed_test_ref", "transformed_dataset_ref",
+            "feature_validation_passed",
+            "experiment_result", "feature_rankings", "experiment_grid_summary",
+        ],
+        "feature_experiment_runner": [
+            "experiment_result", "feature_rankings",
+            "experiment_grid_summary",
+        ],
+        "evaluate_models": [
+            "model_comparison",
+        ],
         "training_approval": ["training_plan", "training_plan_approved"],
         "training": [
             "model_weights_path", "training_metrics", "training_iteration",
@@ -188,16 +239,18 @@ def create_simple_training_agent(
         ],
         "generate_report": ["report_path"],
     }
-    _STEP_ORDER = [
+    # Logical dependency order for invalidation (includes split feature sub-steps).
+    _INVALIDATION_ORDER = [
         "data_collection", "select_model", "cleaning", "label_split_definition",
         "feature_selection_specification", "feature_engineering_executor",
+        "feature_experiment_runner", "evaluate_models",
         "training_approval", "training", "generate_report",
     ]
 
     def _invalidate_downstream(step_name: str):
         """Clear state produced by all steps after `step_name`."""
-        idx = _STEP_ORDER.index(step_name)
-        for later_step in _STEP_ORDER[idx + 1:]:
+        idx = _INVALIDATION_ORDER.index(step_name)
+        for later_step in _INVALIDATION_ORDER[idx + 1:]:
             for key in _STEP_OUTPUTS.get(later_step, []):
                 state.pop(key, None)
             _completed_steps.discard(later_step)
@@ -337,6 +390,12 @@ def create_simple_training_agent(
             state["_redo_feedback_cleaning"] = fb
             return f"REJECTED by user: {fb}"
 
+        state["audit_trace"] = state.get("audit_trace", []) + [{
+            "step": "cleaning",
+            "cleaned_ref": result["cleaned_ref"],
+            "n_transformations": n_transforms,
+            "cleaning_summary": result.get("cleaning_summary", ""),
+        }]
         _completed_steps.add("cleaning")
         return (
             f"Cleaned dataset: {result['cleaned_ref']}\n"
@@ -374,7 +433,7 @@ def create_simple_training_agent(
                 "train_dataset_ref": train_ref,
                 "val_dataset_ref": None,
                 "test_dataset_ref": None,
-                "current_step": "feature_selection_specification",
+                "current_step": "feature_specification_and_engineering",
             })
             _completed_steps.add("label_split_definition")
             print(f"🏷️ label_split: unsupervised bypass — train={train_ref}", flush=True)
@@ -429,7 +488,7 @@ def create_simple_training_agent(
             "train_dataset_ref": train_ref,
             "val_dataset_ref": val_ref,
             "test_dataset_ref": test_ref,
-            "current_step": "feature_selection_specification",
+            "current_step": "feature_specification_and_engineering",
         })
 
         transform_note = f" (target transformed: {target_transform})" if target_transform else ""
@@ -444,6 +503,14 @@ def create_simple_training_agent(
             state["_redo_feedback_label_split"] = fb
             return f"REJECTED by user: {fb}"
 
+        state["audit_trace"] = state.get("audit_trace", []) + [{
+            "step": "label_split_definition",
+            "target_column": label_def.get("target_column"),
+            "split_strategy": label_def.get("split_strategy"),
+            "train_rows": len(train_df),
+            "val_rows": len(val_df),
+            "test_rows": len(test_df),
+        }]
         _completed_steps.add("label_split_definition")
         return (
             f"Target column: {label_def.get('target_column', '?')}\n"
@@ -451,14 +518,30 @@ def create_simple_training_agent(
             f"Train: {len(train_df)} rows | Val: {len(val_df)} rows | Test: {len(test_df)} rows"
         )
 
-    def tool_feature_selection_specification() -> str:
-        """Analyze data and specify which features to engineer. Can be re-called to redesign features."""
+    def tool_feature_specification_and_engineering() -> str:
+        """Specify features from data analysis, then execute the spec to build transformed datasets."""
         nonlocal state
-        if "feature_selection_specification" in _completed_steps and not state.get("feature_redo_requested") and not state.get("_redo_feedback_feature_selection"):
+        if (
+            _phase != "training"
+            and "feature_selection_specification" in _completed_steps
+            and "feature_engineering_executor" in _completed_steps
+            and state.get("feature_validation_passed")
+            and not state.get("feature_redo_requested")
+            and not state.get("_redo_feedback_feature_selection")
+        ):
             fs = (state.get("feature_spec") or {}).get("features", [])
-            return f"SKIP: Features already specified ({len(fs)} features). Proceed to the next step."
+            return (
+                f"SKIP: Feature specification and engineering already completed "
+                f"({len(fs)} features). Proceed to evaluate_models."
+            )
+
         label_def = state.get("label_definition") or {}
+
+        # ----- Selection -----
         if state.get("selected_model") == "unsupervised":
+            train_ref = state.get("train_dataset_ref")
+            if not train_ref:
+                return "SKIP: Cannot run — label_split_definition must run first."
             state.update({
                 "feature_spec": {"features": []},
                 "analysis_trace": [],
@@ -467,134 +550,135 @@ def create_simple_training_agent(
                 "feature_redo_reason": None,
             })
             _completed_steps.add("feature_selection_specification")
-            return "Unsupervised flow: feature specification skipped (direct training on cleaned columns)."
-        train_ref = state.get("train_dataset_ref")
-        target_column = label_def.get("target_column", "")
-        if not train_ref or not target_column:
-            return "SKIP: Cannot run — label_split_definition must run first."
-        _invalidate_downstream("feature_selection_specification")
+            selection_text = "Unsupervised: feature specification skipped (passthrough)."
+        else:
+            train_ref = state.get("train_dataset_ref")
+            target_column = label_def.get("target_column", "")
+            if not train_ref or not target_column:
+                return "SKIP: Cannot run — label_split_definition must run first."
+            _invalidate_downstream("feature_selection_specification")
 
-        redo_fb = state.pop("_redo_feedback_feature_selection", None)
-        if redo_fb:
-            state["feature_redo_requested"] = True
-            state["feature_redo_recommendation"] = redo_fb
+            redo_fb = state.pop("_redo_feedback_feature_selection", None)
+            if redo_fb:
+                state["feature_redo_requested"] = True
+                state["feature_redo_recommendation"] = redo_fb
 
-        recommendation = state.get("feature_redo_recommendation") if state.get("feature_redo_requested") else None
+            recommendation = state.get("feature_redo_recommendation") if state.get("feature_redo_requested") else None
 
-        result = run_feature_engineering_simple(
-            train_ref=train_ref,
-            goal=state.get("goal", ""),
-            target_column=target_column,
-            grain=label_def.get("grain", ""),
-            recomendation=recommendation,
-            val_ref=state.get("val_dataset_ref"),
-            test_ref=state.get("test_dataset_ref"),
-            task_type=_infer_task_type(state.get("goal", ""), state.get("selected_model", "")),
-            forbidden_columns=label_def.get("forbidden_columns", []),
-            as_of_cutoff=label_def.get("as_of_cutoff"),
-            prediction_horizon=label_def.get("prediction_horizon"),
-            selected_model=state.get("selected_model"),
-        )
+            result = run_feature_engineering_simple(
+                train_ref=train_ref,
+                goal=state.get("goal", ""),
+                target_column=target_column,
+                grain=label_def.get("grain", ""),
+                recomendation=recommendation,
+                val_ref=state.get("val_dataset_ref"),
+                test_ref=state.get("test_dataset_ref"),
+                task_type=_infer_task_type(state.get("goal", ""), state.get("selected_model", "")),
+                forbidden_columns=label_def.get("forbidden_columns", []),
+                as_of_cutoff=label_def.get("as_of_cutoff"),
+                prediction_horizon=label_def.get("prediction_horizon"),
+                selected_model=state.get("selected_model"),
+            )
 
-        feature_spec = result.get("feature_spec")
-        validation = result.get("validation", {})
-        if validation and not validation.get("valid", True) and feature_spec and "features" in feature_spec:
-            features_valid = validation.get("features_valid", {})
-            feature_spec["features"] = [
-                f for f in feature_spec["features"]
-                if features_valid.get(f.get("name"), {}).get("valid", True)
-            ]
+            feature_spec = result.get("feature_spec")
+            validation = result.get("validation", {})
+            if validation and not validation.get("valid", True) and feature_spec and "features" in feature_spec:
+                features_valid = validation.get("features_valid", {})
+                feature_spec["features"] = [
+                    f for f in feature_spec["features"]
+                    if features_valid.get(f.get("name"), {}).get("valid", True)
+                ]
 
-        redo_iter = state.get("feature_redo_iteration", 0)
-        state.update({
-            "feature_spec": feature_spec,
-            "analysis_trace": [{"step": "feature_selection_specification",
-                                "key_stats": result.get("key_stats", {}),
-                                "is_redo": state.get("feature_redo_requested", False)}],
-            "feature_redo_requested": False,
-            "feature_redo_recommendation": None,
-            "feature_redo_reason": None,
-            "feature_redo_iteration": redo_iter + 1 if state.get("feature_redo_requested") else redo_iter,
-        })
-        features = (feature_spec or {}).get("features", [])
-        names = [f.get("name", "?") for f in features[:10]]
+            redo_iter = state.get("feature_redo_iteration", 0)
+            state.update({
+                "feature_spec": feature_spec,
+                "analysis_trace": [{"step": "feature_selection_specification",
+                                    "key_stats": result.get("key_stats", {}),
+                                    "is_redo": state.get("feature_redo_requested", False)}],
+                "feature_redo_requested": False,
+                "feature_redo_recommendation": None,
+                "feature_redo_reason": None,
+                "feature_redo_iteration": redo_iter + 1 if state.get("feature_redo_requested") else redo_iter,
+            })
+            features = (feature_spec or {}).get("features", [])
+            names = [f.get("name", "?") for f in features[:10]]
 
-        summary = f"Specified **{len(features)}** features: {', '.join(names)}"
-        if len(features) > 10:
-            summary += f" … and {len(features) - 10} more"
-        decision = _hitl_gate("feature_selection_specification", summary)
-        if not decision.get("approved", True):
-            fb = decision.get("feedback", "Please revise feature selection.")
-            state["_redo_feedback_feature_selection"] = fb
-            return f"REJECTED by user: {fb}"
+            summary_sel = f"Specified **{len(features)}** features: {', '.join(names)}"
+            if len(features) > 10:
+                summary_sel += f" … and {len(features) - 10} more"
+            decision = _hitl_gate("feature_specification_and_engineering", summary_sel)
+            if not decision.get("approved", True):
+                fb = decision.get("feedback", "Please revise feature selection.")
+                state["_redo_feedback_feature_selection"] = fb
+                return f"REJECTED by user: {fb}"
 
-        _completed_steps.add("feature_selection_specification")
-        return f"Features specified: {len(features)}\nNames: {', '.join(names)}"
+            _completed_steps.add("feature_selection_specification")
+            selection_text = f"Selection: {len(features)} features — {', '.join(names)}"
 
-    def tool_feature_engineering_executor() -> str:
-        """Execute the feature specification to produce transformed train/val/test datasets. Can be re-called."""
-        nonlocal state
-        if "feature_engineering_executor" in _completed_steps and state.get("feature_validation_passed"):
-            return f"SKIP: Features already engineered. Proceed to the next step."
+        # ----- Engineering -----
         label_def = state.get("label_definition") or {}
         if state.get("selected_model") == "unsupervised":
-            train_ref = state.get("train_dataset_ref")
-            if not train_ref:
-                return "SKIP: Cannot run — label_split_definition must run first."
+            train_ref_u = state.get("train_dataset_ref")
+            if not train_ref_u:
+                return f"{selection_text}\nSKIP: Cannot engineer — no train ref."
             state.update({
-                "transformed_train_ref": train_ref,
+                "transformed_train_ref": train_ref_u,
                 "transformed_val_ref": None,
                 "transformed_test_ref": None,
-                "transformed_dataset_ref": train_ref,
+                "transformed_dataset_ref": train_ref_u,
                 "feature_validation_passed": True,
             })
             _completed_steps.add("feature_engineering_executor")
-            return "Unsupervised flow: feature engineering passthrough complete."
-        train_ref = state.get("train_dataset_ref")
-        feature_spec = state.get("feature_spec")
-        target_column = label_def.get("target_column", "")
-        if not train_ref or not feature_spec or not target_column:
-            return "SKIP: Cannot run — feature_selection_specification must run first."
+            state["current_step"] = "feature_specification_and_engineering"
+            return f"{selection_text}\nEngineering: passthrough (unsupervised), train={train_ref_u}"
+
         _invalidate_downstream("feature_engineering_executor")
 
-        result = execute_feature_spec_split(
-            train_ref=train_ref,
+        train_ref_e = state.get("train_dataset_ref")
+        feature_spec_e = state.get("feature_spec")
+        target_column_e = label_def.get("target_column", "")
+        if not train_ref_e or not feature_spec_e or not target_column_e:
+            return f"{selection_text}\nSKIP: Engineering cannot run — missing spec or target."
+
+        result_ex = execute_feature_spec_split(
+            train_ref=train_ref_e,
             val_ref=state.get("val_dataset_ref"),
             test_ref=state.get("test_dataset_ref"),
-            feature_spec=feature_spec,
-            target_column=target_column,
+            feature_spec=feature_spec_e,
+            target_column=target_column_e,
             grain=label_def.get("grain", ""),
             as_of_cutoff=label_def.get("as_of_cutoff"),
         )
 
-        errors = result.get("errors", [])
-        features_created = result.get("features_created", [])
+        errors = result_ex.get("errors", [])
+        features_created = result_ex.get("features_created", [])
         passed = len(features_created) > 0 and len(errors) < len(features_created)
 
         state.update({
-            "transformed_train_ref": result.get("train_ref"),
-            "transformed_val_ref": result.get("val_ref"),
-            "transformed_test_ref": result.get("test_ref"),
-            "transformed_dataset_ref": result.get("train_ref"),
+            "transformed_train_ref": result_ex.get("train_ref"),
+            "transformed_val_ref": result_ex.get("val_ref"),
+            "transformed_test_ref": result_ex.get("test_ref"),
+            "transformed_dataset_ref": result_ex.get("train_ref"),
             "feature_validation_passed": passed,
             "audit_trace": state.get("audit_trace", []) + [{
                 "step": "feature_engineering_executor",
                 "features_created": features_created,
                 "errors": errors,
-                "shapes": result.get("shapes"),
+                "shapes": result_ex.get("shapes"),
             }],
         })
-        shapes = result.get("shapes", {})
+        shapes = result_ex.get("shapes", {})
         if passed:
             _completed_steps.add("feature_engineering_executor")
-        status = "PASSED" if passed else "FAILED"
+        state["current_step"] = "feature_specification_and_engineering"
 
         def _fmt_shape(s):
             if isinstance(s, (list, tuple)) and len(s) >= 2:
                 return f"{s[0]} × {s[1]}"
             return str(s) if s else "?"
 
-        summary = (
+        status = "PASSED" if passed else "FAILED"
+        eng_summary = (
             f"Validation: {status}\n"
             f"Features created: {len(features_created)}\n"
             f"Errors: {len(errors)}\n"
@@ -603,8 +687,263 @@ def create_simple_training_agent(
             f"Test: {_fmt_shape(shapes.get('test'))}"
         )
         if not passed:
-            summary += "\n\nFeature engineering had issues. Consider going back to feature_selection_specification."
-        return summary
+            eng_summary += (
+                "\n\nFeature engineering had issues. "
+                "Call feature_specification_and_engineering again after revising the feature set."
+            )
+            return f"{selection_text}\n\n{eng_summary}"
+
+        # --- Feature Experiment Grid (auto-runs for supervised with ≥5 features) ---
+        experiment_summary = ""
+        spec_features = (state.get("feature_spec") or {}).get("features", [])
+        task_type_fe = _infer_task_type(state.get("goal", ""), state.get("selected_model", ""))
+        if (
+            task_type_fe != "unsupervised"
+            and len(spec_features) >= 5
+            and state.get("transformed_train_ref")
+            and state.get("transformed_val_ref")
+        ):
+            try:
+                exp_result = run_experiment_grid(
+                    feature_spec=state.get("feature_spec"),
+                    train_ref=state.get("train_dataset_ref"),
+                    val_ref=state.get("val_dataset_ref"),
+                    test_ref=state.get("test_dataset_ref"),
+                    target_column=target_column_e,
+                    task_type=task_type_fe,
+                    grain=label_def.get("grain", ""),
+                    as_of_cutoff=label_def.get("as_of_cutoff"),
+                )
+
+                if exp_result.total_scouts > 0 and exp_result.best_variant_name != "full":
+                    state["transformed_train_ref"] = exp_result.transformed_train_ref
+                    state["transformed_val_ref"] = exp_result.transformed_val_ref
+                    state["transformed_test_ref"] = exp_result.transformed_test_ref
+                    state["transformed_dataset_ref"] = exp_result.transformed_train_ref
+                    state["feature_spec"] = exp_result.best_feature_spec
+
+                state.update({
+                    "experiment_result": {
+                        "best_variant_name": exp_result.best_variant_name,
+                        "best_metric": exp_result.best_metric,
+                        "total_variants": exp_result.total_variants,
+                        "total_scouts": exp_result.total_scouts,
+                        "signal_features": exp_result.signal_features,
+                        "dropped_features": exp_result.dropped_features,
+                        "wall_time_seconds": exp_result.wall_time_seconds,
+                    },
+                    "feature_rankings": exp_result.feature_rankings,
+                    "experiment_grid_summary": exp_result.experiment_grid,
+                    "audit_trace": state.get("audit_trace", []) + [{
+                        "step": "feature_experiment_runner",
+                        "best_variant": exp_result.best_variant_name,
+                        "best_metric": exp_result.best_metric,
+                        "total_scouts": exp_result.total_scouts,
+                        "signal_features": exp_result.signal_features[:10],
+                        "dropped_features": exp_result.dropped_features[:10],
+                    }],
+                })
+
+                sig = exp_result.signal_features[:5]
+                noise = exp_result.dropped_features[:5]
+                experiment_summary = (
+                    f"\n\n## Feature Experiment Grid\n"
+                    f"Tested {exp_result.total_variants} variants × 2 model families = "
+                    f"{exp_result.total_scouts} scouts in {exp_result.wall_time_seconds:.1f}s\n"
+                    f"Best variant: **{exp_result.best_variant_name}** "
+                    f"(metric={exp_result.best_metric:.4f})\n"
+                    f"Signal features: {sig}\n"
+                    f"Low-signal features: {noise}"
+                )
+            except Exception as exc:
+                print(f"[feature_experiment_runner] Grid failed (non-fatal): {exc}")
+                experiment_summary = ""
+
+        return f"{selection_text}\n\n{eng_summary}{experiment_summary}"
+
+    def tool_evaluate_models(model_names: str) -> str:
+        """Evaluate up to 3 sklearn models in parallel on the current feature set.
+
+        Args:
+            model_names: Comma-separated estimator names, e.g.
+                "HistGradientBoostingClassifier, RandomForestClassifier, LogisticRegression"
+                For regression use Regressor variants and Ridge/Lasso.
+
+        Returns a side-by-side comparison of each model's validation performance.
+        """
+        import importlib
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        import numpy as np
+        from sklearn.metrics import (
+            accuracy_score,
+            mean_squared_error,
+            r2_score,
+            roc_auc_score,
+        )
+        from sklearn.preprocessing import LabelEncoder, OrdinalEncoder
+
+        names = [n.strip() for n in model_names.split(",")][:3]
+
+        train_ref = state.get("transformed_train_ref")
+        val_ref = state.get("transformed_val_ref")
+        if not train_ref or not val_ref:
+            return "ERROR: Feature engineering must run before evaluating models."
+
+        label_def = state.get("label_definition") or {}
+        target_col = label_def.get("target_column", "")
+        task_type = _infer_task_type(
+            state.get("goal", ""), state.get("selected_model", "")
+        )
+
+        train_df = get_registered_dataset(train_ref)
+        val_df = get_registered_dataset(val_ref)
+        if train_df is None or val_df is None:
+            return "ERROR: Could not load training or validation data."
+
+        feature_cols = [c for c in train_df.columns if c != target_col]
+        X_train, y_train = train_df[feature_cols], train_df[target_col]
+        X_val, y_val = val_df[feature_cols], val_df[target_col]
+
+        X_tr = X_train.copy()
+        X_va = X_val.copy()
+        cat_cols = X_tr.select_dtypes(include=["object", "category"]).columns.tolist()
+        if cat_cols:
+            oe = OrdinalEncoder(
+                handle_unknown="use_encoded_value", unknown_value=-1
+            )
+            X_tr[cat_cols] = oe.fit_transform(X_tr[cat_cols])
+            X_va[cat_cols] = oe.transform(X_va[cat_cols])
+        X_tr = X_tr.fillna(0)
+        X_va = X_va.fillna(0)
+
+        y_tr = y_train.copy()
+        y_va = y_val.copy()
+        le = None
+        if y_tr.dtype == object or y_tr.dtype.name == "category":
+            le = LabelEncoder()
+            y_tr = le.fit_transform(y_tr)
+            y_va = le.transform(y_va)
+
+        _MODEL_DEFAULTS: dict[str, tuple[str, dict]] = {
+            "HistGradientBoostingClassifier": ("sklearn.ensemble", {}),
+            "RandomForestClassifier": (
+                "sklearn.ensemble",
+                {"n_estimators": 200, "n_jobs": -1},
+            ),
+            "LogisticRegression": (
+                "sklearn.linear_model",
+                {"max_iter": 1000},
+            ),
+            "GradientBoostingClassifier": ("sklearn.ensemble", {}),
+            "HistGradientBoostingRegressor": ("sklearn.ensemble", {}),
+            "RandomForestRegressor": (
+                "sklearn.ensemble",
+                {"n_estimators": 200, "n_jobs": -1},
+            ),
+            "Ridge": ("sklearn.linear_model", {}),
+            "Lasso": ("sklearn.linear_model", {"max_iter": 1000}),
+            "GradientBoostingRegressor": ("sklearn.ensemble", {}),
+        }
+
+        def _train_one(name: str) -> dict:
+            try:
+                if name not in _MODEL_DEFAULTS:
+                    return {"name": name, "success": False, "error": f"Unknown model: {name}"}
+                module_name, default_params = _MODEL_DEFAULTS[name]
+                module = importlib.import_module(module_name)
+                cls = getattr(module, name)
+                init_kwargs = {**default_params}
+                import inspect
+                sig = inspect.signature(cls)
+                if "random_state" in sig.parameters:
+                    init_kwargs["random_state"] = 42
+                mdl = cls(**init_kwargs)
+                mdl.fit(X_tr, y_tr)
+
+                y_pred = mdl.predict(X_va)
+                metrics: dict = {"name": name, "success": True}
+
+                if task_type == "regression":
+                    metrics["r2"] = round(float(r2_score(y_va, y_pred)), 4)
+                    metrics["rmse"] = round(
+                        float(np.sqrt(mean_squared_error(y_va, y_pred))), 4
+                    )
+                else:
+                    metrics["accuracy"] = round(float(accuracy_score(y_va, y_pred)), 4)
+                    if hasattr(mdl, "predict_proba"):
+                        try:
+                            y_proba = mdl.predict_proba(X_va)
+                            if y_proba.shape[1] == 2:
+                                metrics["roc_auc"] = round(
+                                    float(roc_auc_score(y_va, y_proba[:, 1])), 4
+                                )
+                            else:
+                                metrics["roc_auc"] = round(
+                                    float(
+                                        roc_auc_score(
+                                            y_va,
+                                            y_proba,
+                                            multi_class="ovr",
+                                            average="weighted",
+                                        )
+                                    ),
+                                    4,
+                                )
+                        except Exception:
+                            pass
+
+                if hasattr(mdl, "feature_importances_"):
+                    imps = mdl.feature_importances_
+                    top_5 = sorted(
+                        zip(feature_cols, imps), key=lambda x: x[1], reverse=True
+                    )[:5]
+                    metrics["top_features"] = {
+                        f: round(float(v), 4) for f, v in top_5
+                    }
+
+                return metrics
+            except Exception as e:
+                return {"name": name, "success": False, "error": str(e)}
+
+        results: list[dict] = []
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            futures = {pool.submit(_train_one, n): n for n in names}
+            for f in as_completed(futures):
+                results.append(f.result())
+
+        def _sort_key(r: dict) -> float:
+            if not r.get("success"):
+                return -float("inf")
+            if task_type == "regression":
+                return r.get("r2", -float("inf"))
+            return r.get("roc_auc", r.get("accuracy", -float("inf")))
+
+        results.sort(key=_sort_key, reverse=True)
+
+        state["model_comparison"] = results
+
+        lines = ["## Model Comparison Results\n"]
+        for i, r in enumerate(results, 1):
+            if not r.get("success"):
+                lines.append(f"{i}. **{r['name']}** — FAILED: {r.get('error')}")
+                continue
+            metric_parts = []
+            for k in ("accuracy", "roc_auc", "r2", "rmse"):
+                if r.get(k) is not None:
+                    metric_parts.append(f"{k}={r[k]}")
+            lines.append(f"{i}. **{r['name']}** — {', '.join(metric_parts)}")
+            if r.get("top_features"):
+                top = ", ".join(
+                    f"{f}({v})" for f, v in list(r["top_features"].items())[:3]
+                )
+                lines.append(f"   Top features: {top}")
+
+        if results and results[0].get("success"):
+            lines.append(f"\n**Best: {results[0]['name']}**")
+
+        _completed_steps.add("evaluate_models")
+        return "\n".join(lines)
 
     def tool_training_approval() -> str:
         """Propose a training configuration (hyperparameters, strategy). Re-call after changing model or features."""
@@ -733,11 +1072,11 @@ def create_simple_training_agent(
         _invalidate_downstream("training")
         label_def = state.get("label_definition") or {}
         target_column = label_def.get("target_column", "")
-        selected_model = state.get("selected_model", "supervised")
+        selected_model = state.get("selected_model") or "supervised"
         task_type = _infer_task_type(state.get("goal", ""), selected_model)
         train_ref = state.get("transformed_train_ref")
         if not train_ref:
-            return "SKIP: Cannot run — feature_engineering_executor must complete first."
+            return "SKIP: Cannot run — feature_specification_and_engineering must complete first."
         if not target_column and task_type != "unsupervised":
             return "SKIP: Cannot run — label_split_definition must define a target column first."
 
@@ -753,6 +1092,8 @@ def create_simple_training_agent(
             goal=state.get("goal", ""),
             model_name=model_name,
             max_iterations=plan_max_iters,
+            experiment_result=state.get("experiment_result"),
+            feature_rankings=state.get("feature_rankings"),
         )
 
         feature_redo_requested = result.get("feature_redo_requested", False)
@@ -881,6 +1222,9 @@ def create_simple_training_agent(
         metrics = state.get("training_metrics", {})
         label_def = state.get("label_definition") or {}
 
+        exp = state.get("experiment_result") or {}
+        rankings = state.get("feature_rankings") or {}
+
         report = {
             "generated_at": datetime.now().isoformat(),
             "goal": state.get("goal"),
@@ -901,21 +1245,39 @@ def create_simple_training_agent(
                 "split_strategy": label_def.get("split_strategy"),
                 "grain": label_def.get("grain"),
             },
+            "feature_experiment": {
+                "best_variant": exp.get("best_variant_name"),
+                "best_metric": exp.get("best_metric"),
+                "total_variants": exp.get("total_variants"),
+                "total_scouts": exp.get("total_scouts"),
+                "signal_features": exp.get("signal_features", []),
+                "dropped_features": exp.get("dropped_features", []),
+                "wall_time_seconds": exp.get("wall_time_seconds"),
+                "feature_rankings": dict(list(rankings.items())[:20]) if rankings else {},
+                "experiment_grid": state.get("experiment_grid_summary"),
+            } if exp else None,
             "training_results": {
                 "success": metrics.get("success"),
                 "num_iterations": metrics.get("num_iterations", 0),
                 "validation_metrics": {
                     "accuracy": metrics.get("val_accuracy"),
                     "roc_auc": metrics.get("val_roc_auc"),
+                    "r2": metrics.get("val_r2"),
+                    "rmse": metrics.get("val_rmse"),
+                    "mae": metrics.get("val_mae"),
                 },
                 "test_metrics": {
                     "accuracy": metrics.get("test_accuracy"),
                     "roc_auc": metrics.get("test_roc_auc"),
+                    "r2": metrics.get("test_r2"),
+                    "rmse": metrics.get("test_rmse"),
+                    "mae": metrics.get("test_mae"),
                 },
                 "iterations": metrics.get("iterations", []),
                 "best_iteration": metrics.get("best_iteration"),
                 "summary": metrics.get("summary"),
                 "recommendations": metrics.get("recommendations"),
+                "feature_importances": metrics.get("feature_importances", {}),
             },
             "audit_trace": state.get("audit_trace", []),
         }
@@ -933,15 +1295,18 @@ def create_simple_training_agent(
         _completed_steps.add("generate_report")
         return f"Report saved to {report_path}"
 
-    # -- build the deep agent -----------------------------------------------
+    # -- build the two-agent graph -------------------------------------------
 
-    all_tools = [
+    prep_tools = [
         tool_data_collection,
         tool_select_model,
         tool_cleaning,
         tool_label_split_definition,
-        tool_feature_selection_specification,
-        tool_feature_engineering_executor,
+    ]
+
+    training_tools = [
+        tool_feature_specification_and_engineering,
+        tool_evaluate_models,
         tool_training_approval,
         tool_training,
         tool_generate_report,
@@ -952,15 +1317,39 @@ def create_simple_training_agent(
 
     llm = init_chat_model(model) if isinstance(model, str) else model
 
-    kwargs: dict = {
-        "model": llm,
-        "tools": all_tools,
-        "system_prompt": SYSTEM_PROMPT,
-    }
-    if checkpointer is not None:
-        kwargs["checkpointer"] = checkpointer
+    prep_agent = create_agent(
+        model=llm, tools=prep_tools, system_prompt=PREP_SYSTEM_PROMPT,
+    )
+    training_agent = create_agent(
+        model=llm, tools=training_tools, system_prompt=FEATURE_TRAINING_SYSTEM_PROMPT,
+    )
 
-    agent = create_agent(**kwargs)
+    def _handoff_to_training(msg_state: MessagesState) -> dict:
+        nonlocal _phase
+        _phase = "training"
+        label_def = state.get("label_definition") or {}
+        context = (
+            "Data preparation is complete. Begin feature engineering and model training.\n\n"
+            f"Goal: {state.get('goal', '')}\n"
+            f"Dataset: {state.get('collected_dataset_ref')}\n"
+            f"Target column: {label_def.get('target_column', 'N/A')}\n"
+            f"Model family: {state.get('selected_model')}\n"
+            f"Train ref: {state.get('train_dataset_ref')}\n"
+            f"Val ref: {state.get('val_dataset_ref')}\n"
+            f"Test ref: {state.get('test_dataset_ref')}\n"
+        )
+        return {"messages": [HumanMessage(content=context)]}
+
+    workflow = StateGraph(MessagesState)
+    workflow.add_node("prep", prep_agent)
+    workflow.add_node("handoff", _handoff_to_training)
+    workflow.add_node("training", training_agent)
+    workflow.set_entry_point("prep")
+    workflow.add_edge("prep", "handoff")
+    workflow.add_edge("handoff", "training")
+    workflow.add_edge("training", END)
+
+    agent = workflow.compile(checkpointer=checkpointer)
     return agent, state
 
 

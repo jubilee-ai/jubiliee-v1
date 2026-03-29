@@ -407,6 +407,7 @@ function AuthenticatedApp() {
                     steps={agent.steps}
                     hasExperimentChecklist={hasActivity}
                     experimentId={realAgent.experimentId}
+                    runningStepHint={realAgent.runningStepHint}
                   />
                 </div>
               </div>

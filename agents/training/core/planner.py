@@ -21,6 +21,7 @@ from agents.training.utils.graph_stream_hooks import (
     emit_graph_stream,
 )
 
+from .conversation_context import transcript_for_planner_prompt
 from .hitl import run_with_hitl
 
 load_dotenv(Path(__file__).parent.parent.parent.parent / ".env")
@@ -37,7 +38,7 @@ class PlanStep(BaseModel):
     step: str = Field(
         description="Step identifier — one of: data_collection, select_model, "
         "cleaning, label_split_definition, feature_selection_specification, "
-        "feature_engineering_executor, training_approval, training, generate_report"
+        "feature_engineering_executor, feature_experiment_runner, training_approval, training, generate_report"
     )
     rationale: str = Field(
         description=(
@@ -90,6 +91,7 @@ ALL_STEP_NAMES: set[str] = {
     "label_split_definition",
     "feature_selection_specification",
     "feature_engineering_executor",
+    "feature_experiment_runner",
     "training_approval",
     "training",
     "generate_report",
@@ -115,6 +117,7 @@ to run, along with steps to skip and why.
 | label_split_definition | Define the target column and create train / val / test splits |
 | feature_selection_specification | Analyse data and specify which features to engineer |
 | feature_engineering_executor | Execute the feature transformations |
+| feature_experiment_runner | Test multiple feature-set variants in parallel with scout models to find the best features |
 | training_approval | Propose a training configuration (hyperparameters, strategy) |
 | training | Train the model and evaluate on validation / test sets |
 | generate_report | Produce and save the final training report |
@@ -126,6 +129,7 @@ to run, along with steps to skip and why.
 * `select_model` must appear before `training_approval` and `training`.
 * `label_split_definition` must come after `cleaning` when included.
 * `feature_engineering_executor` must come after `feature_selection_specification`.
+* `feature_experiment_runner` must come after `feature_engineering_executor` and before `training_approval`. It runs parallel scout models to test feature-set variants. Skip it only for unsupervised tasks or when features are pre-processed.
 * `training_approval` must come directly before `training`.
 * `generate_report` must be the last step.
 
@@ -145,7 +149,11 @@ to run, along with steps to skip and why.
 
 {replan_context}
 
-## User Goal
+## Dialogue (user ↔ assistant)
+
+{conversation_transcript}
+
+## Latest training instruction (same as the message that triggered this run)
 
 {goal}
 
@@ -157,8 +165,11 @@ to run, along with steps to skip and why.
 
 ## Instructions
 
-Produce a Plan JSON object. Be decisive — include only the steps that are
-genuinely needed for this particular goal and dataset.
+Produce a Plan JSON object. **Synthesize** pipeline steps from the full dialogue above
+(negotiated constraints, model preferences, dataset hints, task type), not from the
+latest instruction alone. The `strategy` field should briefly restate what you are
+building and why, as agreed in the chat. Be decisive — include only steps genuinely
+needed for this request.
 
 ## Brevity (required — shown in the human approval card)
 
@@ -265,12 +276,19 @@ def planner_node(state: "TrainingAgentState") -> "TrainingAgentState":
         if feedback:
             replan_context += f"\n\nUser feedback on plan: {feedback}"
 
+        conv = s.get("conversation_history") or []
+        if not conv:
+            g = (s.get("goal") or "").strip() or "Training run"
+            conv = [{"role": "user", "content": g}]
+        conv_text = transcript_for_planner_prompt(conv)
+
         prompt = PLANNER_PROMPT.format(
             goal=s.get("goal", ""),
             datasets=s.get("linked_datasets") or "None provided",
             preference=s.get("user_model_preference") or "None",
             state_summary=_build_state_summary(s),
             replan_context=replan_context,
+            conversation_transcript=conv_text,
         )
 
         resolved_lines: list[str] = []

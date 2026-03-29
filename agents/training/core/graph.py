@@ -14,6 +14,7 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, StateGraph
 from langgraph.types import Command
 
+from .conversation_context import normalize_conversation_turns
 from .dispatcher import dispatcher_node
 from .edges import route_to_step, should_continue
 from .evaluator import evaluator_node
@@ -22,6 +23,7 @@ from ..steps.orchestrator import (
     cleaning_node,
     data_collection,
     feature_engineering_executor,
+    feature_experiment_runner,
     feature_selection_specification,
     generate_report,
     label_split_definition,
@@ -38,6 +40,7 @@ ALL_STEP_NAMES = [
     "label_split_definition",
     "feature_selection_specification",
     "feature_engineering_executor",
+    "feature_experiment_runner",
     "training_approval",
     "training",
     "generate_report",
@@ -78,6 +81,7 @@ def build_training_agent_graph() -> StateGraph:
     graph.add_node("label_split_definition", label_split_definition)
     graph.add_node("feature_selection_specification", feature_selection_specification)
     graph.add_node("feature_engineering_executor", feature_engineering_executor)
+    graph.add_node("feature_experiment_runner", feature_experiment_runner)
     graph.add_node("training_approval", training_approval)
     graph.add_node("training", training)
     graph.add_node("generate_report", generate_report)
@@ -139,6 +143,7 @@ def invoke_training_agent(
     linked_datasets: Optional[list[str]] = None,
     user_model_preference: Optional[str] = None,
     thread_id: Optional[str] = None,
+    conversation: Optional[list[dict]] = None,
 ) -> dict[str, Any]:
     """
     Invoke the training agent with the given inputs (non-streaming).
@@ -159,7 +164,14 @@ def invoke_training_agent(
         - If complete: Final state with audit_trace, model_weights_path, report_path
     """
     agent = create_training_agent()
-    initial_state = create_initial_state(goal, linked_datasets, user_model_preference)
+    g = (goal or "").strip() or "Training run"
+    turns = normalize_conversation_turns(conversation, triggering_message=g)
+    initial_state = create_initial_state(
+        g,
+        linked_datasets,
+        user_model_preference,
+        conversation_history=turns,
+    )
 
     if not thread_id:
         thread_id = f"training-{uuid.uuid4().hex[:8]}"
