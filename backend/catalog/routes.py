@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import RedirectResponse
 
 from backend.catalog.interfaces import CatalogServiceInterface
 from backend.catalog import service as catalog_service
@@ -56,11 +57,7 @@ async def download_model(model_name: str):
 
         store = get_artifact_store()
         url = store.get_presigned_url(version.storage_key)
-        return {
-            "download_url": url,
-            "model_name": model_name,
-            "version": version.version,
-        }
+        return RedirectResponse(url=url, status_code=307)
 
 
 @router.get("/api/datasets/{ref}/download")
@@ -76,4 +73,4 @@ async def download_dataset(ref: str):
 
         store = get_artifact_store()
         url = store.get_presigned_url(storage_key)
-        return {"download_url": url, "ref": ref}
+        return RedirectResponse(url=url, status_code=307)
