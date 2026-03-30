@@ -28,7 +28,6 @@ export const STEP_PATTERNS: Array<{ stepId: string; patterns: RegExp[] }> = [
   {
     stepId: "training",
     patterns: [
-      /training complete/i,
       /model trained/i,
       /test accuracy[:\s]/i,
       /test r[²2][:\s]/i,
@@ -39,16 +38,34 @@ export const STEP_PATTERNS: Array<{ stepId: string; patterns: RegExp[] }> = [
       /test_accuracy/i,
     ]
   },
+  {
+    stepId: "feature_specification_and_engineering",
+    patterns: [
+      /features specified.+engineered/i,
+      /feature specification \+ engineering/i,
+      /specify and materialize features/i,
+    ],
+  },
   // Feature Engineering - specific to execution
   {
     stepId: "feature_engineering_executor",
     patterns: [
+      /features for training/i,
       /feature engineering complete/i,
       /features created/i,
       /features engineered/i,
       /feature engineering executor/i,
       /transformed dataset/i,
     ]
+  },
+  {
+    stepId: "feature_experiment_runner",
+    patterns: [
+      /feature experiments done/i,
+      /feature experiments:/i,
+      /feature sweep skipped/i,
+      /feature-set variants/i,
+    ],
   },
   // Feature Selection - analysis phase
   {
@@ -140,7 +157,9 @@ export const STEP_KEYWORDS: Record<string, string[]> = {
   "cleaning": ["Cleaning", "cleaned", "transformations"],
   "label_split_definition": ["Label", "Split", "target column"],
   "feature_selection_specification": ["Feature Selection", "features specified"],
+  "feature_specification_and_engineering": ["Features", "specified", "engineered"],
   "feature_engineering_executor": ["Feature Engineering", "features created"],
+  "feature_experiment_runner": ["Feature experiments", "feature sweep", "variants"],
   "training_approval": ["Training Config", "hyperparameters", "training plan", "training strategy"],
   "training": ["Training", "trained", "R²", "accuracy", "RMSE"],
   "generate_report": ["Report", "complete"],

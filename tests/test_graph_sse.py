@@ -81,7 +81,7 @@ def test_graph_sse_step_node_emits_node_complete_not_node_update(in_memory_repo)
         )
 
     assert not any(p.get("type") == "node_update" for p in payloads)
-    completes = [p for p in payloads if p.get("type") == "node_complete"]
+    completes = [p for p in payloads if p.get("type") == "step.complete"]
     dc = next((p for p in completes if p.get("node") == "data_collection"), None)
     assert dc is not None
     assert dc.get("thread_id") == thread
@@ -130,7 +130,7 @@ def test_graph_sse_interrupt_includes_state_snapshot(in_memory_repo):
             service.generate_graph_sse_events("g2", None, None, thread_id=thread)
         )
 
-    intr = next(p for p in payloads if p.get("type") == "interrupt")
+    intr = next(p for p in payloads if p.get("type") == "review.required")
     assert "state_snapshot" in intr
     assert intr["state_snapshot"].get("goal") == "g2"
 
@@ -175,12 +175,11 @@ def test_graph_sse_planner_emits_node_skipped_deduped(in_memory_repo):
             service.generate_graph_sse_events("g3", None, None, thread_id=thread)
         )
 
-    skipped = [p for p in payloads if p.get("type") == "node_skipped"]
+    skipped = [p for p in payloads if p.get("type") == "step.skipped"]
     assert len(skipped) == 2
     nodes = {p["node"] for p in skipped}
     assert nodes == {"cleaning", "label_split_definition"}
-    assert all(p.get("reason") == "already clean" for p in skipped)
-    assert all(p.get("thread_id") == thread for p in skipped)
+    assert all("already clean" in (p.get("headline") or "") for p in skipped)
 
 
 def test_graph_sse_same_step_name_twice_distinct_stream_keys(in_memory_repo):
@@ -224,7 +223,11 @@ def test_graph_sse_same_step_name_twice_distinct_stream_keys(in_memory_repo):
             service.generate_graph_sse_events("g-dup", None, None, thread_id=thread)
         )
 
-    completes = [p for p in payloads if p.get("type") == "node_complete" and p.get("node") == "data_collection"]
+    completes = [
+        p
+        for p in payloads
+        if p.get("type") == "step.complete" and p.get("node") == "data_collection"
+    ]
     assert len(completes) == 2
     keys = {p.get("stream_step_key") for p in completes}
     assert keys == {"0:0:data_collection", "1:0:data_collection"}

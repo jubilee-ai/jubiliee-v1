@@ -40,8 +40,9 @@ export function ConfirmationPanel({
             </span>
             <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse" />
           </div>
+          <p className="text-xs text-muted-foreground mb-2">Review and approve to continue, or provide feedback to redo.</p>
           
-          <div className="text-[15px] leading-relaxed prose prose-sm dark:prose-invert max-w-none prose-p:my-1 prose-headings:my-2">
+          <div className="text-[14px] leading-relaxed prose prose-sm dark:prose-invert max-w-none prose-p:my-1 prose-headings:my-2 max-h-48 overflow-y-auto">
             <ReactMarkdown>{confirmationRequest.summary}</ReactMarkdown>
           </div>
           

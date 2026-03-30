@@ -134,12 +134,12 @@ def test_graph_sse_emits_dataset_error_when_resolve_fails(in_memory_repo):
             )
         )
 
-    errors = [p for p in payloads if p.get("type") == "dataset_error"]
+    errors = [p for p in payloads if p.get("type") == "dataset.error"]
     assert len(errors) == 1
-    assert errors[0]["dataset"] == "Bad Dataset Name"
-    assert "Could not resolve" in errors[0]["error"]
+    assert errors[0]["ref"] == "Bad Dataset Name"
+    assert "Bad Dataset Name" in errors[0]["error"]
 
-    loaded = [p for p in payloads if p.get("type") == "dataset_loaded"]
+    loaded = [p for p in payloads if p.get("type") == "dataset.resolved"]
     assert len(loaded) == 0
 
 
@@ -165,10 +165,10 @@ def test_graph_sse_emits_dataset_loaded_when_resolve_succeeds(in_memory_repo):
             )
         )
 
-    loaded = [p for p in payloads if p.get("type") == "dataset_loaded"]
+    loaded = [p for p in payloads if p.get("type") == "dataset.resolved"]
     assert len(loaded) == 1
     assert loaded[0]["ref"] == "csv_insurance"
-    assert loaded[0]["dataset"] == "csv/insurance.csv"
+    assert loaded[0].get("dataset_info", {}).get("dataset") == "csv/insurance.csv"
 
-    errors = [p for p in payloads if p.get("type") == "dataset_error"]
+    errors = [p for p in payloads if p.get("type") == "dataset.error"]
     assert len(errors) == 0

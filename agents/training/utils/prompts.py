@@ -13,9 +13,16 @@ to inform your next iteration (e.g. fix a value, override a search range, switch
 
 Repeat: **Train → Evaluate → Reflect → Decide**
 
-**IMPORTANT: Train ONE model per turn.** Do not call `train_with_skill` multiple times in the same turn. You must evaluate and reflect on each model's results before deciding what to try next.
+You have two training tools:
+- `train_with_skill` — train a single model. Use for focused single experiments.
+- `batch_train_with_skill` — train 2-3 models IN PARALLEL. Use to compare estimators \
+or hyperparameter variants in one step. Each config needs an estimator, model_name, \
+and optional hyperparams. All run concurrently and return side-by-side results.
 
-1. **Train** using `train_with_skill` with the chosen estimator and any hyperparameter overrides
+**Prefer `batch_train_with_skill` in Phase 1** to quickly compare 2-3 estimators. \
+**Use `train_with_skill` in Phase 2** for focused tuning of the winner.
+
+1. **Train** using `batch_train_with_skill` (exploration) or `train_with_skill` (refinement)
 2. **Evaluate** on validation set using `evaluate_model`
 3. **Reflect** — analyze the results compared to all previous iterations
 4. **Decide** — tune hyperparameters OR switch to a different estimator
@@ -43,8 +50,10 @@ State your reasoning before acting.
 
 ## Strategy
 
-### Phase 1: Explore (first 2-3 iterations)
-Try at least 2 different estimators from different families to establish baselines. Start with the suggested estimator, then try an alternative from a different family (e.g., linear → tree-based, or vice versa).
+### Phase 1: Explore (first 1-2 iterations)
+Use `batch_train_with_skill` to test 2-3 estimators from different families in parallel. \
+This replaces sequential single-model exploration and saves time. Start with the \
+suggested estimator plus 1-2 alternatives from different families (e.g., tree-based + linear).
 
 ### Phase 2: Exploit (remaining iterations)
 Focus on the best-performing estimator and tune its hyperparameters.
@@ -85,11 +94,31 @@ Key points to remember:
 - **ALWAYS** pass `preprocessor=preprocessor` to `save_model()` — without it, the model CANNOT process data at inference.
 - If a run fails with EXECUTION ERROR, **read the traceback, fix, and retry**. Do not give up.
 
+## Using Feature Experiment Results
+
+If a **Feature Experiment Results** section is provided in the context, the pipeline
+has already tested multiple feature-set variants (subsets, decorrelated sets, ablation
+groups) with lightweight scout models in parallel. Use these insights:
+
+- **Signal features** are the features that consistently ranked high across all
+  variants and model families. These are your strongest predictors — make sure
+  any estimator you choose can leverage them.
+- **Low-signal features** consistently contributed near-zero importance. They are
+  still present in the dataset but unlikely to help. If you suspect they are
+  causing noise, note this in your reflection.
+- **Feature rankings** show cross-variant weighted importance. Use them to
+  understand which features drive performance.
+- The **winning feature set** is already loaded. Focus on model selection and
+  hyperparameter tuning rather than worrying about feature quality.
+- Only request a feature engineering redo if even the experiment grid's best
+  variant performed poorly (close to random).
+
 ## Request Feature Engineering Redo
 Use `request_feature_engineering_redo` ONLY when:
 - Multiple estimators all perform poorly despite tuning
 - You have SPECIFIC recommendations for feature changes
 - You've exhausted model-level optimizations
+- If feature experiment results are available, even the best variant performed poorly
 
 ## Model Naming
 Use descriptive unique names: `hgb_v1`, `lr_v1`, `rf_v1`, `ridge_v2`, `nn_baseline_v1`, `nn_dropout_v2`, etc.

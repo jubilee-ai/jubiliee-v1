@@ -277,6 +277,10 @@ export interface TrainingAgentState {
 
   // Step 7: Training
   training_params: Record<string, unknown> | null
+  /** Proposed / approved plan from training_approval (Python `training_plan`) */
+  training_plan?: Record<string, unknown> | null
+  /** Result summary from feature_experiment_runner */
+  experiment_result?: Record<string, unknown> | null
   model_weights_path: string | null
   training_metrics: TrainingMetrics | null
   training_iteration: number
@@ -332,6 +336,12 @@ export interface ChatMessage {
   _streaming?: boolean
   /** Populated for prediction-complete events rendered as a card */
   prediction?: PredictionResult
+  /** Stable pipeline step id for “View step details” (avoids regex mismatches) */
+  stepId?: string
+  /** Expandable markdown: transforms, feature analysis, training runs */
+  detailMarkdown?: string
+  /** Show “View Report” CTA at the bottom of the bubble (run finished) */
+  showReportButton?: boolean
   links?: Array<{
     type: "dataset" | "model" | "step"
     id: string

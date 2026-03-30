@@ -81,11 +81,14 @@ interface ConfirmationDetailsProps {
 export function ConfirmationDetails({ details }: ConfirmationDetailsProps) {
   const tp = details.training_plan as Record<string, unknown> | undefined
   const hp = (tp?.hyperparameters || details.training_params && (details.training_params as Record<string, unknown>)?.hyperparameters) as Record<string, unknown> | undefined
+  const modelLabel =
+    (typeof details.selected_model === "string" && details.selected_model) ||
+    (tp && typeof tp.model_type === "string" ? tp.model_type : null)
 
   return (
     <div className="mt-3 pt-2 border-t border-border/30 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
-      {Boolean(details.selected_model) && (
-        <span>Model: <code className="text-foreground">{String(details.selected_model)}</code></span>
+      {Boolean(modelLabel) && (
+        <span>Model: <code className="text-foreground">{String(modelLabel)}</code></span>
       )}
       {Boolean(details.collected_dataset_ref) && (
         <span>Dataset: <code className="text-foreground">{String(details.collected_dataset_ref)}</code></span>

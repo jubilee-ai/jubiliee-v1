@@ -52,9 +52,12 @@ function SignInGate() {
               <p className="text-[11px] font-medium uppercase tracking-[0.24em] text-muted-foreground">
                 Sign in / Sign up
               </p>
-              <h1 className="mt-3 text-[1.95rem] font-semibold tracking-tight text-foreground">
-                Jubilee
-              </h1>
+              <div className="mt-3 flex items-center justify-center gap-2.5">
+                <img src="/jubilee-logo.svg" alt="" className="h-9 w-9 shrink-0" width={36} height={36} />
+                <h1 className="text-[1.95rem] font-semibold tracking-tight text-foreground">
+                  Jubilee
+                </h1>
+              </div>
               <p className="mt-2 text-sm text-muted-foreground">
                 Access your training workspace.
               </p>
@@ -255,8 +258,13 @@ function AuthenticatedApp() {
   const completedSteps = agent.steps.filter((s) => s.status === "completed").length
   const totalSteps = agent.steps.length
   const currentStep = agent.steps.find(s => s.status === "running" || s.status === "awaiting_confirmation")
-  const hasActivity =
-    !!realAgent.experimentId && (agent.isRunning || completedSteps > 0)
+  const trainingPhaseStepIds = ["training_approval", "training", "generate_report"] as const
+  const isInTrainingPhase = agent.steps.some(
+    (s) =>
+      trainingPhaseStepIds.includes(s.id as (typeof trainingPhaseStepIds)[number]) &&
+      s.status !== "pending",
+  )
+  const hasExperimentChecklist = !!realAgent.experimentId && isInTrainingPhase
   const layoutStyle = { "--sidebar-width": `${sidebarWidth}px` } as CSSProperties
 
   return (
@@ -264,7 +272,10 @@ function AuthenticatedApp() {
       <div className="h-screen bg-background flex flex-col overflow-hidden">
         {/* Top Navigation Bar */}
         <nav className="fixed top-0 w-full z-50 border-b border-border/60 bg-background/90 backdrop-blur-xl shadow-[0_1px_0_hsl(var(--border)/0.35),0_12px_40px_-12px_rgba(18,86,210,0.07)] flex items-center justify-between px-6 h-14">
-          <div className="font-headline text-xl font-bold tracking-tight text-foreground">Jubilee</div>
+          <div className="flex items-center gap-2.5 font-headline text-xl font-bold tracking-tight text-foreground">
+            <img src="/jubilee-logo.svg" alt="" className="h-8 w-8 shrink-0" width={32} height={32} />
+            Jubilee
+          </div>
 
           <div className="flex items-center gap-1.5">
             {isComplete && (
@@ -374,7 +385,7 @@ function AuthenticatedApp() {
                   </div>
                 ) : null}
                 <div className="relative flex flex-1 min-h-0 flex-col overflow-hidden">
-                  {hasActivity && (
+                  {hasExperimentChecklist && (
                     <div className="absolute top-3 left-1/2 -translate-x-1/2 z-10">
                       <ExperimentChecklistIndicator
                         steps={agent.steps}
@@ -396,17 +407,15 @@ function AuthenticatedApp() {
                     onConfirmation={agent.handleConfirmation as (action: ConfirmationAction, comment?: string) => void}
                     linkedDatasets={realAgent.linkedDatasets}
                     onLinkedDatasetsChange={realAgent.updateLinkedDatasets}
-                    linkedModelId={realAgent.linkedModelId}
-                    onLinkedModelChange={realAgent.setLinkedModelId}
                     datasets={realAgent.datasets}
-                    modelTypes={realAgent.modelTypes}
                     highlightedMessageId={highlightedMessageId}
                     onClearHighlight={handleClearHighlight}
                     onViewReport={() => setShowReport(true)}
                     agentState={agent.agentState}
                     steps={agent.steps}
-                    hasExperimentChecklist={hasActivity}
+                    hasExperimentChecklist={hasExperimentChecklist}
                     experimentId={realAgent.experimentId}
+                    runningStepHint={realAgent.runningStepHint}
                   />
                 </div>
               </div>

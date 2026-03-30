@@ -31,6 +31,7 @@ from .feature_engineering_simple import run_feature_engineering_simple
 from .label_and_split import (apply_split, compute_split_indices,
                               run_label_split_definition)
 from .select_model import select_model as _select_model_impl
+from .feature_experiment_runner import run_experiment_grid
 from .training import run_training_agent as _run_training
 
 
@@ -542,6 +543,133 @@ def feature_engineering_executor(state: TrainingAgentState) -> TrainingAgentStat
     return run_with_hitl("feature_engineering_executor", state, do_work, get_summary)
 
 
+def feature_experiment_runner(state: TrainingAgentState) -> TrainingAgentState:
+    """Step 5.5: Parallel feature-set experimentation with scout models."""
+
+    def do_work(s: TrainingAgentState, feedback: Optional[str]) -> TrainingAgentState:
+        if _is_unsupervised(s):
+            print("[feature_experiment_runner] Unsupervised — skipping experiment grid")
+            return {
+                **s,
+                "experiment_result": None,
+                "feature_rankings": None,
+                "experiment_grid_summary": None,
+            }
+
+        train_ref = s.get("transformed_train_ref") or s.get("train_dataset_ref")
+        val_ref = s.get("transformed_val_ref") or s.get("val_dataset_ref")
+        test_ref = s.get("transformed_test_ref") or s.get("test_dataset_ref")
+        label_def = _get_label_def(s)
+        target_column = label_def.get("target_column", "")
+        feature_spec = s.get("feature_spec")
+        goal = s.get("goal", "")
+        selected_model = s.get("selected_model", "supervised")
+
+        if not train_ref or not val_ref:
+            print("[feature_experiment_runner] Missing train/val refs — skipping")
+            return {**s, "experiment_result": None, "feature_rankings": None, "experiment_grid_summary": None}
+
+        if not feature_spec or not feature_spec.get("features"):
+            print("[feature_experiment_runner] Empty feature spec — skipping")
+            return {**s, "experiment_result": None, "feature_rankings": None, "experiment_grid_summary": None}
+
+        train_df = get_registered_dataset(train_ref)
+        if train_df is None or len(train_df) < 500 or len(feature_spec.get("features", [])) < 5:
+            n_rows = len(train_df) if train_df is not None else 0
+            n_feats = len(feature_spec.get("features", []))
+            print(f"[feature_experiment_runner] Dataset too small or too few features "
+                  f"({n_rows} rows, {n_feats} features) — skipping experiment grid")
+            return {**s, "experiment_result": None, "feature_rankings": None, "experiment_grid_summary": None}
+
+        task_type = s.get("task_type") or _infer_task_type(goal, selected_model)
+
+        # Use the raw (pre-feature-engineering) refs so each variant
+        # can apply its own feature spec from scratch
+        raw_train_ref = s.get("train_dataset_ref")
+        raw_val_ref = s.get("val_dataset_ref")
+        raw_test_ref = s.get("test_dataset_ref")
+
+        print(f"[feature_experiment_runner] Running parallel experiment grid...")
+        exp_result = run_experiment_grid(
+            feature_spec=feature_spec,
+            train_ref=raw_train_ref or train_ref,
+            val_ref=raw_val_ref or val_ref,
+            test_ref=raw_test_ref or test_ref,
+            target_column=target_column,
+            task_type=task_type,
+            grain=label_def.get("grain", ""),
+            as_of_cutoff=label_def.get("as_of_cutoff"),
+        )
+
+        updated = {
+            **s,
+            "experiment_result": {
+                "best_variant_name": exp_result.best_variant_name,
+                "best_metric": exp_result.best_metric,
+                "total_variants": exp_result.total_variants,
+                "total_scouts": exp_result.total_scouts,
+                "wall_time_seconds": exp_result.wall_time_seconds,
+                "signal_features": exp_result.signal_features,
+                "dropped_features": exp_result.dropped_features,
+            },
+            "feature_rankings": exp_result.feature_rankings,
+            "experiment_grid_summary": exp_result.experiment_grid,
+        }
+
+        if exp_result.best_variant_name != "full":
+            updated["transformed_train_ref"] = exp_result.transformed_train_ref
+            updated["transformed_val_ref"] = exp_result.transformed_val_ref
+            updated["transformed_test_ref"] = exp_result.transformed_test_ref
+            updated["feature_spec"] = exp_result.best_feature_spec
+            print(f"[feature_experiment_runner] Switched to variant "
+                  f"'{exp_result.best_variant_name}' (better than full baseline)")
+        else:
+            print(f"[feature_experiment_runner] Full baseline was best — keeping original features")
+
+        updated["audit_trace"] = s.get("audit_trace", []) + [{
+            "step": "feature_experiment_runner",
+            "best_variant": exp_result.best_variant_name,
+            "best_metric": exp_result.best_metric,
+            "total_variants": exp_result.total_variants,
+            "total_scouts": exp_result.total_scouts,
+            "wall_time": exp_result.wall_time_seconds,
+            "signal_features": exp_result.signal_features[:10],
+            "dropped_features": exp_result.dropped_features[:10],
+        }]
+
+        return updated
+
+    def get_summary(r: TrainingAgentState) -> str:
+        exp = r.get("experiment_result")
+        if not exp:
+            return "Feature experiment runner: skipped (unsupervised, too few features, or small dataset)"
+        grid = r.get("experiment_grid_summary") or []
+        lines = [
+            f"Tested {exp.get('total_variants', 0)} feature-set variants "
+            f"x 2 model families = {exp.get('total_scouts', 0)} scouts "
+            f"in {exp.get('wall_time_seconds', 0):.1f}s",
+            f"Best variant: {exp.get('best_variant_name')} "
+            f"(metric={exp.get('best_metric', 0):.4f})",
+        ]
+        signal = exp.get("signal_features", [])
+        dropped = exp.get("dropped_features", [])
+        if signal:
+            lines.append(f"Signal features ({len(signal)}): {', '.join(signal[:8])}")
+        if dropped:
+            lines.append(f"Low-signal features ({len(dropped)}): {', '.join(dropped[:8])}")
+        if grid:
+            lines.append("\nScout grid results:")
+            for entry in grid[:6]:
+                m = entry.get("metrics", {})
+                metric_str = ", ".join(f"{k}={v:.4f}" for k, v in m.items()) if m else "N/A"
+                lines.append(f"  {entry.get('variant')} + {entry.get('model_family')}: {metric_str}")
+            if len(grid) > 6:
+                lines.append(f"  ... and {len(grid) - 6} more")
+        return "\n".join(lines)
+
+    return run_with_hitl("feature_experiment_runner", state, do_work, get_summary)
+
+
 def training_approval(state: TrainingAgentState) -> TrainingAgentState:
     """Step 6.5: Training Approval - Propose training configuration for user approval."""
     feedback = None
@@ -718,6 +846,8 @@ def training(state: TrainingAgentState) -> TrainingAgentState:
             train_ref=train_ref, val_ref=val_ref, test_ref=test_ref,
             target_column=target_column, selected_model=selected_model,
             goal=goal, model_name=model_name, max_iterations=3,
+            experiment_result=s.get("experiment_result"),
+            feature_rankings=s.get("feature_rankings"),
         )
 
         if result.get("success"):

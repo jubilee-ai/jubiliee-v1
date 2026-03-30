@@ -33,6 +33,7 @@ import {
   suggestExperimentTitleFromLinkedDatasets,
   suggestExperimentTitleFromUserMessage,
 } from "@/lib/utils"
+import { buildStepDetailMarkdown } from "@/hooks/stepStreamDetails"
 
 /** Ephemeral merged "thinking" lines from graph custom stream (cleared on each new `started`). */
 const GRAPH_THINKING_MSG_ID = "__graph_thinking__"
@@ -43,8 +44,10 @@ const STEP_DEFINITIONS = [
   { id: "select_model", name: "Model Selection", description: "Choose the ML model type for this task" },
   { id: "cleaning", name: "Cleaning", description: "Clean and standardize the data" },
   { id: "label_split_definition", name: "Label & Split", description: "Define target column and train/val/test splits" },
+  { id: "feature_specification_and_engineering", name: "Features", description: "Specify features and build transformed datasets" },
   { id: "feature_selection_specification", name: "Feature Selection", description: "Analyze data and specify features" },
   { id: "feature_engineering_executor", name: "Feature Engineering", description: "Execute feature transformations" },
+  { id: "feature_experiment_runner", name: "Feature experiments", description: "Compare feature-set variants with scout models" },
   { id: "training_approval", name: "Training Config", description: "Propose hyperparameters and strategy" },
   { id: "training", name: "Training", description: "Train model and evaluate metrics" },
   { id: "generate_report", name: "Report", description: "Save the final training report" },
@@ -60,6 +63,21 @@ function createInitialSteps(): StepInfo[] {
 }
 
 const STEP_ORDER_IDS = STEP_DEFINITIONS.map((s) => s.id)
+
+/** Shown next to the loading indicator while a checklist step is active */
+const STEP_LOADING_HINTS: Record<string, string> = {
+  data_collection: "Loading your dataset…",
+  select_model: "Choosing the model family…",
+  cleaning: "Cleaning and standardizing columns…",
+  label_split_definition: "Defining the target and train/validation/test splits…",
+  feature_specification_and_engineering: "Specifying and building features…",
+  feature_selection_specification: "Analyzing columns, correlations, and leakage…",
+  feature_engineering_executor: "Encoding features and checking matrix shapes…",
+  feature_experiment_runner: "Running feature experiments and picking the best variant…",
+  training_approval: "Preparing training configuration…",
+  training: "Training models and comparing validation metrics…",
+  generate_report: "Writing the final report…",
+}
 
 /**
  * Shared node_complete step transitions for train stream and chat stream (plan phase parity).
@@ -122,6 +140,26 @@ function markStepsDonePreservingSkipped(prev: StepInfo[]): StepInfo[] {
       ? step
       : { ...step, status: "completed" as const, endTime: step.endTime || Date.now() },
   )
+}
+
+/** Build user/agent turns for the backend planner (`messages` is pre-send snapshot; `latestUserText` is the outgoing instruction). */
+function buildPlanningConversation(
+  messages: ChatMessage[],
+  latestUserText: string,
+): Array<{ role: "user" | "agent"; content: string }> {
+  const trimmed = latestUserText.trim()
+  const turns: Array<{ role: "user" | "agent"; content: string }> = []
+  for (const m of messages) {
+    if (m.role !== "user" && m.role !== "agent") continue
+    const c = m.content.trim()
+    if (c) turns.push({ role: m.role, content: c })
+  }
+  const last = turns[turns.length - 1]
+  if (trimmed && (!last || last.role !== "user" || last.content !== trimmed)) {
+    return [...turns, { role: "user", content: trimmed }]
+  }
+  if (turns.length > 0) return turns
+  return [{ role: "user", content: trimmed || "Training run" }]
 }
 
 function createInitialState(): TrainingAgentState {
@@ -191,9 +229,6 @@ export interface UseRealAgentReturn {
   sendMessage: (content: string, opts?: { user_model_preference?: string }) => void
   linkedDatasets: string[]
   updateLinkedDatasets: (ids: string[]) => void
-  /** Model type id linked for this experiment session (sent with each message / training run). */
-  linkedModelId: string | null
-  setLinkedModelId: (id: string | null) => void
   handleConfirmation: (action: ConfirmationAction, comment?: string) => void
   reset: () => void
   /** Ping `/api/health` only (for status banner + pre-flight). Does not refetch datasets/models. */
@@ -207,6 +242,8 @@ export interface UseRealAgentReturn {
   saveCurrentMessages: () => Promise<void>
   /** Clear local session and deselect experiment (experiment row remains in the list). */
   leaveLabSession: () => void
+  /** Human-readable hint for what the pipeline is doing right now */
+  runningStepHint: string | null
 }
 
 export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn {
@@ -227,7 +264,6 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
   const [acceptAllMode, setAcceptAllMode] = useState(false)
   const [experimentId, setExperimentId] = useState<string | null>(null)
   const [linkedDatasets, setLinkedDatasets] = useState<string[]>([])
-  const [linkedModelId, setLinkedModelId] = useState<string | null>(null)
   
   // Use a ref to track accept-all mode to avoid stale closure issues in callbacks
   const acceptAllModeRef = useRef(acceptAllMode)
@@ -245,14 +281,35 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
   const streamControllerRef = useRef<AbortController | null>(null)
   const linkedDatasetsPatchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const emittedStepsRef = useRef<Set<string>>(new Set())
+  /** Prevents duplicate “pipeline finished” messages (e.g. React Strict Mode double-invoke). */
+  const pipelineCompletionEmittedRef = useRef(false)
+  const agentStateRef = useRef(agentState)
+  agentStateRef.current = agentState
+  /** Stream end can run before React applies training_metrics to state; cache from step.complete. */
+  const lastTrainingSummaryRef = useRef<Record<string, unknown> | null>(null)
 
-  // Add a message to the chat
-  const addMessage = useCallback((role: ChatMessage["role"], content: string) => {
-    setMessages((prev) => [
-      ...prev,
-      { id: uid("msg"), role, content, timestamp: Date.now() },
-    ])
-  }, [])
+  const [runningStepHint, setRunningStepHint] = useState<string | null>(null)
+
+  // Add a message to the chat (optional step metadata for expandable details + report CTA)
+  const addMessage = useCallback(
+    (
+      role: ChatMessage["role"],
+      content: string,
+      meta?: Partial<Pick<ChatMessage, "stepId" | "detailMarkdown" | "showReportButton">>,
+    ) => {
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: uid("msg"),
+          role,
+          content,
+          timestamp: Date.now(),
+          ...meta,
+        },
+      ])
+    },
+    [],
+  )
 
   const saveCurrentMessages = useCallback(async () => {
     const eid = experimentIdRef.current
@@ -266,6 +323,9 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
           role: m.role,
           content: m.content,
           timestamp: m.timestamp,
+          ...(m.stepId ? { stepId: m.stepId } : {}),
+          ...(m.detailMarkdown ? { detailMarkdown: m.detailMarkdown } : {}),
+          ...(m.showReportButton ? { showReportButton: m.showReportButton } : {}),
         })),
       )
     } catch {
@@ -324,302 +384,26 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
     }
   }, [])
 
-  // Format detailed stream event for display
-  const formatStreamDetails = useCallback((event: AgentStreamEvent): string => {
-    const details = event.details as Record<string, unknown> | undefined
-    const summary = event.summary as Record<string, unknown> | undefined
-    
-    console.log("[formatStreamDetails] node:", event.node, "details:", !!details, "summary:", !!summary)
-    
-    if (!details && !summary) return ""
-    
-    const lines: string[] = []
-    
-    // Use details.title and description if available
-    if (details?.title) {
-      lines.push(`**${String(details.title)}**`)
+  useEffect(() => {
+    if (!isRunning) {
+      setRunningStepHint(null)
+      return
     }
-    if (details?.description) {
-      lines.push(String(details.description))
+    if (confirmationRequest) {
+      setRunningStepHint("Waiting for your review…")
+      return
     }
-    
-    // Add step-specific formatted info
-    const nodeName = event.node || ""
-    
-    if (nodeName === "select_model" && summary) {
-      if (summary.selected_model) {
-        lines.push(`\nModel: **${summary.selected_model}**`)
-      }
-      if (summary.explanation) {
-        const explanation = String(summary.explanation)
-        lines.push(`\n${explanation.slice(0, 300)}${explanation.length > 300 ? "..." : ""}`)
-      }
-    } else if (nodeName === "data_collection" && summary) {
-      if (summary.dataset) lines.push(`Dataset: \`${summary.dataset}\``)
-      if (summary.rows) lines.push(`Rows: ${summary.rows}`)
-      if (summary.columns && Array.isArray(summary.columns)) {
-        lines.push(`Columns (${summary.columns.length}): ${summary.columns.slice(0, 8).join(", ")}${summary.columns.length > 8 ? "..." : ""}`)
-      }
-    } else if (nodeName === "cleaning_and_standardization" && summary) {
-      // Show cleaned dataset info
-      if (summary.cleaned_dataset) lines.push(`Output: \`${summary.cleaned_dataset}\``)
-      if (summary.rows && summary.rows !== "unknown") lines.push(`Rows: ${summary.rows}`)
-      if (summary.columns && summary.columns !== "unknown") lines.push(`Columns: ${summary.columns}`)
-      
-      // Show transformations applied with full details
-      if (summary.transformations && Array.isArray(summary.transformations) && summary.transformations.length > 0) {
-        lines.push(`\n**Transformations Applied (${summary.transformations.length}):**\n`)
-        summary.transformations.slice(0, 15).forEach((t: unknown) => {
-          if (typeof t === "object" && t !== null) {
-            const transform = t as Record<string, unknown>
-            const toolName = String(transform.tool || transform.op || "transform").replace(/_tool$/, "")
-            const args = transform.args as Record<string, unknown> | undefined
-            const result = transform.result as string | undefined
-            
-            // Format tool name and columns
-            let argsStr = ""
-            if (args) {
-              if (args.columns) {
-                const cols = Array.isArray(args.columns) ? (args.columns as string[]).join(", ") : String(args.columns)
-                argsStr = `**${cols}**`
-              } else if (args.column) {
-                argsStr = `**${args.column}**`
-              }
-              if (args.dataset_ref) {
-                argsStr += argsStr ? ` from \`${args.dataset_ref}\`` : `\`${args.dataset_ref}\``
-              }
-              if (args.value !== undefined) argsStr += ` = ${args.value}`
-              if (args.strategy) argsStr += ` (${args.strategy})`
-            }
-            
-            // Show tool call
-            lines.push(`\`${toolName}\` ${argsStr}`)
-            
-            // Show result on next line
-            if (result) {
-              lines.push(`  → ${result}`)
-            }
-            lines.push("") // blank line between transformations
-          }
-        })
-        if (summary.transformations.length > 15) {
-          lines.push(`*... and ${summary.transformations.length - 15} more transformations*`)
-        }
-      } else if (summary.num_transformations === 0) {
-        lines.push(`\n*No transformations needed - data was already clean*`)
-      }
-      
-      // Show reason at the end
-      if (summary.reason) {
-        lines.push(`**Summary:** ${summary.reason}`)
-      }
-    } else if (nodeName === "label_split_definition" && summary) {
-      if (summary.target_column) lines.push(`Target column: **${summary.target_column}**`)
-      if (summary.split_strategy) lines.push(`Split strategy: ${summary.split_strategy}`)
-      if (summary.grain) lines.push(`Grain: ${summary.grain}`)
-      if (summary.train_ref) lines.push(`\nTrain: \`${summary.train_ref}\``)
-      if (summary.val_ref) lines.push(`Validation: \`${summary.val_ref}\``)
-      if (summary.test_ref) lines.push(`Test: \`${summary.test_ref}\``)
-    } else if (nodeName === "feature_selection_specification" && summary) {
-      try {
-        // Summary text
-        if (summary.summary_text) {
-          lines.push(`**Summary:** ${String(summary.summary_text)}`)
-          lines.push("")
-        }
-        
-        // Dataset overview
-        const overview = summary.dataset_overview
-        if (overview && typeof overview === "object") {
-          const ov = overview as Record<string, unknown>
-          if (ov.rows) {
-            lines.push(`📊 **Dataset Overview**`)
-            lines.push(`- Rows: ${String(ov.rows).replace(/\B(?=(\d{3})+(?!\d))/g, ",")}`)
-            lines.push(`- Columns: ${ov.columns || "N/A"}`)
-            if (ov.numeric_columns != null || ov.categorical_columns != null) {
-              lines.push(`- Numeric: ${ov.numeric_columns || 0}, Categorical: ${ov.categorical_columns || 0}`)
-            }
-            lines.push("")
-          }
-        }
-        
-        // Target analysis
-        const target = summary.target_analysis
-        if (target && typeof target === "object") {
-          const t = target as Record<string, unknown>
-          if (t.type) {
-            lines.push(`🎯 **Target Column Analysis**`)
-            if (t.type === "numeric") {
-              lines.push(`- Type: Numeric`)
-              if (t.mean != null) lines.push(`- Mean: ${Number(t.mean).toFixed(4)}`)
-              if (t.std != null) lines.push(`- Std Dev: ${Number(t.std).toFixed(4)}`)
-              if (t.min != null && t.max != null) lines.push(`- Range: [${Number(t.min).toFixed(2)}, ${Number(t.max).toFixed(2)}]`)
-            } else if (t.type === "categorical") {
-              lines.push(`- Type: Categorical`)
-              if (t.unique_values) lines.push(`- Unique values: ${t.unique_values}`)
-              if (t.top_value) lines.push(`- Most common: "${t.top_value}" (${t.top_freq} occurrences)`)
-            }
-            lines.push("")
-          }
-        }
-        
-        // Feature correlations with target
-        const correlations = summary.feature_correlations
-        if (correlations && Array.isArray(correlations) && correlations.length > 0) {
-          lines.push(`📈 **Top Feature Correlations with Target**`)
-          correlations.slice(0, 5).forEach((c: unknown, i: number) => {
-            if (c && typeof c === "object") {
-              const corr = c as {feature?: string; correlation?: number}
-              const corrValue = Number(corr.correlation || 0)
-              const bar = corrValue >= 0 ? "▓".repeat(Math.min(10, Math.round(Math.abs(corrValue) * 10))) : "░".repeat(Math.min(10, Math.round(Math.abs(corrValue) * 10)))
-              lines.push(`${i + 1}. **${corr.feature || "unknown"}**: ${corrValue >= 0 ? '+' : ''}${corrValue.toFixed(4)} ${bar}`)
-            }
-          })
-          lines.push("")
-        }
-        
-        // High correlation pairs (multicollinearity)
-        const highCorr = summary.high_correlation_pairs
-        if (highCorr && Array.isArray(highCorr) && highCorr.length > 0) {
-          lines.push(`⚠️ **High Correlation Pairs** (potential multicollinearity)`)
-          highCorr.slice(0, 3).forEach((p: unknown) => {
-            if (p && typeof p === "object") {
-              const pair = p as {feature1?: string; feature2?: string; correlation?: number}
-              lines.push(`- ${pair.feature1 || "?"} ↔ ${pair.feature2 || "?"}: ${Number(pair.correlation || 0).toFixed(4)}`)
-            }
-          })
-          lines.push("")
-        }
-        
-        // Leakage warnings
-        const leakage = summary.leakage_warnings
-        if (leakage && Array.isArray(leakage) && leakage.length > 0) {
-          lines.push(`🚨 **Leakage Warnings**`)
-          leakage.forEach((f: unknown) => {
-            lines.push(`- ⚠️ ${String(f)}`)
-          })
-          lines.push("")
-        }
-        
-        // Distribution stats
-        const distStats = summary.distribution_stats
-        if (distStats && Array.isArray(distStats) && distStats.length > 0) {
-          const skewedCols = distStats.filter((d: unknown) => {
-            if (d && typeof d === "object") {
-              const stat = d as {skewness?: number}
-              return stat.skewness != null && Math.abs(stat.skewness) > 1
-            }
-            return false
-          })
-          const outlierCols = distStats.filter((d: unknown) => {
-            if (d && typeof d === "object") {
-              const stat = d as {outlier_pct?: number}
-              return stat.outlier_pct != null && stat.outlier_pct > 5
-            }
-            return false
-          })
-          if (skewedCols.length > 0 || outlierCols.length > 0) {
-            lines.push(`📉 **Distribution Insights**`)
-            if (skewedCols.length > 0) {
-              lines.push(`- Highly skewed columns: ${skewedCols.map((d: unknown) => {
-                const stat = d as {column?: string; skewness?: number}
-                return `${stat.column || "?"} (${stat.skewness?.toFixed(2) || "?"})`
-              }).join(", ")}`)
-            }
-            if (outlierCols.length > 0) {
-              lines.push(`- Columns with outliers: ${outlierCols.map((d: unknown) => {
-                const stat = d as {column?: string; outlier_pct?: number}
-                return `${stat.column || "?"} (${stat.outlier_pct?.toFixed(1) || "?"}%)`
-              }).join(", ")}`)
-            }
-            lines.push("")
-          }
-        }
-        
-        // Features specified - always show this
-        if (summary.num_features) {
-          lines.push(`✅ **Features Specified: ${summary.num_features}**`)
-          if (summary.feature_names && Array.isArray(summary.feature_names)) {
-            const names = summary.feature_names.map((n: unknown) => String(n))
-            lines.push(`\`${names.slice(0, 8).join("\`, \`")}\`${names.length > 8 ? ` ... +${names.length - 8} more` : ""}`)
-          }
-        }
-      } catch (err) {
-        console.error("[formatStreamDetails] Error formatting feature_selection_specification:", err)
-        lines.push(`Feature selection completed with ${summary.num_features || "?"} features`)
-      }
-    } else if (nodeName === "feature_engineering_executor" && summary) {
-      if (summary.features_created && Array.isArray(summary.features_created)) {
-        const numCreated = summary.features_created.length
-        const numSpec = summary.num_spec_features
-        lines.push(`Features created: ${numCreated}`)
-        if (numSpec && numCreated !== numSpec) {
-          lines.push(`*(${numSpec} feature specs → ${numCreated} columns after one-hot encoding)*`)
-        }
-        lines.push(`Names: ${summary.features_created.slice(0, 6).join(", ")}${summary.features_created.length > 6 ? "..." : ""}`)
-      }
-      if (summary.shapes && typeof summary.shapes === "object") {
-        const shapes = summary.shapes as Record<string, unknown>
-        const fmtShape = (s: unknown) => {
-          if (Array.isArray(s) && s.length >= 2) return `${s[0]} × ${s[1]}`
-          return String(s || "?")
-        }
-        if (shapes.train) lines.push(`Train shape: ${fmtShape(shapes.train)}`)
-        if (shapes.val) lines.push(`Val shape: ${fmtShape(shapes.val)}`)
-        if (shapes.test) lines.push(`Test shape: ${fmtShape(shapes.test)}`)
-      }
-      if (summary.validation_passed !== undefined) {
-        lines.push(`Validation: ${summary.validation_passed ? "✓ Passed" : "⚠ Issues found"}`)
-      }
-    } else if (nodeName === "training_approval" && summary) {
-      if (summary.model_type) lines.push(`Model: **${summary.model_type}**`)
-      if (summary.task_type) lines.push(`Task: ${summary.task_type}`)
-      const hp = summary.hyperparameters
-      if (hp && typeof hp === "object") {
-        const entries = Object.entries(hp as Record<string, unknown>)
-        const keyParams = entries.slice(0, 4).map(([k, v]) => `\`${k}=${v}\``).join(", ")
-        if (keyParams) {
-          lines.push(`Key params: ${keyParams}${entries.length > 4 ? ` (+${entries.length - 4} more)` : ""}`)
-        }
-      }
-      const strategy = summary.strategy_notes
-      if (strategy) {
-        const noteCount = Array.isArray(strategy) ? strategy.length : 1
-        lines.push(`\nStrategy: ${noteCount} section${noteCount !== 1 ? "s" : ""} — view details for full plan`)
-      }
-    } else if (nodeName === "training" && summary) {
-      if (summary.model_name) lines.push(`Model: **${summary.model_name}**`)
-      if (summary.model_type) lines.push(`Type: ${summary.model_type}`)
-      if (summary.num_iterations) lines.push(`Iterations: ${summary.num_iterations}`)
-      
-      // Classification metrics
-      if (summary.test_accuracy != null) {
-        lines.push(`\n**Classification Metrics:**`)
-        lines.push(`Test Accuracy: ${(Number(summary.test_accuracy) * 100).toFixed(2)}%`)
-        if (summary.test_roc_auc != null) lines.push(`Test ROC-AUC: ${Number(summary.test_roc_auc).toFixed(4)}`)
-      }
-      
-      // Regression metrics
-      if (summary.test_r2 != null || summary.val_r2 != null) {
-        lines.push(`\n**Regression Metrics:**`)
-        if (summary.val_r2 != null) lines.push(`Val R²: ${Number(summary.val_r2).toFixed(4)}`)
-        if (summary.test_r2 != null) lines.push(`Test R²: ${Number(summary.test_r2).toFixed(4)}`)
-        if (summary.test_rmse != null) lines.push(`Test RMSE: ${Number(summary.test_rmse).toFixed(2)}`)
-        if (summary.test_mae != null) lines.push(`Test MAE: ${Number(summary.test_mae).toFixed(2)}`)
-      }
-      
-      // Summary from training
-      if (details?.summary) {
-        const trainingSummary = String(details.summary)
-        lines.push(`\n${trainingSummary.slice(0, 400)}${trainingSummary.length > 400 ? "..." : ""}`)
-      }
-    } else if (nodeName === "generate_report" && summary) {
-      if (summary.report_path) lines.push(`Report: \`${summary.report_path}\``)
-      if (summary.model_path) lines.push(`Model: \`${summary.model_path}\``)
+    const running = steps.find((s) => s.status === "running")
+    if (running) {
+      setRunningStepHint(STEP_LOADING_HINTS[running.id] ?? `Running ${running.name}…`)
+      return
     }
-    
-    return lines.join("\n")
-  }, [])
+    if (steps.length > 0 && steps.every((s) => s.status === "pending")) {
+      setRunningStepHint("Planning your pipeline…")
+      return
+    }
+    setRunningStepHint(null)
+  }, [isRunning, steps, confirmationRequest])
 
   // Derive a brief subtitle for a completed step
   const computeStepSubtitle = useCallback((nodeName: string, summary?: Record<string, unknown>): string => {
@@ -637,12 +421,12 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
             : null
         const colsStr = ncol != null ? String(ncol) : "?"
         if (rows === undefined || rows === null || rows === "") return ""
-        return `${rows} rows, ${colsStr} cols`
+        return `${Number(rows).toLocaleString()} rows, ${colsStr} cols`
       }
       case "cleaning":
       case "cleaning_and_standardization":
         return summary.num_transformations != null
-          ? `${summary.num_transformations} transformations`
+          ? (Number(summary.num_transformations) === 0 ? "No changes needed" : `${summary.num_transformations} transformations`)
           : ""
       case "label_split_definition":
         return summary.target_column
@@ -650,12 +434,33 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
           : ""
       case "feature_selection_specification":
         return summary.num_features
-          ? `${summary.num_features} features specified`
+          ? `${summary.num_features} features`
           : ""
       case "feature_engineering_executor": {
+        const spec = summary.num_spec_features
+        const created = Array.isArray(summary.features_created) ? summary.features_created.length : 0
+        if (spec && created) return `${spec} → ${created} columns`
+        if (created) return `${created} columns`
+        return ""
+      }
+      case "feature_specification_and_engineering": {
+        const n = summary.num_features
         const created = Array.isArray(summary.features_created) ? summary.features_created.length : 0
         const passed = summary.validation_passed
-        return created ? `${created} features created, ${passed ? "passed" : "issues"}` : ""
+        const parts: string[] = []
+        if (n) parts.push(`${n} specified`)
+        if (created) parts.push(`${created} columns`)
+        if (passed !== undefined) parts.push(passed ? "ok" : "issues")
+        return parts.join(" · ")
+      }
+      case "feature_experiment_runner": {
+        if (summary.skipped) return "skipped"
+        const bv = summary.best_variant_name
+        const tv = summary.total_variants
+        const parts: string[] = []
+        if (bv) parts.push(String(bv))
+        if (tv != null) parts.push(`${tv} setups`)
+        return parts.join(" · ")
       }
       case "training_approval": {
         const model = summary.model_type || ""
@@ -665,14 +470,14 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
       }
       case "training": {
         const parts: string[] = []
-        if (summary.test_accuracy != null) parts.push(`Acc: ${(Number(summary.test_accuracy) * 100).toFixed(1)}%`)
+        if (summary.test_accuracy != null) parts.push(`${(Number(summary.test_accuracy) * 100).toFixed(1)}% accuracy`)
         if (summary.test_roc_auc != null) parts.push(`AUC: ${Number(summary.test_roc_auc).toFixed(3)}`)
         if (summary.test_r2 != null) parts.push(`R²: ${Number(summary.test_r2).toFixed(4)}`)
         if (summary.test_rmse != null) parts.push(`RMSE: ${Number(summary.test_rmse).toFixed(0)}`)
         return parts.join(", ") || (summary.success ? "Completed" : "Failed")
       }
       case "generate_report":
-        return "Saved"
+        return "Complete"
       default:
         return ""
     }
@@ -688,29 +493,7 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
     if (event.type === "token") {
       const phase = event.phase
       const isThinkingPhase = phase === "planner" || phase === "evaluator" || phase === "select_model"
-
       if (isThinkingPhase) {
-        const content = event.content || ""
-        if (!content) return
-        setMessages((prev) => {
-          const i = prev.findIndex((m) => m.id === GRAPH_THINKING_MSG_ID)
-          if (i === -1) {
-            return [
-              ...prev,
-              {
-                id: GRAPH_THINKING_MSG_ID,
-                role: "system",
-                content: content,
-                timestamp: Date.now(),
-                _streaming: true,
-              },
-            ]
-          }
-          const cur = prev[i]
-          const next = [...prev]
-          next[i] = { ...cur, content: cur.content + content, timestamp: Date.now() }
-          return next
-        })
         return
       }
 
@@ -792,40 +575,12 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
     }
 
     if (event.type === "thinking" || event.type === "step.progress") {
-      const raw = (typeof event.message === "string" ? event.message.trim() : "")
-        || (typeof event.phase === "string" ? event.phase.trim() : "")
-      if (!raw) return
-      const line = `⋯ ${raw}`
-      setMessages((prev) => {
-        const i = prev.findIndex((m) => m.id === GRAPH_THINKING_MSG_ID)
-        if (i === -1) {
-          return [
-            ...prev,
-            {
-              id: GRAPH_THINKING_MSG_ID,
-              role: "system",
-              content: line,
-              timestamp: Date.now(),
-              _streaming: true,
-            },
-          ]
-        }
-        const cur = prev[i]
-        const next = [...prev]
-        next[i] = {
-          ...cur,
-          content: `${cur.content}\n${line}`,
-          timestamp: Date.now(),
-        }
-        return next
-      })
       return
     }
 
     if (event.type === "started" || (event.type === "stream.start" && event.pipeline_completed != null)) {
       setMessages((prev) => prev.filter((m) => m.id !== GRAPH_THINKING_MSG_ID))
       setProgress(0)
-      addMessage("system", "Training stream started...")
       // Graph pipeline sends started with node "planner" before any step node runs;
       // avoid showing "Data collection" as running during planning.
       if (event.node !== "planner") {
@@ -845,7 +600,10 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
       const nodeName = event.node || "unknown"
       let summary: string
       if (typeof event.summary === "string") {
-        summary = event.summary
+        summary = event.summary.trim()
+        if (!summary && typeof event.message === "string" && event.message.trim()) {
+          summary = event.message.trim()
+        }
       } else if (nodeName === "training_approval" && event.summary && typeof event.summary === "object") {
         const s = event.summary as Record<string, unknown>
         const lines: string[] = []
@@ -853,19 +611,7 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
         if (s.task_type) lines.push(`**Task:** ${s.task_type}`)
         const hp = s.hyperparameters as Record<string, unknown> | undefined
         if (hp && typeof hp === "object") {
-          const entries = Object.entries(hp)
-          const keyParams = entries.slice(0, 5).map(([k, v]) => `\`${k}=${v}\``).join("  ·  ")
-          lines.push("")
-          lines.push(`**Hyperparameters** (${entries.length} total)`)
-          lines.push(keyParams + (entries.length > 5 ? `  ·  *+${entries.length - 5} more*` : ""))
-        }
-        if (s.class_weight) lines.push(`\n**Class weight:** ${s.class_weight}`)
-        const strategy = s.strategy_notes
-        if (strategy) {
-          const notes = Array.isArray(strategy) ? strategy : [strategy]
-          lines.push("")
-          lines.push(`**Strategy** — ${notes.length} section${notes.length !== 1 ? "s" : ""}`)
-          lines.push("*View full details for the complete training plan*")
+          lines.push(`**Hyperparameters:** ${Object.keys(hp).length} configured`)
         }
         summary = lines.join("\n")
       } else {
@@ -941,7 +687,7 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
       setIsRunning(false)
       
     } else if (event.type === "dataset_loaded" || event.type === "dataset.resolved") {
-      addMessage("system", `Dataset loaded: ${event.dataset} → ${event.ref}`)
+      return
     } else if (event.type === "dataset_error" || event.type === "dataset.error") {
       addMessage("system", `Could not load dataset: ${event.dataset || "unknown"}`)
     } else if (event.type === "node_complete" || event.type === "step.complete") {
@@ -963,10 +709,6 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
 
       setSteps((prev) => applyNodeCompleteToSteps(prev, nodeName, event))
 
-      setMessages(prev => prev.map(m =>
-        m.id === GRAPH_THINKING_MSG_ID ? { ...m, _streaming: false } : m
-      ))
-      
       // Compute a one-line subtitle for the step dropdown
       const summary = event.summary as Record<string, unknown> | undefined
       const subtitle = computeStepSubtitle(nodeName, summary)
@@ -986,157 +728,33 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
         }))
       }
 
+      if (nodeName === "training" && summary) {
+        lastTrainingSummaryRef.current = summary as Record<string, unknown>
+      }
+
       // Graph orchestration nodes: update checklist/state only; no chat line.
       if (nodeName === "planner" || nodeName === "dispatcher" || nodeName === "evaluator") {
         return
       }
-      
-      // Format and show detailed info in chat
-      let formattedDetails = ""
-      try {
-        formattedDetails = formatStreamDetails(event)
-      } catch (err) {
-        console.error("[stream] Error formatting details:", err)
-      }
-      
-      console.log("[stream] formattedDetails for", nodeName, "length:", formattedDetails?.length || 0)
-      
-      // For feature_selection_specification, always create a detailed message
+
+      // Selection + engineering are one user-facing step: only chat when engineering finishes.
       if (nodeName === "feature_selection_specification") {
-        const summary = event.summary as Record<string, unknown> | undefined
-        const details = event.details as Record<string, unknown> | undefined
-        const messageLines: string[] = []
-        
-        messageLines.push("## ✅ Feature Selection Complete")
-        messageLines.push("")
-        
-        if (details?.description) {
-          messageLines.push(`> ${String(details.description)}`)
-          messageLines.push("")
-        }
-        
-        if (summary) {
-          // Dataset overview - compact inline format
-          const overview = summary.dataset_overview as Record<string, unknown> | undefined
-          if (overview?.rows) {
-            messageLines.push("### 📊 Dataset Overview")
-            messageLines.push("")
-            messageLines.push(`**${String(overview.rows).replace(/\B(?=(\d{3})+(?!\d))/g, ",")} rows** × **${overview.columns} columns** • ${overview.numeric_columns || 0} numeric • ${overview.categorical_columns || 0} categorical`)
-            messageLines.push("")
-          }
-          
-          // Numeric summaries - compact card style
-          const numericSummaries = summary.numeric_summaries as Array<{column?: string; mean?: number; std?: number; min?: number; max?: number; skew?: number}> | undefined
-          if (numericSummaries && Array.isArray(numericSummaries) && numericSummaries.length > 0) {
-            messageLines.push("### 📈 Numeric Features")
-            messageLines.push("")
-            numericSummaries.slice(0, 6).forEach((s) => {
-              if (s && typeof s === "object") {
-                const skewWarning = s.skew && Math.abs(s.skew) > 1 ? " ⚠️" : ""
-                messageLines.push(`**${s.column}**${skewWarning}`)
-                messageLines.push(`Mean: \`${s.mean?.toLocaleString() ?? "N/A"}\` • Std: \`${s.std?.toLocaleString() ?? "N/A"}\` • Range: \`${s.min?.toLocaleString() ?? "?"}\` → \`${s.max?.toLocaleString() ?? "?"}\``)
-                messageLines.push("")
-              }
-            })
-            if (numericSummaries.length > 6) {
-              messageLines.push(`*+ ${numericSummaries.length - 6} more numeric features*`)
-              messageLines.push("")
-            }
-          }
-          
-          // Feature correlations - visual bar representation
-          const correlations = summary.feature_correlations as Array<{feature?: string; correlation?: number}> | undefined
-          if (correlations && Array.isArray(correlations) && correlations.length > 0) {
-            messageLines.push("### 🎯 Target Correlations")
-            messageLines.push("")
-            correlations.slice(0, 6).forEach((c) => {
-              if (c && typeof c === "object") {
-                const corrValue = Number(c.correlation || 0)
-                const absCorr = Math.abs(corrValue)
-                const barLength = Math.round(absCorr * 20) // max 20 chars
-                const bar = corrValue >= 0 ? "█".repeat(barLength) : "▓".repeat(barLength)
-                const sign = corrValue >= 0 ? "+" : ""
-                const color = corrValue >= 0 ? "🟢" : "🔴"
-                messageLines.push(`${color} \`${c.feature?.padEnd(16) || "unknown".padEnd(16)}\` ${bar.padEnd(4)} **${sign}${corrValue.toFixed(3)}**`)
-              }
-            })
-            messageLines.push("")
-          }
-          
-          // Leakage warnings
-          const leakage = summary.leakage_warnings as string[] | undefined
-          if (leakage && Array.isArray(leakage) && leakage.length > 0) {
-            messageLines.push("### 🚨 Leakage Warnings")
-            messageLines.push("")
-            leakage.forEach((f) => {
-              messageLines.push(`> ⚠️ **${String(f)}** may cause data leakage`)
-            })
-            messageLines.push("")
-          }
-          
-          // High correlation pairs
-          const highCorr = summary.high_correlation_pairs as Array<{feature1?: string; feature2?: string; correlation?: number}> | undefined
-          if (highCorr && Array.isArray(highCorr) && highCorr.length > 0) {
-            messageLines.push("### ⚠️ Multicollinearity")
-            messageLines.push("")
-            highCorr.slice(0, 3).forEach((p) => {
-              if (p && typeof p === "object") {
-                messageLines.push(`\`${p.feature1 || "?"}\` ↔ \`${p.feature2 || "?"}\` = **${Number(p.correlation || 0).toFixed(3)}**`)
-              }
-            })
-            messageLines.push("")
-          }
-          
-          // Group summaries (categorical analysis) - compact horizontal
-          const groupSummaries = summary.group_summaries as Array<{column?: string; n_groups?: number; groups?: Array<{value?: string; mean?: number}>}> | undefined
-          if (groupSummaries && Array.isArray(groupSummaries) && groupSummaries.length > 0) {
-            messageLines.push("### 📋 Categorical Feature Breakdown")
-            messageLines.push("")
-            groupSummaries.slice(0, 4).forEach((g) => {
-              if (g && typeof g === "object" && g.groups && Array.isArray(g.groups)) {
-                const groupStr = g.groups.slice(0, 4).map((grp) => {
-                  if (grp && typeof grp === "object") {
-                    return `${grp.value}: **${((grp.mean || 0) * 100).toFixed(0)}%**`
-                  }
-                  return ""
-                }).filter(Boolean).join(" • ")
-                messageLines.push(`**${g.column}** → ${groupStr}`)
-              }
-            })
-            messageLines.push("")
-          }
-          
-          // Features specified - clean list
-          if (summary.num_features) {
-            messageLines.push("---")
-            messageLines.push("")
-            messageLines.push(`### ✅ ${summary.num_features} Features Selected`)
-            messageLines.push("")
-            if (summary.feature_names && Array.isArray(summary.feature_names)) {
-              const names = summary.feature_names.map((n: unknown) => String(n))
-              messageLines.push(`\`${names.slice(0, 10).join("\` • \`")}\`${names.length > 10 ? ` *+${names.length - 10} more*` : ""}`)
-            }
-          }
-          
-          messageLines.push("")
-          messageLines.push("---")
-          messageLines.push("*📊 View the **Analysis** tab in the report for histograms, Lorenz curves, and more.*")
-        }
-        
-        const finalMessage = messageLines.join("\n")
-        console.log("[stream] feature_selection message:", finalMessage.substring(0, 500))
-        addMessage("agent", finalMessage)
-      } else if (formattedDetails && formattedDetails.trim()) {
-        addMessage("agent", formattedDetails)
-      } else {
-        const headline = event.headline
-        if (headline && typeof headline === "string") {
-          addMessage("agent", `**${STEP_DEFINITIONS.find(s => s.id === nodeName)?.name || nodeName}** — ${headline}`)
-        } else {
-          const stepDef = STEP_DEFINITIONS.find((s) => s.id === nodeName)
-          addMessage("agent", `✓ ${stepDef?.name || nodeName} complete`)
-        }
+        return
       }
+
+      const headline =
+        typeof event.headline === "string" && event.headline.trim()
+          ? event.headline.trim()
+          : `${STEP_DEFINITIONS.find((s) => s.id === nodeName)?.name || nodeName} complete`
+
+      const detailMarkdown = buildStepDetailMarkdown(nodeName, event)
+      const stepIdForMessage =
+        nodeName === "cleaning_and_standardization" ? "cleaning" : nodeName
+
+      addMessage("agent", headline, {
+        stepId: stepIdForMessage,
+        detailMarkdown: detailMarkdown || undefined,
+      })
     } else if (event.type === "node_skipped" || event.type === "step.skipped") {
       const nodeName = event.node || "unknown"
       if (emittedStepsRef.current.has(`skipped:${nodeName}`)) {
@@ -1157,8 +775,35 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
       setIsRunning(false)
 
       setSteps((prev) => markStepsDonePreservingSkipped(prev))
-      
-      addMessage("agent", "**Training completed successfully!**\n\nClick 'View Report' to see detailed results including metrics, feature importance, and recommendations.")
+
+      if (pipelineCompletionEmittedRef.current) {
+        return
+      }
+      pipelineCompletionEmittedRef.current = true
+
+      const fromStep = lastTrainingSummaryRef.current
+      const m = agentStateRef.current.training_metrics
+      const acc = fromStep?.test_accuracy ?? m?.test_accuracy
+      const auc = fromStep?.test_roc_auc ?? m?.test_roc_auc
+      const r2 = fromStep?.test_r2 ?? m?.test_r2
+      const rmse = fromStep?.test_rmse ?? m?.test_rmse
+
+      let recap = ""
+      if (acc != null) {
+        recap = `Best test result: **${(Number(acc) * 100).toFixed(1)}% accuracy**`
+        if (auc != null) recap += `, ROC-AUC **${Number(auc).toFixed(3)}**`
+      } else if (r2 != null) {
+        recap = `Best test result: R² **${Number(r2).toFixed(4)}**`
+        if (rmse != null) recap += `, RMSE **${Number(rmse).toFixed(0)}**`
+      } else {
+        recap = "Your run finished successfully."
+      }
+
+      addMessage(
+        "agent",
+        `**Pipeline finished.** ${recap}\n\nOpen the report for feature importance, comparisons, and next steps.`,
+        { showReportButton: true, stepId: "generate_report" },
+      )
     } else if (event.type === "error") {
       setIsRunning(false)
       
@@ -1169,7 +814,7 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
       
       addMessage("system", `Error: ${event.error || "Unknown error"}`)
     }
-  }, [addMessage, formatStreamDetails, computeStepSubtitle, saveCurrentMessages])
+  }, [addMessage, computeStepSubtitle, saveCurrentMessages])
 
   const ensureExperimentId = useCallback(
     async (suggestedName?: string | null): Promise<string | null> => {
@@ -1238,22 +883,26 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
     setProgress(0)
     setSteps(createInitialSteps())
     emittedStepsRef.current = new Set()
+    pipelineCompletionEmittedRef.current = false
+    lastTrainingSummaryRef.current = null
 
     const initialState = createInitialState()
     initialState.goal = goal
     initialState.linked_datasets = linkedDatasets || null
-    initialState.user_model_preference = modelPreference || linkedModelId || null
+    initialState.user_model_preference = modelPreference || null
     setAgentState(initialState)
 
     const hitlLabel = hitl === false ? " (no human review)" : ""
     addMessage("agent", `Starting training with goal: "${goal}"\n\nStreaming progress updates in real-time${hitlLabel}...`)
 
+    const conversation = buildPlanningConversation(messagesRef.current, goal)
     streamControllerRef.current = streamChat(
       {
         message: goal,
         linked_datasets: linkedDatasets ?? null,
-        model_preference: modelPreference ?? linkedModelId ?? null,
+        model_preference: modelPreference ?? null,
         experiment_id: runEid,
+        conversation,
       },
       applyAgentStreamEvent,
       (error: Error) => {
@@ -1261,7 +910,7 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
         addMessage("system", `Stream error: ${error.message}`)
       },
     )
-  }, [addMessage, checkConnection, applyAgentStreamEvent, linkedModelId, ensureExperimentId])
+  }, [addMessage, checkConnection, applyAgentStreamEvent, ensureExperimentId])
 
   const handleConfirmation = useCallback((action: ConfirmationAction, comment?: string) => {
     if (!confirmationRequest || !experimentId) {
@@ -1347,6 +996,8 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
 
       streamControllerRef.current?.abort()
 
+      const linkedForThisSend = [...linkedDatasetsRef.current]
+
       void (async () => {
         const eid = await ensureExperimentId(suggestExperimentTitleFromUserMessage(content))
         if (!eid) {
@@ -1354,21 +1005,26 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
           return
         }
 
-        const ds = linkedDatasetsRef.current
-        if (ds.length > 0) {
+        if (linkedForThisSend.length > 0) {
+          setLinkedDatasets([])
+          void updateExperiment(eid, { linked_datasets: [] })
           setSteps(createInitialSteps())
           emittedStepsRef.current = new Set()
+          pipelineCompletionEmittedRef.current = false
+          lastTrainingSummaryRef.current = null
           setProgress(0)
         }
 
         setIsRunning(true)
 
+        const conversation = buildPlanningConversation(messagesRef.current, content)
         streamControllerRef.current = streamChat(
           {
             message: content,
             experiment_id: eid,
-            linked_datasets: ds.length > 0 ? ds : null,
-            model_preference: opts?.user_model_preference ?? linkedModelId ?? null,
+            linked_datasets: linkedForThisSend.length > 0 ? linkedForThisSend : null,
+            model_preference: opts?.user_model_preference ?? null,
+            conversation,
           },
           applyAgentStreamEvent,
           (error: Error) => {
@@ -1381,7 +1037,6 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
     [
       addMessage,
       isRunning,
-      linkedModelId,
       applyAgentStreamEvent,
       ensureExperimentId,
     ],
@@ -1403,8 +1058,9 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
     setAcceptAllMode(false)
     acceptAllModeRef.current = false
     emittedStepsRef.current = new Set()
+    pipelineCompletionEmittedRef.current = false
+    lastTrainingSummaryRef.current = null
     setLinkedDatasets([])
-    setLinkedModelId(null)
   }, [])
 
   const leaveLabSession = useCallback(() => {
@@ -1426,12 +1082,20 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
       // Restore chat history
       if (exp.chat_history && Array.isArray(exp.chat_history)) {
         setMessages(
-          exp.chat_history.map((m: Record<string, unknown>) => ({
-            id: (m.id as string) || uid("msg"),
-            role: (m.role as ChatMessage["role"]) || "agent",
-            content: (m.content as string) || "",
-            timestamp: (m.timestamp as number) || Date.now(),
-          })),
+          exp.chat_history
+            .filter((m: Record<string, unknown>) => m.id !== GRAPH_THINKING_MSG_ID)
+            .map((m: Record<string, unknown>) => ({
+              id: (m.id as string) || uid("msg"),
+              role: (m.role as ChatMessage["role"]) || "agent",
+              content: (m.content as string) || "",
+              timestamp: (m.timestamp as number) || Date.now(),
+              ...(typeof m.step_id === "string" ? { stepId: m.step_id } : {}),
+              ...(typeof m.stepId === "string" ? { stepId: m.stepId } : {}),
+              ...(typeof m.detail_markdown === "string" ? { detailMarkdown: m.detail_markdown } : {}),
+              ...(typeof m.detailMarkdown === "string" ? { detailMarkdown: m.detailMarkdown } : {}),
+              ...(m.show_report_button === true ? { showReportButton: true } : {}),
+              ...(m.showReportButton === true ? { showReportButton: true } : {}),
+            })),
         )
       } else {
         setMessages([])
@@ -1451,9 +1115,6 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
       emittedStepsRef.current = new Set()
       const rawLd = exp.linked_datasets
       setLinkedDatasets(Array.isArray(rawLd) ? rawLd.map(String) : [])
-      const ts = exp.training_state as Partial<TrainingAgentState> | null | undefined
-      const pref = ts?.user_model_preference
-      setLinkedModelId(typeof pref === "string" && pref ? pref : null)
     } catch (err) {
       console.error("Failed to load experiment:", err)
     }
@@ -1480,8 +1141,6 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
     experimentId,
     linkedDatasets,
     updateLinkedDatasets,
-    linkedModelId,
-    setLinkedModelId,
     datasets,
     modelTypes,
     startAgent,
@@ -1495,5 +1154,6 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
     loadExperiment,
     saveCurrentMessages,
     leaveLabSession,
+    runningStepHint,
   }
 }

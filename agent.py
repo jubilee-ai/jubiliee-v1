@@ -7,8 +7,8 @@ specialised sub-agents on demand:
   1. Analysis sub-agent  (agents/analysis_agent_v2)
      → statistical analysis, pretrained-model inference, data exploration
 
-  2. Dataset Curator  (agents/dataset_curator)
-     → search Kaggle / HuggingFace, download, profile, register datasets
+  2. Dataset search / curation — local workspace only (Kaggle / HuggingFace disabled
+     via EXTERNAL_DATASET_CATALOG_ENABLED; see dataset curator when re-enabled).
 
 Training is handled by the intent router + training graph (not the orchestrator).
 """
@@ -31,6 +31,9 @@ from pydantic import BaseModel, Field
 # ---------------------------------------------------------------------------
 _ROOT = Path(__file__).parent
 load_dotenv(_ROOT / ".env")
+
+# Kaggle / HuggingFace search uses agents/dataset_curator (MCP). Set True to re-enable.
+EXTERNAL_DATASET_CATALOG_ENABLED = False
 
 _MODEL_TOOLS_DIR = _ROOT / "tools" / "models-tools" / "training"
 if str(_MODEL_TOOLS_DIR) not in sys.path:
@@ -88,7 +91,10 @@ def analyze_data(question: str) -> str:
 
 class SearchDatasetsInput(BaseModel):
     query: str = Field(
-        description="Search query for datasets (e.g. 'customer segmentation tabular', 'anomaly detection network traffic')"
+        description=(
+            "Search terms, or use '*' / 'all' / empty string to list every local dataset "
+            "(fast; skips external search unless you set source to kaggle or huggingface)."
+        )
     )
     source: Optional[str] = Field(
         default=None,
@@ -110,6 +116,42 @@ def _run_async(coro):
     return asyncio.run(coro)
 
 
+_LOCAL_INVENTORY_MAX = 50
+
+
+def _is_local_inventory_query(query: str) -> bool:
+    """True when the user wants every local dataset (not a semantic search).
+
+    Word-overlap search treats '*' as a token that never matches refs, so we
+    must branch to list-all. Skipping external search for these avoids slow
+    Kaggle/HuggingFace agent runs for 'what do I have?' style questions.
+    """
+    q = (query or "").strip().lower()
+    if not q:
+        return True
+    if q in (
+        "*",
+        "**",
+        "all",
+        "any",
+        "any*",
+        "all datasets",
+        "everything",
+        "list all",
+        "list all datasets",
+        "show all",
+        "show all datasets",
+        "what datasets?",
+        "what datasets do i have",
+        "what data do i have",
+    ):
+        return True
+    # Only wildcards / whitespace (e.g. "*", "**", " * ")
+    if q.replace("*", "").strip() == "":
+        return True
+    return False
+
+
 def _search_local_datasets(query: str) -> list[dict]:
     """Search local registered datasets, SQL tables, and catalog for matches."""
     _DATA_TOOLS_DIR = _ROOT / "tools" / "data-tools"
@@ -118,6 +160,45 @@ def _search_local_datasets(query: str) -> list[dict]:
     from utils import get_all_available_datasets
 
     all_ds = get_all_available_datasets()
+
+    if _is_local_inventory_query(query):
+        results: list[dict] = []
+        for ds in all_ds.get("registered", []):
+            ref = ds["ref"]
+            results.append({
+                "source": "local",
+                "ref": ref,
+                "name": ref,
+                "rows": ds.get("rows", "?"),
+                "columns": ds.get("columns", "?"),
+                "match_score": 0,
+            })
+        for ds in all_ds.get("sql_tables", []):
+            ref = ds["ref"]
+            results.append({
+                "source": "local (SQL)",
+                "ref": ref,
+                "name": ref,
+                "rows": ds.get("rows", "?"),
+                "columns": ds.get("columns", "?"),
+                "match_score": 0,
+            })
+        for ds in all_ds.get("catalog", []):
+            ref = ds["ref"]
+            name = ds.get("name", ref)
+            cols = ds.get("columns", [])
+            ncol = len(cols) if isinstance(cols, list) else cols
+            results.append({
+                "source": "local (catalog)",
+                "ref": ref,
+                "name": name,
+                "rows": ds.get("rows", "?"),
+                "columns": ncol,
+                "match_score": 0,
+            })
+        results.sort(key=lambda x: (x["source"], str(x["ref"])))
+        return results[:_LOCAL_INVENTORY_MAX]
+
     query_lower = query.lower()
     query_words = set(query_lower.split())
     results = []
@@ -194,12 +275,12 @@ def search_datasets(query: str, source: Optional[str] = None) -> str:
     get recommendations for datasets. NEVER answer dataset questions from
     your own knowledge — always use this tool to get real results.
 
-    Searches local datasets first (already registered, SQL tables, catalog),
-    then external sources (Kaggle, HuggingFace). Returns a unified numbered
-    list the user can choose from.
+    Searches local datasets (registered, SQL tables, catalog). When
+    EXTERNAL_DATASET_CATALOG_ENABLED is True, also searches Kaggle/HuggingFace
+    via the dataset curator.
 
     After the user picks a local dataset, it's ready to use immediately.
-    For external datasets, use curate_dataset to download and register them.
+    For external sources (when enabled), use curate_dataset to download and register.
     """
     sections = []
     next_num = 1
@@ -217,65 +298,45 @@ def search_datasets(query: str, source: Optional[str] = None) -> str:
             return f"No local datasets found matching '{query}'."
         return "\n\n".join(sections)
 
-    try:
-        from agents.dataset_curator.agent import build_dataset_curator_agent
-
-        async def _search_external():
-            agent, client = await build_dataset_curator_agent()
-
-            if source == "kaggle":
-                prompt = (
-                    f"Search Kaggle only (use search_datasets) for: {query}\n"
-                    "Filter for CSV datasets. Return the top 5 results with: "
-                    "title, ref (owner/slug), description (1 sentence), size_bytes, "
-                    "download_count, and usability_rating."
-                )
-            elif source == "huggingface":
-                prompt = (
-                    f"Search HuggingFace only (use hub_repo_search with repo_types=['dataset']) for: {query}\n"
-                    "Return the top 5 results with: id, description (1 sentence), downloads, tags."
-                )
-            else:
-                prompt = (
-                    f"Search BOTH Kaggle (search_datasets) and HuggingFace "
-                    f"(hub_repo_search with repo_types=['dataset']) in parallel for: {query}\n"
-                    "Return the top 3 from each source. For each result include: "
-                    "name, source (kaggle/huggingface), identifier (owner/slug or org/repo), "
-                    "description (1 sentence), and size or download count."
-                )
-
-            prompt += (
-                f"\n\nNumber results starting from {next_num}. "
-                "Do NOT download anything. Just search and return results. "
-                "Format as a numbered list the user can choose from."
+    # List-all / inventory queries: local only — do not spawn the curator agent (slow).
+    if source is None and _is_local_inventory_query(query):
+        if not sections:
+            return (
+                "No datasets found in this workspace yet (nothing registered, "
+                "no SQL tables, and no catalog assets)."
             )
+        header = (
+            "For **local** results, you can train on them immediately using the ref name.\n\n"
+        )
+        return header + "\n\n".join(sections)
 
-            result = await agent.ainvoke(
-                {"messages": [{"role": "user", "content": prompt}]}
-            )
-            messages = result.get("messages", [])
-            return messages[-1].content if messages else ""
-
-        external_text = _run_async(_search_external())
-        if external_text:
-            if sections:
-                sections.append("### External Datasets (Kaggle / HuggingFace)\n")
-            sections.append(external_text)
-
-    except Exception as exc:
+    if not EXTERNAL_DATASET_CATALOG_ENABLED:
         if sections:
-            sections.append(f"\n*(External search failed: {exc})*")
-        else:
-            return f"Dataset search failed: {type(exc).__name__}: {exc}"
+            header = (
+                "For **local** results, you can train on them immediately using the ref name.\n\n"
+            )
+            return (
+                header
+                + "\n\n".join(sections)
+                + "\n\n*(Kaggle / HuggingFace catalog search is disabled.)*"
+            )
+        if source in ("kaggle", "huggingface"):
+            return (
+                "Kaggle and HuggingFace dataset search is disabled. "
+                "Use local datasets only (registered refs, SQL tables, catalog), or add data in the workspace."
+            )
+        return (
+            f"No local datasets matched '{query}'. "
+            "Kaggle / HuggingFace search is disabled — try different keywords or register data locally."
+        )
 
+    # External search is intentionally disabled in main chat.
     if not sections:
-        return f"No datasets found matching '{query}'."
-
+        return f"No local datasets found matching '{query}'."
     header = (
-        "For **local** results, you can train on them immediately using the ref name. "
-        "For **external** results, pick one and I'll download and register it for you.\n\n"
+        "For **local** results, you can train on them immediately using the ref name.\n\n"
     )
-    return header + "\n\n".join(sections)
+    return header + "\n\n".join(sections) + "\n\n*(Kaggle / HuggingFace search is disabled.)*"
 
 
 # ============================================================================
@@ -299,7 +360,7 @@ def curate_dataset(goal: str, source: str, identifier: str) -> str:
     """Select and prepare a dataset for training.
 
     For local datasets: validates the ref exists and profiles it.
-    For external datasets: downloads, profiles, and registers them.
+    For external datasets (when enabled): downloads, profiles, and registers them.
 
     Use this after the user picks a dataset from search_datasets results.
     Returns the registered dataset reference name that can be used for training.
@@ -308,6 +369,12 @@ def curate_dataset(goal: str, source: str, identifier: str) -> str:
     if str(_DATA_TOOLS_DIR) not in sys.path:
         sys.path.insert(0, str(_DATA_TOOLS_DIR))
     from utils import get_registered_dataset
+
+    if not EXTERNAL_DATASET_CATALOG_ENABLED and source.lower() in ("kaggle", "huggingface"):
+        return (
+            "Kaggle and HuggingFace dataset import is disabled. "
+            "Use a local dataset ref (profile with source local / local (sql) / local (catalog))."
+        )
 
     if source.lower() in ("local", "local (sql)", "local (catalog)"):
         df = get_registered_dataset(identifier)
@@ -404,8 +471,7 @@ You are **Jubilee**, an AI assistant for data analysis and machine learning.
 
 | Tool | When to use |
 |---|---|
-| `search_datasets` | User wants to find, browse, or discover datasets — searches **local storage first**, then Kaggle and HuggingFace |
-| `curate_dataset` | User picked a dataset — profiles local ones or downloads external ones |
+| `search_datasets` | User wants to find, browse, or discover datasets — **local workspace only** (registered, SQL, catalog); Kaggle/HuggingFace disabled for now |
 | `analyze_data` | Analytical questions: statistics, trends, pretrained-model inference, data exploration |
 | `predict_with_model` | Run predictions on a dataset using a trained model |
 | `evaluate_model` | Evaluate a trained model's performance on a labeled dataset |
@@ -423,14 +489,12 @@ You are **Jubilee**, an AI assistant for data analysis and machine learning.
 1. **General / conversational question** → answer directly, no tool needed.
 2. **User mentions finding, searching, looking for, or wanting datasets** →
    **ALWAYS call `search_datasets`**. NEVER answer dataset questions from your own
-   knowledge — you MUST use the tool because it searches local storage, Kaggle,
-   and HuggingFace for real, usable results. This includes ANY of these patterns:
+   knowledge — you MUST use the tool because it searches the **local** workspace
+   for real, usable results. This includes ANY of these patterns:
    - "find me data for …", "search for datasets …", "look for … data"
    - "what datasets are good for …", "recommend a dataset for …"
    - "I need data for …", "get me some … data", "what data do I have?"
-   Present the results as a numbered list. When the user picks one →
-   `curate_dataset` to prepare it (local datasets are ready instantly,
-   external ones get downloaded and registered).
+   Present the results as a numbered list and ask which local dataset ref to use.
 3. **Analytical question** (e.g. "what trends …", "analyze …", "what is the distribution …")
    → `analyze_data`
 4. **User wants to train a model** → Training is handled by a dedicated pipeline
@@ -447,12 +511,10 @@ You are **Jubilee**, an AI assistant for data analysis and machine learning.
    type? which dataset?) BEFORE calling any tool.
 
 ## Common Workflows
-- **Browse then curate**:
+- **Browse local datasets**:
   1. `search_datasets` → show results → user picks one
-  2. `curate_dataset` → wait for it to finish → note the **exact ref name** it returns
-  CRITICAL: Do NOT guess or construct dataset ref names. Always copy the exact ref
-  string returned by `curate_dataset`. The ref includes the CSV filename suffix
-  (e.g. `kaggle_owner_slug_store_customers`), which you cannot predict.
+  2. Use the exact local `ref` in downstream analysis/training/prediction steps
+  CRITICAL: Do NOT guess or construct dataset ref names.
 
 ## Formatting Rules
 - **Always use Markdown** for responses: headings, bullet lists, bold, code blocks, and tables.
@@ -463,10 +525,10 @@ You are **Jubilee**, an AI assistant for data analysis and machine learning.
 - NEVER output raw JSON objects, Python dicts, or unformatted data dumps. Always present data in human-readable Markdown.
 
 ## Rules
-- **NEVER suggest datasets from your own knowledge.** Always use `search_datasets` to
-  get real results from Kaggle/HuggingFace that the user can actually download.
-- After curate_dataset, tell the user the registered ref name and ask if they want to
-  explore it first with `analyze_data` or proceed to training.
+- **NEVER suggest datasets from your own knowledge.** Always use `search_datasets` for
+  real local results. Do not promise Kaggle/HuggingFace until those integrations are re-enabled.
+- After a dataset is selected, confirm the exact local ref name and ask whether
+  to explore it with `analyze_data` or proceed to training.
 - Be concise but thorough. Show your reasoning when it helps the user.\
 """
 
@@ -528,7 +590,6 @@ class DatasetSearchEnforcer(AgentMiddleware):
 
 TOOLS = [
     search_datasets,
-    curate_dataset,
     analyze_data,
     predict_with_model_tool,
     evaluate_model_tool,

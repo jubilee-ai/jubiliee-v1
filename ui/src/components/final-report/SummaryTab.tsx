@@ -23,10 +23,16 @@ export function SummaryTab({ agentState }: SummaryTabProps) {
 
   const hasClassificationMetrics = metrics?.test_accuracy != null || metrics?.test_roc_auc != null
   const hasRegressionMetrics = testR2 != null || testRmse != null || testMae != null
+  const modelTypeLabel = metrics?.model_type || agentState.selected_model || "N/A"
+  const featureCount =
+    agentState.feature_spec?.features.length ||
+    (featureStep?.features_created as unknown[])?.length ||
+    0
+  const iterLabel = String(metrics?.num_iterations || 1)
 
   return (
     <div className="space-y-8">
-      {/* Hero metrics */}
+      {/* Hero metrics — test headline scores + run shape; model type once (or feature count when model is already in slot 2) */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4 [&>div>div:first-child]:text-[11px] [&>div>div:last-child]:text-md">
         {hasClassificationMetrics ? (
           <>
@@ -41,11 +47,15 @@ export function SummaryTab({ agentState }: SummaryTabProps) {
         ) : (
           <>
             <MetricBox label="Status" value={metrics?.success ? "Success" : "Complete"} highlight />
-            <MetricBox label="Model" value={metrics?.model_type || agentState.selected_model || "N/A"} />
+            <MetricBox label="Model" value={modelTypeLabel} />
           </>
         )}
-        <MetricBox label="Iterations" value={String(metrics?.num_iterations || 1)} />
-        <MetricBox label="Model Type" value={metrics?.model_type || agentState.selected_model || "N/A"} />
+        <MetricBox label="Iterations" value={iterLabel} />
+        {hasClassificationMetrics || hasRegressionMetrics ? (
+          <MetricBox label="Model" value={modelTypeLabel} />
+        ) : (
+          <MetricBox label="Features" value={featureCount > 0 ? String(featureCount) : "—"} />
+        )}
       </div>
 
       {/* Overview */}
@@ -58,54 +68,52 @@ export function SummaryTab({ agentState }: SummaryTabProps) {
         </div>
       </Section>
 
-      {/* Key Insights */}
-      <Section title="Key Insights">
-        <ul className="space-y-2 text-sm text-muted-foreground">
-          {hasClassificationMetrics ? (
+      {/* Pointers to other tabs — avoids repeating hero numbers and Overview rows */}
+      <Section title="Where to look next">
+        <ul className="space-y-2.5 text-sm text-muted-foreground leading-relaxed">
+          {hasClassificationMetrics || hasRegressionMetrics ? (
             <li className="flex gap-2">
-              <span className="text-muted-foreground/50">•</span>
-              Model achieved {formatPercent(metrics?.test_accuracy)} test accuracy with ROC-AUC of{" "}
-              {formatNumber(metrics?.test_roc_auc, 3)}
-            </li>
-          ) : hasRegressionMetrics ? (
-            <li className="flex gap-2">
-              <span className="text-muted-foreground/50">•</span>
-              Model achieved Test R² of {formatNumber(testR2, 4)} with RMSE of{" "}
-              {formatNumber(testRmse, 2)} and MAE of {formatNumber(testMae, 2)}
+              <span className="text-muted-foreground/50 shrink-0">→</span>
+              <span>
+                <span className="text-foreground font-medium">Metrics</span> has validation vs. test
+                scores and each training iteration.
+                {hasRegressionMetrics && valR2 != null && (
+                  <> Validation R² there: {formatNumber(valR2, 4)}.</>
+                )}
+                {hasClassificationMetrics && metrics?.val_roc_auc != null && (
+                  <> Validation ROC-AUC there: {formatNumber(metrics.val_roc_auc, 3)}.</>
+                )}
+              </span>
             </li>
           ) : (
             <li className="flex gap-2">
-              <span className="text-muted-foreground/50">•</span>
-              Model training completed successfully using{" "}
-              {metrics?.model_type || agentState.selected_model}
+              <span className="text-muted-foreground/50 shrink-0">→</span>
+              <span>
+                <span className="text-foreground font-medium">Metrics</span> lists any logged scores
+                and iteration history.
+              </span>
             </li>
           )}
-          {hasRegressionMetrics && valR2 != null && (
+          {featureCount > 0 && (
             <li className="flex gap-2">
-              <span className="text-muted-foreground/50">•</span>
-              Validation R² was {formatNumber(valR2, 4)}, indicating good generalization
+              <span className="text-muted-foreground/50 shrink-0">→</span>
+              <span>
+                <span className="text-foreground font-medium">Features</span> lists all{" "}
+                {featureCount} engineered feature{featureCount !== 1 ? "s" : ""} and the data pipeline.
+              </span>
             </li>
           )}
           <li className="flex gap-2">
-            <span className="text-muted-foreground/50">•</span>
-            Training converged after {metrics?.num_iterations || 1} iteration(s)
-          </li>
-          <li className="flex gap-2">
-            <span className="text-muted-foreground/50">•</span>
-            {agentState.feature_spec?.features.length ||
-              (featureStep?.features_created as unknown[])?.length ||
-              0}{" "}
-            features were engineered from the original dataset
-          </li>
-          <li className="flex gap-2">
-            <span className="text-muted-foreground/50">•</span>
-            Data was split using {agentState.label_definition?.split_strategy || "random"} strategy
-            (70/15/15)
+            <span className="text-muted-foreground/50 shrink-0">→</span>
+            <span>
+              <span className="text-foreground font-medium">Analysis</span> shows correlations,
+              distributions, and data-quality signals from feature selection.
+            </span>
           </li>
           {dataStep?.rows != null && (
             <li className="flex gap-2">
-              <span className="text-muted-foreground/50">•</span>
-              Original dataset had {String(dataStep.rows)} rows
+              <span className="text-muted-foreground/50 shrink-0">→</span>
+              <span>Collected dataset: {String(dataStep.rows)} rows (after data collection).</span>
             </li>
           )}
         </ul>
@@ -125,32 +133,35 @@ export function SummaryTab({ agentState }: SummaryTabProps) {
         </Section>
       )}
 
-      {/* Model Details */}
-      <Section title="Model Details">
+      {/* Artifacts — name and paths only; model type is in the hero row */}
+      <Section title="Saved artifacts">
         <div className="space-y-3">
           <div>
-            <div className="text-sm text-muted-foreground mb-1">Model Name</div>
+            <div className="text-sm text-muted-foreground mb-1">Model artifact</div>
             <code className="text-sm bg-muted/50 px-3 py-2 rounded-lg block break-all">
               {metrics?.model_name || agentState.model_weights_path || "N/A"}
             </code>
           </div>
-          <div className="grid grid-cols-2 gap-4">
+          {agentState.model_weights_path &&
+            agentState.model_weights_path !== metrics?.model_name && (
+              <div>
+                <div className="text-sm text-muted-foreground mb-1">Weights path</div>
+                <code className="text-sm bg-muted/50 px-3 py-2 rounded-lg block break-all">
+                  {agentState.model_weights_path}
+                </code>
+              </div>
+            )}
+          {agentState.report_path && (
             <div>
-              <div className="text-sm text-muted-foreground mb-1">Model Type</div>
-              <code className="text-sm bg-muted/50 px-3 py-2 rounded-lg block">
-                {metrics?.model_type || agentState.selected_model || "N/A"}
+              <div className="text-sm text-muted-foreground mb-1">Report file</div>
+              <code className="text-sm bg-muted/50 px-3 py-2 rounded-lg block break-all">
+                {agentState.report_path}
               </code>
             </div>
-            <div>
-              <div className="text-sm text-muted-foreground mb-1">Report Path</div>
-              <code className="text-sm bg-muted/50 px-3 py-2 rounded-lg block truncate">
-                {agentState.report_path || "N/A"}
-              </code>
-            </div>
-          </div>
+          )}
           {agentState.model_explanation && (
             <div>
-              <div className="text-sm text-muted-foreground mb-1">Model Explanation</div>
+              <div className="text-sm text-muted-foreground mb-1">Why this model</div>
               <p className="text-sm leading-relaxed bg-muted/30 px-3 py-2 rounded-lg">
                 {agentState.model_explanation}
               </p>

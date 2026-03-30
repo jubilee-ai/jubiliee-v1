@@ -17,6 +17,14 @@ from backend.shared.state import (
     training_states,
 )
 
+# LangGraph compiled graphs / savers are not JSON-serializable; never persist repr strings.
+_STORE_NON_PERSISTED_KEYS = frozenset({"agent", "checkpointer"})
+
+
+def _store_agent_is_runnable(agent: object) -> bool:
+    stream = getattr(agent, "stream", None)
+    return callable(stream)
+
 
 def _job_to_dict(job: TrainingJob) -> dict[str, object]:
     return {
@@ -101,7 +109,10 @@ def cancel_training(job_id: str) -> bool:
 def put_simple_agent_store(thread_id: str, value: dict[str, object]) -> None:
     simple_agent_store[thread_id] = value
 
-    serializable = _make_serializable(value)
+    db_value = {
+        k: v for k, v in value.items() if k not in _STORE_NON_PERSISTED_KEYS
+    }
+    serializable = _make_serializable(db_value)
     with get_db_session() as session:
         existing = session.get(AgentCheckpoint, thread_id)
         if existing:
@@ -112,21 +123,24 @@ def put_simple_agent_store(thread_id: str, value: dict[str, object]) -> None:
 
 def get_simple_agent_store(thread_id: str) -> Optional[dict[str, object]]:
     if thread_id in simple_agent_store:
-        return simple_agent_store[thread_id]
+        store = simple_agent_store[thread_id]
+    else:
+        with get_db_session() as session:
+            row = session.get(AgentCheckpoint, thread_id)
+            if row is None:
+                return None
+            store = row.state
 
-    with get_db_session() as session:
-        row = session.get(AgentCheckpoint, thread_id)
-        if row is None:
-            return None
-        return row.state
+    if not isinstance(store, dict):
+        return None
+    agent = store.get("agent")
+    if agent is None or not _store_agent_is_runnable(agent):
+        return None
+    return store
 
 
 def thread_exists(thread_id: str) -> bool:
-    if thread_id in simple_agent_store:
-        return True
-
-    with get_db_session() as session:
-        return session.get(AgentCheckpoint, thread_id) is not None
+    return get_simple_agent_store(thread_id) is not None
 
 
 def save_interrupt_ids(thread_id: str, interrupt_ids: list[str]) -> None:

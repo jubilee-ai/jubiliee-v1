@@ -15,12 +15,33 @@ import importlib
 import importlib.util
 import inspect
 import sys
+import types
+import warnings
 from pathlib import Path
+
+warnings.filterwarnings(
+    "ignore",
+    message=r"resource_tracker:",
+    category=UserWarning,
+    module=r"joblib\.externals\.loky",
+)
+
+# Stub out CuPy modules before sklearn walks its submodules via
+# all_estimators().  sklearn 1.8+ ships an array_api_compat shim that
+# references cupy; when CuPy is not installed the import fails and
+# crashes _discover_estimators().
+for _cupy_mod in [
+    "sklearn.externals.array_api_compat.cupy",
+    "sklearn.externals.array_api_compat.cupy.linalg",
+]:
+    if _cupy_mod not in sys.modules:
+        sys.modules[_cupy_mod] = types.ModuleType(_cupy_mod)
 
 import joblib
 import numpy as np
 import pandas as pd
 from scipy.stats import loguniform, randint, uniform
+from sklearn import set_config
 from sklearn.base import is_classifier
 from sklearn.compose import ColumnTransformer
 from sklearn.impute import SimpleImputer
@@ -33,10 +54,12 @@ from sklearn.metrics import (
     r2_score,
     roc_auc_score,
 )
-from sklearn.model_selection import RandomizedSearchCV
+from sklearn.model_selection import KFold, RandomizedSearchCV
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 from sklearn.utils import all_estimators
+
+set_config(array_api_dispatch=False)
 
 _ROOT = Path(__file__).parents[4]
 for _p in [
@@ -58,7 +81,11 @@ from utils import get_registered_dataset
 def _discover_estimators() -> dict[str, tuple[str, str]]:
     """Build estimator catalog from sklearn's own registry."""
     catalog = {}
-    for name, cls in all_estimators(type_filter=["classifier", "regressor"]):
+    try:
+        estimator_list = all_estimators(type_filter=["classifier", "regressor"])
+    except Exception:
+        estimator_list = []
+    for name, cls in estimator_list:
         try:
             sig = inspect.signature(cls.__init__)
             has_required = any(
@@ -67,7 +94,7 @@ def _discover_estimators() -> dict[str, tuple[str, str]]:
             )
             if has_required:
                 continue
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, ModuleNotFoundError, ImportError):
             continue
         catalog[name] = (cls.__module__, name)
     return catalog
@@ -234,6 +261,32 @@ def _select_scoring(is_clf: bool, y: pd.Series) -> str:
     return "accuracy"
 
 
+def _resolve_cv(
+    is_clf: bool,
+    y: pd.Series,
+    cv_folds: int,
+    random_state: int,
+) -> int | KFold:
+    """Fold count or splitter for RandomizedSearchCV.
+
+    Classifiers default to stratified CV in sklearn, which requires
+    n_splits <= each class's count. When the rarest class is too small,
+    fall back to unstratified KFold so tuning can still run.
+    """
+    n = len(y)
+    cv_folds = max(2, min(cv_folds, n))
+
+    if not is_clf:
+        return max(2, min(cv_folds, n))
+
+    min_per = int(y.value_counts().min())
+    if min_per >= 2:
+        return max(2, min(cv_folds, min_per))
+
+    n_splits = max(2, min(cv_folds, n - 1))
+    return KFold(n_splits=n_splits, shuffle=True, random_state=random_state)
+
+
 # ── Main entry point ─────────────────────────────────────────────────────
 
 _SUBSAMPLE_SEARCH = 30_000
@@ -312,6 +365,15 @@ def run(params: dict) -> str:
     categorical_cols = params.get("categorical_columns") or X.select_dtypes(include=["object", "category"]).columns.tolist()
     categorical_cols = [c for c in categorical_cols if c in feature_columns]
 
+    # Materialize pandas/Arrow/extension dtypes as ndarray-backed columns so sklearn
+    # does not treat inputs as foreign array namespaces.
+    y = pd.Series(np.asarray(y), index=y.index, name=y.name)
+    X = X.copy()
+    for _c in X.columns:
+        if _c in categorical_cols or X[_c].dtype == object or not pd.api.types.is_numeric_dtype(X[_c]):
+            continue
+        X[_c] = np.asarray(X[_c], dtype=np.float64)
+
     print(f"[sklearn_generic] {estimator_name} | {n_rows} rows × {len(feature_columns)} features")
 
     # ── Build pipeline ───────────────────────────────────────────────────
@@ -344,6 +406,7 @@ def run(params: dict) -> str:
     cv_folds = max(2, min(params.get("cv_folds", 5), len(y)))
     best_params: dict = {}
     cv_score: float | None = None
+    tuning_cv_splits: int | None = None
 
     base_space = SEARCH_SPACES.get(estimator_name, {}).copy()
     base_space.update(search_overrides)
@@ -366,10 +429,6 @@ def run(params: dict) -> str:
         space = {f"{step_name}__{k}": v for k, v in base_space.items()}
         actual_iter = n_search_iter
 
-        # Hard cap on total fits to prevent runaway training
-        if actual_iter * cv_folds > _MAX_TOTAL_FITS:
-            actual_iter = max(2, _MAX_TOTAL_FITS // cv_folds)
-
         # Subsample for search when dataset exceeds threshold
         X_search, y_search = X, y
         subsampled = False
@@ -383,16 +442,26 @@ def run(params: dict) -> str:
             subsampled = True
             print(f"[sklearn_generic] Subsampled {n_rows} → {len(X_search)} rows for hyperparameter search")
 
-        print(f"[sklearn_generic] RandomizedSearchCV: {actual_iter} iters × {cv_folds}-fold CV"
-              f" ({scoring}) = {actual_iter * cv_folds} fits")
+        rs = params.get("random_state", 42)
+        cv_resolved = _resolve_cv(is_clf, y_search, cv_folds, rs)
+        n_cv_splits = cv_resolved if isinstance(cv_resolved, int) else cv_resolved.n_splits
+
+        if actual_iter * n_cv_splits > _MAX_TOTAL_FITS:
+            actual_iter = max(2, _MAX_TOTAL_FITS // n_cv_splits)
+
+        cv_note = ""
+        if is_clf and isinstance(cv_resolved, KFold):
+            cv_note = " (unstratified KFold; smallest class < 2 — stratified CV impossible)"
+        print(f"[sklearn_generic] RandomizedSearchCV: {actual_iter} iters × {n_cv_splits}-fold CV{cv_note}"
+              f" ({scoring}) = {actual_iter * n_cv_splits} fits")
 
         search = RandomizedSearchCV(
             pipeline, space,
             n_iter=actual_iter,
             scoring=scoring,
-            cv=cv_folds,
+            cv=cv_resolved,
             n_jobs=-1,
-            random_state=params.get("random_state", 42),
+            random_state=rs,
             error_score="raise",
             verbose=1,
         )
@@ -402,6 +471,7 @@ def run(params: dict) -> str:
             return f"TRAINING FAILED (during auto-tune)\nError: {e}"
         best_params = search.best_params_
         cv_score = search.best_score_
+        tuning_cv_splits = n_cv_splits
 
         if subsampled:
             print(f"[sklearn_generic] Refitting best params on full {n_rows} rows...")
@@ -475,7 +545,8 @@ def run(params: dict) -> str:
         lines.extend([f"Train R2: {r2:.4f}", f"Train MAE: {mae:.4f}", f"Train RMSE: {rmse:.4f}"])
 
     if cv_score is not None:
-        lines.extend(["", f"Cross-validation score ({cv_folds}-fold, {scoring}): {cv_score:.4f}"])
+        cv_shown = tuning_cv_splits if tuning_cv_splits is not None else cv_folds
+        lines.extend(["", f"Cross-validation score ({cv_shown}-fold, {scoring}): {cv_score:.4f}"])
 
     # ── Report best hyperparameters ──────────────────────────────────────
     tuned_params = {k.split("__", 1)[-1]: v for k, v in best_params.items()} if best_params else {}

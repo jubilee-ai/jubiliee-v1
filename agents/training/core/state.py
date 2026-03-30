@@ -24,6 +24,8 @@ STATE_SNAPSHOT_KEYS = [
     "transformed_val_ref",
     "transformed_test_ref",
     "feature_validation_passed",
+    "experiment_result",
+    "feature_rankings",
     "audit_trace",
     "training_plan",
     "training_metrics",
@@ -40,8 +42,9 @@ STEP_ORDER = [
     "data_collection",
     "cleaning",
     "label_split_definition",
-    "feature_selection_specification",
-    "feature_engineering_executor",
+    "feature_specification_and_engineering",
+    "feature_experiment_runner",
+    "evaluate_models",
     "training_approval",
     "training",
     "generate_report",
@@ -79,6 +82,8 @@ class TrainingAgentState(TypedDict):
     goal: str
     linked_datasets: Optional[list[str]]
     user_model_preference: Optional[str]
+    # Multi-turn lab chat (user / agent) used by the planner to synthesize the run
+    conversation_history: list[dict[str, str]]
 
     # Step 1: Model Family Selection (supervised / unsupervised / neural_networks)
     selected_model: Optional[str]
@@ -120,6 +125,11 @@ class TrainingAgentState(TypedDict):
     transformed_val_ref: Optional[str]  # NEW: transformed val dataset
     transformed_test_ref: Optional[str]  # NEW: transformed test dataset
     feature_validation_passed: bool
+
+    # Step 5.5: Feature Experiment Runner
+    experiment_result: Optional[dict[str, Any]]
+    feature_rankings: Optional[dict[str, float]]
+    experiment_grid_summary: Optional[list[dict[str, Any]]]
 
     # Step 6: Human Confirmation
     human_confirmed: bool
@@ -172,6 +182,7 @@ def create_initial_state(
     resolved_dataset_ref: str | None = None,
     resolved_model_type: str | None = None,
     resolved_target_column: str | None = None,
+    conversation_history: Optional[list[dict[str, str]]] = None,
 ) -> TrainingAgentState:
     """Create the initial state for the training agent."""
     return {
@@ -179,6 +190,7 @@ def create_initial_state(
         "goal": goal,
         "linked_datasets": linked_datasets,
         "user_model_preference": user_model_preference,
+        "conversation_history": list(conversation_history or []),
         "use_external_sources": use_external_sources,
         # Pre-resolved inputs
         "resolved_dataset_ref": resolved_dataset_ref,
@@ -206,6 +218,9 @@ def create_initial_state(
         "transformed_val_ref": None,
         "transformed_test_ref": None,
         "feature_validation_passed": False,
+        "experiment_result": None,
+        "feature_rankings": None,
+        "experiment_grid_summary": None,
         "human_confirmed": False,
         "training_plan": None,
         "training_plan_approved": False,

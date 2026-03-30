@@ -2,11 +2,18 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import './index.css'
 import App from './App.tsx'
+import { isPublishableKey } from '@clerk/shared/keys'
 import { ClerkProvider } from '@clerk/react'
 
 const publishableKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY
 if (!publishableKey) {
   throw new Error('Missing VITE_CLERK_PUBLISHABLE_KEY')
+}
+if (!isPublishableKey(publishableKey)) {
+  throw new Error(
+    'Invalid VITE_CLERK_PUBLISHABLE_KEY. Paste the full publishable key from Clerk Dashboard → API Keys. ' +
+      'A truncated or edited value cannot be decoded, so Clerk builds script URLs like https://npm/... and the browser fails DNS.',
+  )
 }
 
 /** Matches Jubilee product palette (light shell + clinical blues). */

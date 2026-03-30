@@ -254,6 +254,7 @@ def chat(request: ChatRequest) -> tuple[str, object]:
             request.linked_datasets,
             request.model_preference,
             experiment_id=request.experiment_id,
+            conversation=request.conversation,
         )
         return "", gen
 

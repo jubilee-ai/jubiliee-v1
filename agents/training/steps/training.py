@@ -11,6 +11,7 @@ import json
 import re
 import sys
 import time
+from collections import defaultdict
 from pathlib import Path
 from typing import Any, Optional
 
@@ -23,6 +24,7 @@ from langchain.chat_models import init_chat_model
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 
+from ..utils.graph_stream_hooks import emit_graph_stream
 from ..utils.prompts import TRAINING_SYSTEM_PROMPT
 
 load_dotenv(Path(__file__).parent.parent.parent.parent / ".env")
@@ -155,8 +157,82 @@ def request_feature_engineering_redo_tool(
     }
 
 
+class BatchTrainConfig(BaseModel):
+    estimator: str = Field(description="Estimator class name, e.g. 'HistGradientBoostingClassifier'")
+    model_name: str = Field(description="Unique name for this model, e.g. 'hgb_v1'")
+    hyperparams: dict = Field(default_factory=dict, description="Hyperparameter overrides for this estimator")
+
+
+class BatchTrainInput(BaseModel):
+    skill_name: str = Field(description="Skill to use for all configs (e.g. 'supervised')")
+    configs: list[BatchTrainConfig] = Field(
+        description="List of 2-3 training configs to run in parallel",
+        min_length=1,
+        max_length=4,
+    )
+    train_dataset_ref: str = Field(description="Registered training dataset ref")
+    val_dataset_ref: Optional[str] = Field(default=None, description="Registered validation dataset ref")
+    target_column: str = Field(default="", description="Target column name (empty for unsupervised)")
+
+
+@tool("batch_train_with_skill", args_schema=BatchTrainInput)
+def batch_train_with_skill_tool(
+    skill_name: str,
+    configs: list[BatchTrainConfig],
+    train_dataset_ref: str,
+    val_dataset_ref: Optional[str] = None,
+    target_column: str = "",
+) -> str:
+    """Train 2-3 models in parallel using a skill and compare results.
+
+    Each config specifies an estimator and hyperparameters. All configs run
+    concurrently via threads, then results are compared side-by-side.
+    Use this instead of calling train_with_skill multiple times sequentially.
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    configs = configs[:4]
+
+    def _run_one(cfg: BatchTrainConfig) -> dict:
+        params = {
+            "estimator": cfg.estimator,
+            "model_name": cfg.model_name,
+            "train_dataset_ref": train_dataset_ref,
+            "target_column": target_column,
+            **cfg.hyperparams,
+        }
+        if val_dataset_ref:
+            params["val_dataset_ref"] = val_dataset_ref
+        try:
+            raw = _run_skill(skill_name, params)
+            return {"model_name": cfg.model_name, "estimator": cfg.estimator, "success": True, "raw_output": raw}
+        except Exception as e:
+            return {"model_name": cfg.model_name, "estimator": cfg.estimator, "success": False, "error": str(e)}
+
+    results: list[dict] = []
+    with ThreadPoolExecutor(max_workers=min(len(configs), 3)) as pool:
+        futures = {pool.submit(_run_one, cfg): cfg for cfg in configs}
+        for future in as_completed(futures):
+            results.append(future.result())
+
+    lines = [f"## Batch Training Results ({len(results)} models)\n"]
+    for i, r in enumerate(results, 1):
+        if r["success"]:
+            output_preview = r["raw_output"][:2000] if isinstance(r["raw_output"], str) else str(r["raw_output"])[:2000]
+            lines.append(f"### {i}. {r['model_name']} ({r['estimator']}) — SUCCESS\n{output_preview}\n")
+        else:
+            lines.append(f"### {i}. {r['model_name']} ({r['estimator']}) — FAILED\n{r['error']}\n")
+
+    lines.append(
+        "\nUse `evaluate_model` or `get_model_info` on individual models above to compare metrics, "
+        "then pick the best for further tuning or final evaluation."
+    )
+    return "\n".join(lines)
+
+
 TRAINING_TOOLS = [
     train_with_skill_tool,
+    batch_train_with_skill_tool,
     evaluate_model_tool,
     list_trained_models_tool,
     get_model_info_tool,
@@ -572,6 +648,44 @@ def _find_best_iteration(iterations: list[dict], task_type: str) -> Optional[dic
     return best
 
 
+def _training_result_updates_from_best_iteration(
+    best: Optional[dict],
+    fallback_best_name: str,
+) -> dict:
+    """Fields to merge into TrainingResult so logs/API match cleanup and test eval.
+
+    The LLM may set ``best_model_name`` using narrative criteria; we always
+    reconcile to :func:`_find_best_iteration` before logging or returning.
+    """
+    updates: dict = {"best_model_name": best["model_name"] if best else fallback_best_name}
+    if not best:
+        return updates
+    for fld in (
+        "val_accuracy",
+        "val_roc_auc",
+        "test_accuracy",
+        "test_roc_auc",
+        "train_r2",
+        "val_r2",
+        "val_rmse",
+        "val_mae",
+        "test_r2",
+        "test_rmse",
+        "test_mae",
+        "silhouette_score",
+        "davies_bouldin",
+        "inertia",
+        "reconstruction_loss",
+    ):
+        v = best.get(fld)
+        if v is not None:
+            updates[fld] = v
+    tool = best.get("tool") or best.get("tool_used")
+    if tool:
+        updates["model_type"] = str(tool).rsplit(".", 1)[-1]
+    return updates
+
+
 def _iteration_to_dict(it: TrainingIteration) -> dict:
     d = it.model_dump()
     d["tool"] = d.pop("tool_used")
@@ -635,35 +749,114 @@ def _evaluate_model_on_test(
     return result
 
 
+def _aggregate_transformed_importances_to_raw(
+    transformed_names: list[str],
+    importances: np.ndarray,
+    raw_feature_cols: list[str],
+) -> dict[str, float]:
+    """Map preprocessor output names (e.g. num__Age, cat__Education_MBA) back to DataFrame columns."""
+    agg: dict[str, float] = defaultdict(float)
+    raw_sorted = sorted(raw_feature_cols, key=len, reverse=True)
+
+    for fname, imp in zip(transformed_names, importances):
+        key = fname.split("__", 1)[-1] if "__" in fname else fname
+        matched = None
+        for col in raw_sorted:
+            if key == col or key.startswith(col + "_"):
+                matched = col
+                break
+        if matched is None:
+            matched = key
+        agg[matched] += float(imp)
+
+    rounded = {k: round(v, 4) for k, v in sorted(agg.items(), key=lambda x: x[1], reverse=True)}
+    return rounded
+
+
 def _extract_feature_importances(model_name: str, feature_columns: list[str]) -> dict[str, float]:
     """Extract feature importances from a trained sklearn model.
 
-    Works for tree-based (`.feature_importances_`) and linear (`.coef_`) models.
-    Returns a dict mapping feature name to importance, sorted descending.
+    Supervised `train.py` fits a Pipeline(preprocessor, model) where the tree/linear
+    step sees one-hot-encoded columns. Importances length matches
+    `preprocessor.get_feature_names_out()`, not raw `feature_columns`, so we
+    aggregate OHE splits back onto original column names when possible.
     """
     try:
         model = load_model(model_name)
         if model is None:
             return {}
-        estimator = model
-        if hasattr(model, "best_estimator_"):
-            estimator = model.best_estimator_
 
-        importances = None
-        if hasattr(estimator, "feature_importances_"):
-            importances = estimator.feature_importances_
-        elif hasattr(estimator, "coef_"):
-            coef = estimator.coef_
-            if coef.ndim > 1:
-                importances = np.mean(np.abs(coef), axis=0)
-            else:
-                importances = np.abs(coef)
+        outer = model
+        if hasattr(outer, "best_estimator_"):
+            outer = outer.best_estimator_
 
-        if importances is None or len(importances) != len(feature_columns):
+        preproc = None
+        final_est = None
+        if hasattr(outer, "named_steps"):
+            ns = outer.named_steps
+            preproc = ns.get("preprocessor")
+            final_est = ns.get("model")
+        if final_est is None and getattr(outer, "steps", None):
+            final_est = outer.steps[-1][1]
+            if preproc is None and len(outer.steps) >= 2:
+                first_name, first_step = outer.steps[0]
+                if first_name == "preprocessor":
+                    preproc = first_step
+
+        importances_arr: np.ndarray | None = None
+        if final_est is not None:
+            if hasattr(final_est, "feature_importances_"):
+                importances_arr = np.asarray(final_est.feature_importances_, dtype=float)
+            elif hasattr(final_est, "coef_"):
+                coef = final_est.coef_
+                folded = np.mean(np.abs(coef), axis=0) if coef.ndim > 1 else np.abs(coef)
+                importances_arr = np.asarray(folded, dtype=float)
+
+        if importances_arr is None:
+            est = outer
+            if hasattr(est, "feature_importances_"):
+                importances_arr = np.asarray(est.feature_importances_, dtype=float)
+            elif hasattr(est, "coef_"):
+                coef = est.coef_
+                folded = np.mean(np.abs(coef), axis=0) if coef.ndim > 1 else np.abs(coef)
+                importances_arr = np.asarray(folded, dtype=float)
+
+        if importances_arr is None or importances_arr.size == 0:
             return {}
 
-        result = {col: round(float(v), 4) for col, v in zip(feature_columns, importances)}
-        return dict(sorted(result.items(), key=lambda x: x[1], reverse=True))
+        transformed_names: list[str] | None = None
+        if preproc is not None:
+            try:
+                transformed_names = [str(x) for x in preproc.get_feature_names_out()]
+            except (AttributeError, ValueError, NotImplementedError, TypeError):
+                transformed_names = None
+
+        if transformed_names is not None and len(transformed_names) == len(importances_arr):
+            if feature_columns:
+                return _aggregate_transformed_importances_to_raw(
+                    transformed_names, importances_arr, feature_columns,
+                )
+            detail = {n: round(float(v), 4) for n, v in zip(transformed_names, importances_arr)}
+            return dict(sorted(detail.items(), key=lambda x: x[1], reverse=True))
+
+        info = get_model_info(model_name)
+        reg_names = (info or {}).get("feature_names") or []
+        if isinstance(reg_names, list) and len(reg_names) == len(importances_arr):
+            if feature_columns:
+                return _aggregate_transformed_importances_to_raw(
+                    [str(x) for x in reg_names], importances_arr, feature_columns,
+                )
+            detail = {str(n): round(float(v), 4) for n, v in zip(reg_names, importances_arr)}
+            return dict(sorted(detail.items(), key=lambda x: x[1], reverse=True))
+
+        if len(importances_arr) == len(feature_columns):
+            result = {
+                col: round(float(v), 4)
+                for col, v in zip(feature_columns, importances_arr)
+            }
+            return dict(sorted(result.items(), key=lambda x: x[1], reverse=True))
+
+        return {}
     except Exception:
         return {}
 
@@ -726,6 +919,8 @@ def run_training_agent(
     max_iterations: int = 6,
     llm_model: str = "openai:gpt-5.1",
     estimator_hint: Optional[str] = None,
+    experiment_result: Optional[dict[str, Any]] = None,
+    feature_rankings: Optional[dict[str, float]] = None,
 ) -> dict[str, Any]:
     """Run the training agent.
 
@@ -757,6 +952,8 @@ def run_training_agent(
     print(f"  Train: {len(train_df)} | Val: {len(val_df) if val_df is not None else 0} | Test: {len(test_df) if test_df is not None else 0} | Features: {len(feature_columns)}")
     if estimator_hint:
         print(f"  Estimator hint: {estimator_hint}")
+
+    emit_graph_stream({"type": "progress", "message": f"Starting training with {skill_name} skill...", "phase": "training"})
 
     if task_type == "unsupervised":
         class_counts = {}
@@ -805,6 +1002,35 @@ def run_training_agent(
                 "focus on matching it first before trying to exceed it.\n"
             )
 
+    experiment_section = ""
+    if experiment_result and experiment_result.get("total_scouts", 0) > 0:
+        exp = experiment_result
+        experiment_section = f"\n## Feature Experiment Results\n"
+        experiment_section += (
+            f"The pipeline tested **{exp.get('total_variants', 0)}** feature-set variants "
+            f"x 2 model families = **{exp.get('total_scouts', 0)}** scout experiments in parallel.\n"
+            f"Best variant: **{exp.get('best_variant_name', 'full')}** "
+            f"(metric={exp.get('best_metric', 0):.4f}).\n\n"
+        )
+        signal = exp.get("signal_features", [])
+        dropped = exp.get("dropped_features", [])
+        if signal:
+            experiment_section += f"**Signal features** (consistently high importance): {signal[:15]}\n"
+        if dropped:
+            experiment_section += f"**Low-signal features** (consistently near-zero): {dropped[:15]}\n"
+        experiment_section += (
+            "\nThe winning feature set is already loaded. Focus your iterations on **model "
+            "selection and hyperparameter tuning** — the feature selection has been validated "
+            "by the experiment grid.\n"
+        )
+
+    if feature_rankings:
+        top_ranked = list(feature_rankings.items())[:10]
+        if top_ranked:
+            experiment_section += "\n**Feature importance rankings** (cross-variant weighted average):\n"
+            for fname, imp in top_ranked:
+                experiment_section += f"- {fname}: {imp:.4f}\n"
+
     if task_type == "unsupervised":
         target_line = "- Target column: N/A (unsupervised)"
         class_section = ""
@@ -828,7 +1054,7 @@ Follow the skill documentation below — it covers model selection and training.
 <skill_documentation>
 {skill_docs}
 </skill_documentation>
-{estimator_section}{baseline_section}
+{estimator_section}{baseline_section}{experiment_section}
 ## Data
 - Task type: {task_type}
 {target_line}
@@ -902,6 +1128,7 @@ Follow the skill documentation below — it covers model selection and training.
             and _should_continue_iterating(all_iterations, max_iterations, task_type)
         ):
             continuation_round += 1
+            emit_graph_stream({"type": "progress", "message": f"Training iteration {continuation_round + 1} — exploring hyperparameters...", "phase": "training"})
             continuation_msg = _build_continuation_message(
                 all_iterations, max_iterations, task_type, _baseline,
             )
@@ -936,12 +1163,28 @@ Follow the skill documentation below — it covers model selection and training.
         feature_redo_request = _get_and_clear_feature_redo_request()
         feature_redo_requested = feature_redo_request is not None or training_result.feature_redo_requested
 
-        _log_training_results(training_result, task_type)
-
         iterations_dict = [_iteration_to_dict(it) for it in training_result.iterations]
         best_iteration = _find_best_iteration(iterations_dict, task_type)
-
         actual_best_name = best_iteration["model_name"] if best_iteration else training_result.best_model_name
+
+        training_result = training_result.model_copy(
+            update=_training_result_updates_from_best_iteration(
+                best_iteration, training_result.best_model_name
+            )
+        )
+        _log_training_results(training_result, task_type)
+
+        # Extract feature importances BEFORE cleanup so we can try all models
+        feat_imp = {}
+        if training_result.success and actual_best_name:
+            feat_imp = _extract_feature_importances(actual_best_name, feature_columns)
+            if not feat_imp:
+                for it in training_result.iterations:
+                    if it.success and it.model_name and it.model_name != actual_best_name:
+                        feat_imp = _extract_feature_importances(it.model_name, feature_columns)
+                        if feat_imp:
+                            break
+
         if training_result.success and actual_best_name:
             iteration_model_names = [it.model_name for it in training_result.iterations if it.model_name]
             deleted = _cleanup_intermediate_models(
@@ -976,10 +1219,9 @@ Follow the skill documentation below — it covers model selection and training.
                 if val is not None:
                     output[key] = val
 
-        # Extract feature importances from the best model
-        feat_imp = {}
-        if training_result.success and actual_best_name:
-            feat_imp = _extract_feature_importances(actual_best_name, feature_columns)
+            emit_graph_stream({"type": "progress", "message": f"Training complete — evaluating final model...", "phase": "training"})
+
+        # Feature importances already extracted above (before cleanup)
 
         redo_rec = feature_redo_request.recommendation if feature_redo_request else None
         if feat_imp and redo_rec:
@@ -1032,4 +1274,7 @@ __all__ = [
     "TRAINING_TOOLS",
     "FeatureRedoRequest",
     "request_feature_engineering_redo_tool",
+    "batch_train_with_skill_tool",
+    "BatchTrainConfig",
+    "BatchTrainInput",
 ]

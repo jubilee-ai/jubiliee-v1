@@ -5,9 +5,8 @@ import remarkGfm from "remark-gfm"
 import { cn } from "@/lib/utils"
 import { FileText, ChevronRight, Check, RotateCcw, Info } from "lucide-react"
 import type { ChatMessage } from "@/types/agent"
-import { ThinkingBlock } from "./ThinkingBlock"
 
-const MAX_CONTENT_LENGTH = 400
+const MAX_CONTENT_LENGTH = 1200
 
 function sanitizeAgentContent(content: string): string {
   const trimmed = content.trim()
@@ -56,9 +55,11 @@ export const MessageBubble = forwardRef<HTMLDivElement, MessageBubbleProps>(
     const isUser = message.role === "user"
     const isSystem = message.role === "system"
     
-    const hasViewReport = !isUser && !isSystem && 
-      (message.content.toLowerCase().includes("view report") || 
-       message.content.toLowerCase().includes("training completed"))
+    const showReportCta =
+      !isUser &&
+      !isSystem &&
+      message.showReportButton === true &&
+      Boolean(onViewReport)
 
     const shouldTruncate = message.content.length > MAX_CONTENT_LENGTH
     const displayContent = shouldTruncate && !isExpanded
@@ -83,12 +84,7 @@ export const MessageBubble = forwardRef<HTMLDivElement, MessageBubbleProps>(
 
     if (isSystem) {
       if (message.id === "__graph_thinking__") {
-        const isActive = message._streaming === true
-        return (
-          <div ref={(node) => { rootRef.current = node; assignRef(ref, node) }}>
-            <ThinkingBlock content={message.content} isActive={isActive} />
-          </div>
-        )
+        return null
       }
       const isStepAccepted = message.content.includes("Step accepted")
       const isRedo = message.content.includes("Requested redo")
@@ -118,9 +114,9 @@ export const MessageBubble = forwardRef<HTMLDivElement, MessageBubbleProps>(
       }
     }
 
-    const bubbleBase = "rounded-xl px-4 py-2.5 transition-all duration-300"
-    const userBubble = "ml-auto bg-primary/[0.08] text-foreground rounded-br-sm max-w-[85%]"
-    const agentBubble = "text-foreground"
+    const bubbleBase = "rounded-xl px-4 py-2.5 transition-all duration-300 w-full max-w-[85%]"
+    const userBubble = "ml-auto bg-primary/[0.08] text-foreground rounded-br-sm"
+    const agentBubble = "mr-auto text-foreground"
 
     return (
       <div 
@@ -151,7 +147,7 @@ export const MessageBubble = forwardRef<HTMLDivElement, MessageBubbleProps>(
               <ReactMarkdown remarkPlugins={[remarkGfm]}>{sanitizeAgentContent(displayContent)}</ReactMarkdown>
             </div>
           )}
-          
+
           {shouldTruncate && (
             <button
               onClick={(e) => {
@@ -164,20 +160,27 @@ export const MessageBubble = forwardRef<HTMLDivElement, MessageBubbleProps>(
             </button>
           )}
           
-          {isClickable && (
-            <div className="mt-3 flex items-center gap-1.5 text-xs text-muted-foreground group-hover:text-foreground transition-colors">
-              <span>Click for details</span>
+          {isClickable && onStepClick && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation()
+                onStepClick()
+              }}
+              className="mt-3 inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
+            >
+              See details
               <ChevronRight className="h-3 w-3 group-hover:translate-x-0.5 transition-transform" />
-            </div>
+            </button>
           )}
           
-          {hasViewReport && onViewReport && (
+          {showReportCta && (
             <button
               onClick={(e) => {
                 e.stopPropagation()
-                onViewReport()
+                onViewReport?.()
               }}
-              className="mt-3 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-primary-subtle text-primary-subtle-foreground text-sm font-medium hover:bg-primary-subtle/88 transition-colors"
+              className="mt-4 w-full sm:w-auto inline-flex items-center justify-center gap-1.5 px-4 py-2 rounded-lg bg-primary-subtle text-primary-subtle-foreground text-sm font-medium hover:bg-primary-subtle/88 transition-colors"
             >
               <FileText className="h-3.5 w-3.5" />
               View Report

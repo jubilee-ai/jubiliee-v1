@@ -139,6 +139,15 @@ def _summarise_completed_step(state: "TrainingAgentState") -> str:
     elif step in ("feature_selection_specification", "feature_engineering_executor"):
         parts.append(f"Transformed train: {state.get('transformed_train_ref', 'N/A')}")
         parts.append(f"Validation passed: {state.get('feature_validation_passed', False)}")
+    elif step == "feature_experiment_runner":
+        exp = state.get("experiment_result") or {}
+        parts.append(f"Best variant: {exp.get('best_variant_name', 'N/A')}")
+        parts.append(f"Best metric: {exp.get('best_metric', 'N/A')}")
+        parts.append(f"Variants tested: {exp.get('total_variants', 0)}")
+        parts.append(f"Scouts run: {exp.get('total_scouts', 0)}")
+        signal = exp.get("signal_features", [])
+        if signal:
+            parts.append(f"Signal features: {signal[:5]}")
     elif step == "training_approval":
         tp = state.get("training_plan") or {}
         parts.append(f"Model type: {tp.get('model_type', 'N/A')}")
