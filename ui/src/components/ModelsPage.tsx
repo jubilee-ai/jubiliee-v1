@@ -119,42 +119,19 @@ export function ModelsPage({ modelTypes }: ModelsPageProps) {
   return (
     <div className="flex-1 overflow-auto">
       <div className="max-w-5xl mx-auto px-8 py-10">
-        <span className="text-[10px] font-bold text-muted-foreground tracking-widest uppercase">
-          Model Management
-        </span>
-        <h1 className="font-headline text-3xl font-semibold text-foreground tracking-tight mt-1">
-          Model Registry
-        </h1>
+        <div className="flex items-start gap-3">
+          <div>
+            <span className="text-[10px] font-bold text-muted-foreground tracking-widest uppercase">
+              Model Management
+            </span>
+            <h1 className="font-headline text-3xl font-semibold text-foreground tracking-tight mt-1">
+              Model Registry
+            </h1>
+          </div>
+        </div>
         <p className="mt-2 text-muted-foreground text-sm leading-relaxed max-w-lg">
           Monitor deployments, track performance metrics, and manage your model lifecycle.
         </p>
-
-        {/* ── Model Families ─────────────────────────────────── */}
-        <section className="mt-8">
-          <h2 className="text-xs font-bold text-muted-foreground tracking-widest uppercase">
-            Available Families
-          </h2>
-          <div className="mt-3 grid grid-cols-2 sm:grid-cols-3 gap-2">
-            {modelTypes.map((mt) => (
-              <div
-                key={mt.id}
-                className="rounded-xl border border-border bg-card p-3.5 transition-colors hover:bg-accent/30"
-              >
-                <div className="flex items-center gap-2">
-                  <span className="flex h-7 w-7 items-center justify-center rounded-md bg-primary/10 text-[10px] font-bold text-primary">
-                    {modelTypeIcon[mt.id] ?? <Cpu className="h-3.5 w-3.5" />}
-                  </span>
-                  <span className="text-sm font-medium text-foreground">{mt.name}</span>
-                </div>
-                {mt.description && (
-                  <p className="mt-1.5 text-xs text-muted-foreground leading-relaxed">
-                    {mt.description}
-                  </p>
-                )}
-              </div>
-            ))}
-          </div>
-        </section>
 
         {/* ── Trained Models ─────────────────────────────────── */}
         <section className="mt-10">
@@ -209,8 +186,8 @@ export function ModelsPage({ modelTypes }: ModelsPageProps) {
                         </div>
                         {m.target_column && (
                           <p className="mt-1 pl-6 text-xs text-muted-foreground flex items-center gap-1">
-                            <Target className="h-3 w-3" />
-                            Target: <span className="font-mono">{m.target_column}</span>
+                            <Target className="h-3 w-3 shrink-0" />
+                            <span>Predicting</span> <span className="font-mono text-foreground/90">{m.target_column}</span>
                           </p>
                         )}
                       </div>

@@ -648,6 +648,44 @@ def _find_best_iteration(iterations: list[dict], task_type: str) -> Optional[dic
     return best
 
 
+def _training_result_updates_from_best_iteration(
+    best: Optional[dict],
+    fallback_best_name: str,
+) -> dict:
+    """Fields to merge into TrainingResult so logs/API match cleanup and test eval.
+
+    The LLM may set ``best_model_name`` using narrative criteria; we always
+    reconcile to :func:`_find_best_iteration` before logging or returning.
+    """
+    updates: dict = {"best_model_name": best["model_name"] if best else fallback_best_name}
+    if not best:
+        return updates
+    for fld in (
+        "val_accuracy",
+        "val_roc_auc",
+        "test_accuracy",
+        "test_roc_auc",
+        "train_r2",
+        "val_r2",
+        "val_rmse",
+        "val_mae",
+        "test_r2",
+        "test_rmse",
+        "test_mae",
+        "silhouette_score",
+        "davies_bouldin",
+        "inertia",
+        "reconstruction_loss",
+    ):
+        v = best.get(fld)
+        if v is not None:
+            updates[fld] = v
+    tool = best.get("tool") or best.get("tool_used")
+    if tool:
+        updates["model_type"] = str(tool).rsplit(".", 1)[-1]
+    return updates
+
+
 def _iteration_to_dict(it: TrainingIteration) -> dict:
     d = it.model_dump()
     d["tool"] = d.pop("tool_used")
@@ -1125,12 +1163,16 @@ Follow the skill documentation below — it covers model selection and training.
         feature_redo_request = _get_and_clear_feature_redo_request()
         feature_redo_requested = feature_redo_request is not None or training_result.feature_redo_requested
 
-        _log_training_results(training_result, task_type)
-
         iterations_dict = [_iteration_to_dict(it) for it in training_result.iterations]
         best_iteration = _find_best_iteration(iterations_dict, task_type)
-
         actual_best_name = best_iteration["model_name"] if best_iteration else training_result.best_model_name
+
+        training_result = training_result.model_copy(
+            update=_training_result_updates_from_best_iteration(
+                best_iteration, training_result.best_model_name
+            )
+        )
+        _log_training_results(training_result, task_type)
 
         # Extract feature importances BEFORE cleanup so we can try all models
         feat_imp = {}

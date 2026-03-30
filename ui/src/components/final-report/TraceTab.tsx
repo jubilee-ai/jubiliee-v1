@@ -77,10 +77,19 @@ export function TraceTab({ steps, agentState }: TraceTabProps) {
         </div>
       </Section>
 
-      <Section title="Raw Audit Trace">
-        <pre className="text-xs bg-muted/30 rounded-xl p-4 overflow-x-auto max-h-[400px] overflow-y-auto">
-          {JSON.stringify(agentState.audit_trace, null, 2)}
-        </pre>
+      <Section title="Raw audit (advanced)">
+        <details className="group rounded-xl border border-border/60 bg-muted/20">
+          <summary className="cursor-pointer list-none px-4 py-3 text-sm text-muted-foreground hover:text-foreground [&::-webkit-details-marker]:hidden flex items-center justify-between gap-2">
+            <span>Show machine-readable audit JSON</span>
+            <ChevronRight className="h-4 w-4 shrink-0 transition-transform group-open:rotate-90" />
+          </summary>
+          <pre className="text-xs bg-muted/30 rounded-b-xl p-4 overflow-x-auto max-h-[min(400px,50vh)] overflow-y-auto border-t border-border/40">
+            {JSON.stringify(agentState.audit_trace, null, 2)}
+          </pre>
+        </details>
+        <p className="mt-2 text-xs text-muted-foreground">
+          Use this only if you need to paste into a ticket or compare with backend logs.
+        </p>
       </Section>
     </div>
   )

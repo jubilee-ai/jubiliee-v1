@@ -5,7 +5,6 @@ import remarkGfm from "remark-gfm"
 import { cn } from "@/lib/utils"
 import { FileText, ChevronRight, Check, RotateCcw, Info } from "lucide-react"
 import type { ChatMessage } from "@/types/agent"
-import { ThinkingBlock } from "./ThinkingBlock"
 
 const MAX_CONTENT_LENGTH = 1200
 
@@ -85,12 +84,7 @@ export const MessageBubble = forwardRef<HTMLDivElement, MessageBubbleProps>(
 
     if (isSystem) {
       if (message.id === "__graph_thinking__") {
-        const isActive = message._streaming === true
-        return (
-          <div ref={(node) => { rootRef.current = node; assignRef(ref, node) }}>
-            <ThinkingBlock content={message.content} isActive={isActive} />
-          </div>
-        )
+        return null
       }
       const isStepAccepted = message.content.includes("Step accepted")
       const isRedo = message.content.includes("Requested redo")
@@ -120,9 +114,9 @@ export const MessageBubble = forwardRef<HTMLDivElement, MessageBubbleProps>(
       }
     }
 
-    const bubbleBase = "rounded-xl px-4 py-2.5 transition-all duration-300"
-    const userBubble = "ml-auto bg-primary/[0.08] text-foreground rounded-br-sm max-w-[85%]"
-    const agentBubble = "text-foreground"
+    const bubbleBase = "rounded-xl px-4 py-2.5 transition-all duration-300 w-full max-w-[85%]"
+    const userBubble = "ml-auto bg-primary/[0.08] text-foreground rounded-br-sm"
+    const agentBubble = "mr-auto text-foreground"
 
     return (
       <div 
@@ -154,21 +148,6 @@ export const MessageBubble = forwardRef<HTMLDivElement, MessageBubbleProps>(
             </div>
           )}
 
-          {message.detailMarkdown?.trim() && (
-            <details
-              className="mt-3 rounded-lg border border-border/60 bg-muted/30 px-3 py-2 text-[13px] group/details"
-              onClick={(e) => e.stopPropagation()}
-            >
-              <summary className="cursor-pointer list-none font-medium text-foreground/90 flex items-center gap-1.5 [&::-webkit-details-marker]:hidden">
-                <ChevronRight className="h-3.5 w-3.5 text-muted-foreground transition-transform group-open/details:rotate-90" />
-                What happened (details)
-              </summary>
-              <div className="mt-2 pl-4 border-l-2 border-border/50 text-muted-foreground prose prose-sm dark:prose-invert max-w-none prose-p:my-1 prose-headings:my-2 prose-ul:my-1 prose-li:my-0 prose-code:text-[12px]">
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.detailMarkdown}</ReactMarkdown>
-              </div>
-            </details>
-          )}
-          
           {shouldTruncate && (
             <button
               onClick={(e) => {
@@ -181,11 +160,18 @@ export const MessageBubble = forwardRef<HTMLDivElement, MessageBubbleProps>(
             </button>
           )}
           
-          {isClickable && (
-            <div className="mt-3 flex items-center gap-1.5 text-xs text-muted-foreground group-hover:text-foreground transition-colors">
-              <span>Open full step view</span>
+          {isClickable && onStepClick && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation()
+                onStepClick()
+              }}
+              className="mt-3 inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
+            >
+              See details
               <ChevronRight className="h-3 w-3 group-hover:translate-x-0.5 transition-transform" />
-            </div>
+            </button>
           )}
           
           {showReportCta && (

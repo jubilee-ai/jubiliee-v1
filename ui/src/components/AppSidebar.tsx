@@ -226,7 +226,7 @@ export function AppSidebar({
   return (
     <div className="h-full min-w-0 flex flex-col border-r border-border/50 bg-background">
       {/* Section Navigation */}
-      <nav className="flex flex-col gap-0.5 px-3 pt-3">
+      <nav className="flex flex-col gap-0.5 px-3 pt-4">
         {navItems.map((item) => (
           <button
             key={item.id}

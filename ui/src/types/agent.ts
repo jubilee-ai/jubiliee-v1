@@ -277,6 +277,10 @@ export interface TrainingAgentState {
 
   // Step 7: Training
   training_params: Record<string, unknown> | null
+  /** Proposed / approved plan from training_approval (Python `training_plan`) */
+  training_plan?: Record<string, unknown> | null
+  /** Result summary from feature_experiment_runner */
+  experiment_result?: Record<string, unknown> | null
   model_weights_path: string | null
   training_metrics: TrainingMetrics | null
   training_iteration: number

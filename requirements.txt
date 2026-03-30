@@ -6,6 +6,7 @@ transformers
 langchain
 langchain-core
 langchain-openai
+# Used by agents/dataset_curator when EXTERNAL_DATASET_CATALOG_ENABLED=True in agent.py
 langchain-mcp-adapters
 langgraph
 pydantic

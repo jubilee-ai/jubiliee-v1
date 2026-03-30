@@ -239,7 +239,8 @@ def _extract_simple_interrupt(interrupt_data: list, thread_id: str | None = None
                 ),
             }
             snap = val.get("state_snapshot")
-            if snap:
+            if isinstance(snap, dict) and snap:
+                result["state_snapshot"] = snap
                 if snap.get("plan"):
                     result["plan"] = snap["plan"]
                 if snap.get("plan_strategy"):
@@ -353,11 +354,15 @@ def _iter_graph_sse_lines(agent, config: dict, thread_id: str, stream_input: obj
         if "__interrupt__" in event:
             info = _extract_simple_interrupt(event["__interrupt__"], thread_id)
             snap_vals = _graph_state_snapshot_values(agent, config)
+            intr_snap = info.get("state_snapshot")
+            merged_snap: dict[str, object] = dict(snap_vals) if snap_vals else {}
+            if isinstance(intr_snap, dict) and intr_snap:
+                merged_snap.update(intr_snap)
             evt = review_required(
                 node=info.get("node", "unknown"),
                 summary=info.get("summary", ""),
                 message=info.get("message", "Approve to continue, or provide feedback to redo."),
-                state_snapshot=serialize_state(snap_vals) if snap_vals else {},
+                state_snapshot=serialize_state(merged_snap) if merged_snap else {},
                 review_prompt=f"Review {info.get('node', 'unknown')} output and approve or provide feedback",
             )
             for k in ("plan", "plan_strategy", "plan_index"):

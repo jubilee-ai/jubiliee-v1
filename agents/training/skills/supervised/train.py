@@ -15,6 +15,7 @@ import importlib
 import importlib.util
 import inspect
 import sys
+import types
 import warnings
 from pathlib import Path
 
@@ -24,6 +25,17 @@ warnings.filterwarnings(
     category=UserWarning,
     module=r"joblib\.externals\.loky",
 )
+
+# Stub out CuPy modules before sklearn walks its submodules via
+# all_estimators().  sklearn 1.8+ ships an array_api_compat shim that
+# references cupy; when CuPy is not installed the import fails and
+# crashes _discover_estimators().
+for _cupy_mod in [
+    "sklearn.externals.array_api_compat.cupy",
+    "sklearn.externals.array_api_compat.cupy.linalg",
+]:
+    if _cupy_mod not in sys.modules:
+        sys.modules[_cupy_mod] = types.ModuleType(_cupy_mod)
 
 import joblib
 import numpy as np
@@ -47,6 +59,8 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 from sklearn.utils import all_estimators
 
+set_config(array_api_dispatch=False)
+
 _ROOT = Path(__file__).parents[4]
 for _p in [
     str(_ROOT / "tools" / "models-tools" / "training"),
@@ -67,7 +81,11 @@ from utils import get_registered_dataset
 def _discover_estimators() -> dict[str, tuple[str, str]]:
     """Build estimator catalog from sklearn's own registry."""
     catalog = {}
-    for name, cls in all_estimators(type_filter=["classifier", "regressor"]):
+    try:
+        estimator_list = all_estimators(type_filter=["classifier", "regressor"])
+    except Exception:
+        estimator_list = []
+    for name, cls in estimator_list:
         try:
             sig = inspect.signature(cls.__init__)
             has_required = any(
@@ -76,7 +94,7 @@ def _discover_estimators() -> dict[str, tuple[str, str]]:
             )
             if has_required:
                 continue
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, ModuleNotFoundError, ImportError):
             continue
         catalog[name] = (cls.__module__, name)
     return catalog
@@ -346,10 +364,6 @@ def run(params: dict) -> str:
 
     categorical_cols = params.get("categorical_columns") or X.select_dtypes(include=["object", "category"]).columns.tolist()
     categorical_cols = [c for c in categorical_cols if c in feature_columns]
-
-    # Tabular path only: never use Array API dispatch (would pull optional CuPy
-    # shims from sklearn.externals.array_api_compat.cupy when dispatch is on).
-    set_config(array_api_dispatch=False)
 
     # Materialize pandas/Arrow/extension dtypes as ndarray-backed columns so sklearn
     # does not treat inputs as foreign array namespaces.

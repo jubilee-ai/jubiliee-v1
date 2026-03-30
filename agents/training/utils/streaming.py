@@ -23,6 +23,21 @@ def _get_or_empty(d: dict, key: str) -> dict:
     return d.get(key, {}) or {}
 
 
+def _humanize_split_strategy(strategy: object) -> str:
+    """Short, user-facing copy for train/val/test strategy (not raw enum tokens)."""
+    raw = str(strategy).strip().lower() if strategy not in (None, "") else "random"
+    if raw == "random":
+        return (
+            "rows are shuffled, then split into train, validation, and test "
+            "(default mix ~70% / 15% / 15%) — appropriate when rows are exchangeable"
+        )
+    if raw == "time_based":
+        return "earlier periods are used for training and later periods for validation and test — preserves time order"
+    if raw == "entity_based":
+        return "rows are grouped by entity so the same unit never appears in more than one split — reduces leakage"
+    return f"custom split strategy ({strategy})"
+
+
 def _get_audit_entry(node_output: dict, step: str) -> dict:
     """Get the best audit trace row for ``step`` (prefers rows/columns + matching ref).
 
@@ -164,13 +179,17 @@ def build_node_update(node_name: str, node_output: dict[str, Any]) -> dict[str, 
             "target_column": ld.get("target_column"), "split_strategy": ld.get("split_strategy"), "grain": ld.get("grain"),
             "train_ref": node_output.get("train_dataset_ref"), "val_ref": node_output.get("val_dataset_ref"), "test_ref": node_output.get("test_dataset_ref"),
         }
+        col = ld.get("target_column") or "not set"
+        split_phrase = _humanize_split_strategy(ld.get("split_strategy"))
         update["details"] = {
             "title": "Label & Split Definition Complete",
-            "description": f"Target column: **{ld.get('target_column', 'unknown')}** with {ld.get('split_strategy', 'random')} split.",
+            "description": (
+                f"The outcome column is **{col}**. {split_phrase[0].upper() + split_phrase[1:] if split_phrase else ''}"
+            ),
             "label_definition": {"target": ld.get("target_column"), "strategy": ld.get("split_strategy"), "grain": ld.get("grain"), "forbidden_columns": ld.get("forbidden_columns", [])},
             "datasets": {"train": node_output.get("train_dataset_ref"), "validation": node_output.get("val_dataset_ref"), "test": node_output.get("test_dataset_ref")},
         }
-        update["headline"] = f"Target: **{ld.get('target_column') or 'unknown'}** — {ld.get('split_strategy') or 'unknown'} split"
+        update["headline"] = f"**Outcome column:** {col} · **Train/val/test:** {split_phrase}"
 
     elif node_name == "feature_selection_specification":
         fs = _get_or_empty(node_output, "feature_spec")
@@ -305,6 +324,41 @@ def build_node_update(node_name: str, node_output: dict[str, Any]) -> dict[str, 
         else:
             update["headline"] = "Model comparison complete (no successful models)"
 
+    elif node_name == "feature_experiment_runner":
+        exp = node_output.get("experiment_result")
+        if not exp:
+            update["summary"] = {"skipped": True}
+            update["details"] = {
+                "title": "Feature experiments",
+                "description": "No parallel sweep ran (flow skipped or dataset too small).",
+            }
+            update["headline"] = "Feature sweep skipped — continuing with your engineered features"
+        else:
+            bv = exp.get("best_variant_name") or "baseline"
+            tv = int(exp.get("total_variants") or 0)
+            ts = int(exp.get("total_scouts") or 0)
+            bm = exp.get("best_metric")
+            update["summary"] = {
+                "best_variant_name": bv,
+                "best_metric": bm,
+                "total_variants": tv,
+                "total_scouts": ts,
+                "wall_time_seconds": exp.get("wall_time_seconds"),
+            }
+            grid = node_output.get("experiment_grid_summary") or []
+            update["details"] = {
+                "title": "Feature experiments",
+                "description": (
+                    f"Compared **{tv}** feature-set variants using **{ts}** lightweight scout training runs. "
+                    f"The pipeline continues with the **{bv}** variant."
+                ),
+                "experiment_result": exp,
+                "experiment_grid_preview": grid[:8] if isinstance(grid, list) else [],
+            }
+            update["headline"] = (
+                f"Feature experiments complete — **{bv}** chosen after **{tv}** feature setups"
+            )
+
     elif node_name == "training_approval":
         tp = _get_or_empty(node_output, "training_plan")
         hp, ds = tp.get("hyperparameters", {}), tp.get("data_summary", {})
@@ -313,12 +367,12 @@ def build_node_update(node_name: str, node_output: dict[str, Any]) -> dict[str, 
             "class_weight": tp.get("class_weight"), "max_iterations": tp.get("max_iterations"),
             "strategy_notes": tp.get("strategy_notes"), "expected_metrics": tp.get("expected_metrics"), "data_summary": ds,
         }
+        _mtype = tp.get("model_type") or node_output.get("selected_model") or "model"
         update["details"] = {
             "title": "Training Configuration Approved",
-            "description": f"Training will use **{tp.get('model_type', 'unknown')}** with approved hyperparameters.",
+            "description": f"Training will use **{_mtype}** with approved hyperparameters.",
             "training_plan": tp, "hyperparameters": hp, "data_summary": ds,
         }
-        _mtype = tp.get("model_type") or "unknown"
         update["headline"] = f"Ready to train **{_mtype}** with {len(hp)} hyperparameters"
 
     elif node_name == "training":

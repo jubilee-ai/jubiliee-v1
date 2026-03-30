@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo, useImperativeHandle, forwardRef } from "react"
 import type { ChatMessage, ConfirmationRequest, ConfirmationAction, Dataset, TrainingAgentState, StepInfo } from "@/types/agent"
-import type { Dataset as ApiDataset, ModelType } from "@/lib/api"
-import { AVAILABLE_DATASETS, AVAILABLE_MODELS } from "@/lib/mockAgent"
+import type { Dataset as ApiDataset } from "@/lib/api"
+import { AVAILABLE_DATASETS } from "@/lib/mockAgent"
 import { StepDetailModal } from "@/components/StepDetailModal"
 import { Settings2, Sparkles, BarChart3, Zap, FileText } from "lucide-react"
 
@@ -26,6 +26,7 @@ const STEP_TO_PHASE: Record<string, string> = {
   feature_selection_specification: "Features",
   feature_specification_and_engineering: "Features",
   feature_engineering_executor: "Features",
+  feature_experiment_runner: "Features",
   training_approval: "Training",
   training: "Training",
   generate_report: "Output",
@@ -39,10 +40,7 @@ interface ChatPanelProps {
   onConfirmation: (action: ConfirmationAction, comment?: string) => void
   linkedDatasets: string[]
   onLinkedDatasetsChange: (ids: string[]) => void
-  linkedModelId: string | null
-  onLinkedModelChange: (id: string | null) => void
   datasets?: ApiDataset[]
-  modelTypes?: ModelType[]
   highlightedMessageId?: string | null
   onClearHighlight?: () => void
   onViewReport?: () => void
@@ -67,10 +65,7 @@ export const ChatPanel = forwardRef<ChatPanelRef, ChatPanelProps>(function ChatP
   onConfirmation,
   linkedDatasets,
   onLinkedDatasetsChange,
-  linkedModelId,
-  onLinkedModelChange,
   datasets: propDatasets,
-  modelTypes: propModelTypes,
   highlightedMessageId,
   onClearHighlight,
   onViewReport,
@@ -83,9 +78,6 @@ export const ChatPanel = forwardRef<ChatPanelRef, ChatPanelProps>(function ChatP
   const availableDatasets = propDatasets && propDatasets.length > 0 
     ? propDatasets 
     : AVAILABLE_DATASETS
-  const availableModels = propModelTypes && propModelTypes.length > 0
-    ? propModelTypes
-    : AVAILABLE_MODELS
 
   const [draft, setDraft] = useState("")
   const [selectedStepId, setSelectedStepId] = useState<string | null>(null)
@@ -307,11 +299,7 @@ export const ChatPanel = forwardRef<ChatPanelRef, ChatPanelProps>(function ChatP
         selectedDatasets={linkedDatasets}
         onDatasetSelect={handleDatasetSelect}
         onDatasetRemove={handleDatasetRemove}
-        selectedModel={linkedModelId}
-        onModelSelect={(id) => onLinkedModelChange(id)}
-        onModelRemove={() => onLinkedModelChange(null)}
         availableDatasets={availableDatasets}
-        availableModels={availableModels}
         useHitl={useHitl}
         onToggleHitl={() => setUseHitl(v => !v)}
         experimentId={experimentId}

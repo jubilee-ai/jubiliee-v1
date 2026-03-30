@@ -24,6 +24,7 @@ export function StepDetailModal({ stepId, agentState, steps, onClose }: StepDeta
     "feature_selection_specification": "feature_selection_specification",
     "feature_specification_and_engineering": "feature_engineering_executor",
     "feature_engineering_executor": "feature_engineering_executor",
+    "feature_experiment_runner": "feature_experiment_runner",
     "training_approval": "training_approval",
     "training": "training",
     "generate_report": "generate_report",
@@ -41,6 +42,7 @@ export function StepDetailModal({ stepId, agentState, steps, onClose }: StepDeta
       case "feature_selection_specification": return "Feature Selection"
       case "feature_specification_and_engineering": return "Features (spec + build)"
       case "feature_engineering_executor": return "Feature Engineering"
+      case "feature_experiment_runner": return "Feature experiments"
       case "training_approval": return "Training Configuration"
       case "training": return "Model Training"
       case "generate_report": return "Report Generation"
@@ -69,6 +71,8 @@ export function StepDetailModal({ stepId, agentState, steps, onClose }: StepDeta
         )
       case "feature_engineering_executor":
         return <FeatureEngineeringDetail agentState={agentState} audit={audit} />
+      case "feature_experiment_runner":
+        return <FeatureExperimentDetail agentState={agentState} audit={audit} />
       case "training_approval":
         return <TrainingConfigDetail agentState={agentState} audit={audit} />
       case "training":
@@ -743,17 +747,129 @@ function FeatureEngineeringDetail({ agentState, audit }: { agentState: TrainingA
   )
 }
 
+function formatTrainingModelLabel(raw: string | null | undefined): string {
+  const s = (raw || "").trim()
+  if (!s || /^unknown$/i.test(s)) return ""
+  return s
+    .split(/[_\s]+/)
+    .filter(Boolean)
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+    .join(" ")
+}
+
+// Feature experiment grid — explanatory only (scout scores are intentionally omitted in UI)
+function FeatureExperimentDetail({ agentState, audit }: { agentState: TrainingAgentState; audit?: Record<string, unknown> }) {
+  const exp = agentState.experiment_result as Record<string, unknown> | null | undefined
+  const variant =
+    (audit?.best_variant as string | undefined) ?? (exp?.best_variant_name as string | undefined)
+  const totalVariants = Number(audit?.total_variants ?? exp?.total_variants ?? 0) || 0
+  const totalScouts = Number(audit?.total_scouts ?? exp?.total_scouts ?? 0) || 0
+  const wall =
+    (typeof audit?.wall_time === "number" ? audit.wall_time : null) ??
+    (typeof exp?.wall_time_seconds === "number" ? exp.wall_time_seconds : null)
+  const signal = (audit?.signal_features as string[] | undefined) ?? (exp?.signal_features as string[] | undefined)
+  const dropped = (audit?.dropped_features as string[] | undefined) ?? (exp?.dropped_features as string[] | undefined)
+
+  const ran = variant || totalVariants > 0 || totalScouts > 0
+
+  if (!ran) {
+    return (
+      <div className="space-y-4 text-sm text-muted-foreground leading-relaxed">
+        <p>
+          No feature-variant sweep ran for this experiment (for example: unsupervised goal, small dataset,
+          or too few specified features). The pipeline kept your engineered feature set as-is.
+        </p>
+      </div>
+    )
+  }
+
+  return (
+    <div className="space-y-6 text-sm leading-relaxed">
+      <div className="bg-foreground/5 rounded-xl p-4 space-y-2">
+        <div className="text-xs text-muted-foreground">What we did</div>
+        <p className="text-foreground/90">
+          Jubilee trained several <span className="font-medium">lightweight scout models</span> on different
+          feature-set variants in parallel. The goal is to see which columns add real signal before committing
+          to the expensive full training step — not to pick a final production score.
+        </p>
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        {variant ? (
+          <div className="bg-muted/30 rounded-lg p-3">
+            <div className="text-[11px] text-muted-foreground">Variant kept for next steps</div>
+            <div className="text-base font-semibold mt-0.5">{variant}</div>
+          </div>
+        ) : null}
+        {totalVariants > 0 ? (
+          <div className="bg-muted/30 rounded-lg p-3">
+            <div className="text-[11px] text-muted-foreground">Feature setups compared</div>
+            <div className="text-base font-semibold mt-0.5 tabular-nums">{totalVariants}</div>
+          </div>
+        ) : null}
+        {totalScouts > 0 ? (
+          <div className="bg-muted/30 rounded-lg p-3">
+            <div className="text-[11px] text-muted-foreground">Scout training runs</div>
+            <div className="text-base font-semibold mt-0.5 tabular-nums">{totalScouts}</div>
+          </div>
+        ) : null}
+        {wall != null ? (
+          <div className="bg-muted/30 rounded-lg p-3">
+            <div className="text-[11px] text-muted-foreground">Wall time</div>
+            <div className="text-base font-semibold mt-0.5 tabular-nums">{wall.toFixed(1)}s</div>
+          </div>
+        ) : null}
+      </div>
+
+      {signal && signal.length > 0 ? (
+        <div>
+          <div className="text-sm font-medium mb-2">Columns that looked strongest in scouts</div>
+          <div className="flex flex-wrap gap-1.5">
+            {signal.map((f) => (
+              <Badge key={f} variant="secondary" className="text-xs font-mono font-normal">
+                {f}
+              </Badge>
+            ))}
+          </div>
+        </div>
+      ) : null}
+
+      {dropped && dropped.length > 0 ? (
+        <div>
+          <div className="text-sm font-medium mb-2">Columns deprioritized in the chosen variant</div>
+          <div className="flex flex-wrap gap-1.5">
+            {dropped.map((f) => (
+              <Badge key={f} variant="outline" className="text-xs font-mono font-normal">
+                {f}
+              </Badge>
+            ))}
+          </div>
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
 // Training Config Detail (training_approval step)
 function TrainingConfigDetail({ agentState, audit }: { agentState: TrainingAgentState; audit?: Record<string, unknown> }) {
   const [expandedSection, setExpandedSection] = useState<number | null>(null)
 
+  const rawState = agentState as unknown as Record<string, unknown>
   const plan = (audit as Record<string, unknown> | undefined) || {}
   const tp = (plan.training_plan as Record<string, unknown>) ||
-    (agentState.training_params as Record<string, unknown>) || {}
+    (agentState.training_plan as Record<string, unknown> | undefined) ||
+    (agentState.training_params as Record<string, unknown>) ||
+    {}
   const hp = (tp.hyperparameters || plan.hyperparameters || {}) as Record<string, unknown>
   const strategy = (tp.strategy_notes || plan.strategy_notes || []) as string[] | string
   const dataSummary = (tp.data_summary || plan.data_summary || {}) as Record<string, unknown>
-  const modelType = String(tp.model_type || plan.model_type || "Unknown")
+  const rawModel =
+    String(tp.model_type || plan.model_type || "").trim() ||
+    String(agentState.selected_model || rawState.selected_model || "").trim()
+  const modelType =
+    formatTrainingModelLabel(rawModel) ||
+    (rawModel ? rawModel.replace(/_/g, " ") : "") ||
+    "Model family from your experiment"
   const taskType = String(tp.task_type || plan.task_type || "")
   const classWeight = tp.class_weight || plan.class_weight
   const maxIter = tp.max_iterations || plan.max_iterations

@@ -47,6 +47,7 @@ const STEP_DEFINITIONS = [
   { id: "feature_specification_and_engineering", name: "Features", description: "Specify features and build transformed datasets" },
   { id: "feature_selection_specification", name: "Feature Selection", description: "Analyze data and specify features" },
   { id: "feature_engineering_executor", name: "Feature Engineering", description: "Execute feature transformations" },
+  { id: "feature_experiment_runner", name: "Feature experiments", description: "Compare feature-set variants with scout models" },
   { id: "training_approval", name: "Training Config", description: "Propose hyperparameters and strategy" },
   { id: "training", name: "Training", description: "Train model and evaluate metrics" },
   { id: "generate_report", name: "Report", description: "Save the final training report" },
@@ -72,6 +73,7 @@ const STEP_LOADING_HINTS: Record<string, string> = {
   feature_specification_and_engineering: "Specifying and building features…",
   feature_selection_specification: "Analyzing columns, correlations, and leakage…",
   feature_engineering_executor: "Encoding features and checking matrix shapes…",
+  feature_experiment_runner: "Running feature experiments and picking the best variant…",
   training_approval: "Preparing training configuration…",
   training: "Training models and comparing validation metrics…",
   generate_report: "Writing the final report…",
@@ -227,9 +229,6 @@ export interface UseRealAgentReturn {
   sendMessage: (content: string, opts?: { user_model_preference?: string }) => void
   linkedDatasets: string[]
   updateLinkedDatasets: (ids: string[]) => void
-  /** Model type id linked for this experiment session (sent with each message / training run). */
-  linkedModelId: string | null
-  setLinkedModelId: (id: string | null) => void
   handleConfirmation: (action: ConfirmationAction, comment?: string) => void
   reset: () => void
   /** Ping `/api/health` only (for status banner + pre-flight). Does not refetch datasets/models. */
@@ -265,7 +264,6 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
   const [acceptAllMode, setAcceptAllMode] = useState(false)
   const [experimentId, setExperimentId] = useState<string | null>(null)
   const [linkedDatasets, setLinkedDatasets] = useState<string[]>([])
-  const [linkedModelId, setLinkedModelId] = useState<string | null>(null)
   
   // Use a ref to track accept-all mode to avoid stale closure issues in callbacks
   const acceptAllModeRef = useRef(acceptAllMode)
@@ -455,6 +453,15 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
         if (passed !== undefined) parts.push(passed ? "ok" : "issues")
         return parts.join(" · ")
       }
+      case "feature_experiment_runner": {
+        if (summary.skipped) return "skipped"
+        const bv = summary.best_variant_name
+        const tv = summary.total_variants
+        const parts: string[] = []
+        if (bv) parts.push(String(bv))
+        if (tv != null) parts.push(`${tv} setups`)
+        return parts.join(" · ")
+      }
       case "training_approval": {
         const model = summary.model_type || ""
         const hp = summary.hyperparameters
@@ -486,29 +493,7 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
     if (event.type === "token") {
       const phase = event.phase
       const isThinkingPhase = phase === "planner" || phase === "evaluator" || phase === "select_model"
-
       if (isThinkingPhase) {
-        const content = event.content || ""
-        if (!content) return
-        setMessages((prev) => {
-          const i = prev.findIndex((m) => m.id === GRAPH_THINKING_MSG_ID)
-          if (i === -1) {
-            return [
-              ...prev,
-              {
-                id: GRAPH_THINKING_MSG_ID,
-                role: "system",
-                content: content,
-                timestamp: Date.now(),
-                _streaming: true,
-              },
-            ]
-          }
-          const cur = prev[i]
-          const next = [...prev]
-          next[i] = { ...cur, content: cur.content + content, timestamp: Date.now() }
-          return next
-        })
         return
       }
 
@@ -590,33 +575,6 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
     }
 
     if (event.type === "thinking" || event.type === "step.progress") {
-      const raw = (typeof event.message === "string" ? event.message.trim() : "")
-        || (typeof event.phase === "string" ? event.phase.trim() : "")
-      if (!raw) return
-      const line = `⋯ ${raw}`
-      setMessages((prev) => {
-        const i = prev.findIndex((m) => m.id === GRAPH_THINKING_MSG_ID)
-        if (i === -1) {
-          return [
-            ...prev,
-            {
-              id: GRAPH_THINKING_MSG_ID,
-              role: "system",
-              content: line,
-              timestamp: Date.now(),
-              _streaming: true,
-            },
-          ]
-        }
-        const cur = prev[i]
-        const next = [...prev]
-        next[i] = {
-          ...cur,
-          content: `${cur.content}\n${line}`,
-          timestamp: Date.now(),
-        }
-        return next
-      })
       return
     }
 
@@ -642,7 +600,10 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
       const nodeName = event.node || "unknown"
       let summary: string
       if (typeof event.summary === "string") {
-        summary = event.summary
+        summary = event.summary.trim()
+        if (!summary && typeof event.message === "string" && event.message.trim()) {
+          summary = event.message.trim()
+        }
       } else if (nodeName === "training_approval" && event.summary && typeof event.summary === "object") {
         const s = event.summary as Record<string, unknown>
         const lines: string[] = []
@@ -748,19 +709,6 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
 
       setSteps((prev) => applyNodeCompleteToSteps(prev, nodeName, event))
 
-      setMessages(prev => prev.map(m =>
-        m.id === GRAPH_THINKING_MSG_ID ? { ...m, _streaming: false } : m
-      ))
-
-      if (nodeName === "planner") {
-        const plan = (event.state as Record<string, unknown>)?.plan as Array<unknown> | undefined
-        const planLen = Array.isArray(plan) ? plan.length : null
-        const planSummary = planLen ? `Planning complete — ${planLen} steps` : "Planning complete"
-        setMessages(prev => prev.map(m =>
-          m.id === GRAPH_THINKING_MSG_ID ? { ...m, content: planSummary, _streaming: false } : m
-        ))
-      }
-      
       // Compute a one-line subtitle for the step dropdown
       const summary = event.summary as Record<string, unknown> | undefined
       const subtitle = computeStepSubtitle(nodeName, summary)
@@ -941,7 +889,7 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
     const initialState = createInitialState()
     initialState.goal = goal
     initialState.linked_datasets = linkedDatasets || null
-    initialState.user_model_preference = modelPreference || linkedModelId || null
+    initialState.user_model_preference = modelPreference || null
     setAgentState(initialState)
 
     const hitlLabel = hitl === false ? " (no human review)" : ""
@@ -952,7 +900,7 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
       {
         message: goal,
         linked_datasets: linkedDatasets ?? null,
-        model_preference: modelPreference ?? linkedModelId ?? null,
+        model_preference: modelPreference ?? null,
         experiment_id: runEid,
         conversation,
       },
@@ -962,7 +910,7 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
         addMessage("system", `Stream error: ${error.message}`)
       },
     )
-  }, [addMessage, checkConnection, applyAgentStreamEvent, linkedModelId, ensureExperimentId])
+  }, [addMessage, checkConnection, applyAgentStreamEvent, ensureExperimentId])
 
   const handleConfirmation = useCallback((action: ConfirmationAction, comment?: string) => {
     if (!confirmationRequest || !experimentId) {
@@ -1048,6 +996,8 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
 
       streamControllerRef.current?.abort()
 
+      const linkedForThisSend = [...linkedDatasetsRef.current]
+
       void (async () => {
         const eid = await ensureExperimentId(suggestExperimentTitleFromUserMessage(content))
         if (!eid) {
@@ -1055,8 +1005,9 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
           return
         }
 
-        const ds = linkedDatasetsRef.current
-        if (ds.length > 0) {
+        if (linkedForThisSend.length > 0) {
+          setLinkedDatasets([])
+          void updateExperiment(eid, { linked_datasets: [] })
           setSteps(createInitialSteps())
           emittedStepsRef.current = new Set()
           pipelineCompletionEmittedRef.current = false
@@ -1071,8 +1022,8 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
           {
             message: content,
             experiment_id: eid,
-            linked_datasets: ds.length > 0 ? ds : null,
-            model_preference: opts?.user_model_preference ?? linkedModelId ?? null,
+            linked_datasets: linkedForThisSend.length > 0 ? linkedForThisSend : null,
+            model_preference: opts?.user_model_preference ?? null,
             conversation,
           },
           applyAgentStreamEvent,
@@ -1086,7 +1037,6 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
     [
       addMessage,
       isRunning,
-      linkedModelId,
       applyAgentStreamEvent,
       ensureExperimentId,
     ],
@@ -1111,7 +1061,6 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
     pipelineCompletionEmittedRef.current = false
     lastTrainingSummaryRef.current = null
     setLinkedDatasets([])
-    setLinkedModelId(null)
   }, [])
 
   const leaveLabSession = useCallback(() => {
@@ -1133,18 +1082,20 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
       // Restore chat history
       if (exp.chat_history && Array.isArray(exp.chat_history)) {
         setMessages(
-          exp.chat_history.map((m: Record<string, unknown>) => ({
-            id: (m.id as string) || uid("msg"),
-            role: (m.role as ChatMessage["role"]) || "agent",
-            content: (m.content as string) || "",
-            timestamp: (m.timestamp as number) || Date.now(),
-            ...(typeof m.step_id === "string" ? { stepId: m.step_id } : {}),
-            ...(typeof m.stepId === "string" ? { stepId: m.stepId } : {}),
-            ...(typeof m.detail_markdown === "string" ? { detailMarkdown: m.detail_markdown } : {}),
-            ...(typeof m.detailMarkdown === "string" ? { detailMarkdown: m.detailMarkdown } : {}),
-            ...(m.show_report_button === true ? { showReportButton: true } : {}),
-            ...(m.showReportButton === true ? { showReportButton: true } : {}),
-          })),
+          exp.chat_history
+            .filter((m: Record<string, unknown>) => m.id !== GRAPH_THINKING_MSG_ID)
+            .map((m: Record<string, unknown>) => ({
+              id: (m.id as string) || uid("msg"),
+              role: (m.role as ChatMessage["role"]) || "agent",
+              content: (m.content as string) || "",
+              timestamp: (m.timestamp as number) || Date.now(),
+              ...(typeof m.step_id === "string" ? { stepId: m.step_id } : {}),
+              ...(typeof m.stepId === "string" ? { stepId: m.stepId } : {}),
+              ...(typeof m.detail_markdown === "string" ? { detailMarkdown: m.detail_markdown } : {}),
+              ...(typeof m.detailMarkdown === "string" ? { detailMarkdown: m.detailMarkdown } : {}),
+              ...(m.show_report_button === true ? { showReportButton: true } : {}),
+              ...(m.showReportButton === true ? { showReportButton: true } : {}),
+            })),
         )
       } else {
         setMessages([])
@@ -1164,9 +1115,6 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
       emittedStepsRef.current = new Set()
       const rawLd = exp.linked_datasets
       setLinkedDatasets(Array.isArray(rawLd) ? rawLd.map(String) : [])
-      const ts = exp.training_state as Partial<TrainingAgentState> | null | undefined
-      const pref = ts?.user_model_preference
-      setLinkedModelId(typeof pref === "string" && pref ? pref : null)
     } catch (err) {
       console.error("Failed to load experiment:", err)
     }
@@ -1193,8 +1141,6 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
     experimentId,
     linkedDatasets,
     updateLinkedDatasets,
-    linkedModelId,
-    setLinkedModelId,
     datasets,
     modelTypes,
     startAgent,
