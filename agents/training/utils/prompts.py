@@ -131,6 +131,12 @@ Report all iterations, final metrics, and your chosen best model. Include:
   - **Always fill `hyperparams`** with the best hyperparameters from the training output (look for the "BEST HYPERPARAMETERS" section in each training result)
 - `num_iterations`, `summary`, `recommendations`
 - `feature_redo_requested`: true only if you called request_feature_engineering_redo
+
+### `summary` and `recommendations` (critical)
+The training pipeline **re-selects the winning run by validation metrics** after you respond. Headline test scores shown to the user always evaluate **`best_model_name`** — the artifact that gets saved.
+
+- **`summary`**: Describe the **full experiment arc** (what you tried, what worked or failed), then clearly state which model is **`best_model_name`** and why. If your last iteration was exploratory and is **not** the best, say so explicitly; do **not** write the summary as if the last run were the final product when a prior run won.
+- **`recommendations`**: Next steps for operating and improving **`best_model_name`** (monitoring, thresholds, further tuning). Mention other experiments only as comparison to that artifact.
 """
 
 FEATURE_ENGINEERING_SIMPLE_SYSTEM_PROMPT = """You are a senior data scientist selecting and engineering features for a machine learning model.

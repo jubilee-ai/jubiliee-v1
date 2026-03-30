@@ -167,6 +167,7 @@ class TrainingAgentState(TypedDict):
     # Control flow
     current_step: str
     error: Optional[str]
+    hitl_auto_approve: bool  # skip HITL when True (background async tasks)
 
 
 # =============================================================================
@@ -183,6 +184,7 @@ def create_initial_state(
     resolved_model_type: str | None = None,
     resolved_target_column: str | None = None,
     conversation_history: Optional[list[dict[str, str]]] = None,
+    hitl_auto_approve: bool = False,
 ) -> TrainingAgentState:
     """Create the initial state for the training agent."""
     return {
@@ -242,4 +244,5 @@ def create_initial_state(
         "evaluator_decision": None,
         "current_step": "planner",
         "error": None,
+        "hitl_auto_approve": hitl_auto_approve,
     }

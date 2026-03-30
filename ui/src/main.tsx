@@ -4,6 +4,7 @@ import './index.css'
 import App from './App.tsx'
 import { isPublishableKey } from '@clerk/shared/keys'
 import { ClerkProvider } from '@clerk/react'
+import { Toaster } from 'sonner'
 
 const publishableKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY
 if (!publishableKey) {
@@ -55,6 +56,7 @@ createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <ClerkProvider publishableKey={publishableKey} appearance={clerkAppearance}>
       <App />
+      <Toaster position="bottom-right" closeButton richColors offset={20} />
     </ClerkProvider>
   </StrictMode>,
 )

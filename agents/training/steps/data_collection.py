@@ -65,6 +65,8 @@ def _infer_target_column(df: pd.DataFrame, goal: str) -> str | None:
     """Best-effort guess at which column is the prediction target."""
     import numpy as np
 
+    if not goal:
+        return None
     goal_lower = goal.lower()
     cols = list(df.columns)
     for col in cols:

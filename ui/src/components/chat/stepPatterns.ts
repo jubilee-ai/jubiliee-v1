@@ -2,16 +2,6 @@
 // Each entry has keywords that should be unique to that step
 
 export const STEP_PATTERNS: Array<{ stepId: string; patterns: RegExp[] }> = [
-  // Report - check first, very specific phrases
-  {
-    stepId: "generate_report",
-    patterns: [
-      /training pipeline complete/i,
-      /report generated/i,
-      /generate_report/i,
-      /pipeline complete.*view report/i,
-    ]
-  },
   // Training Approval - configuration proposal
   {
     stepId: "training_approval",
@@ -134,9 +124,14 @@ export const STEP_PATTERNS: Array<{ stepId: string; patterns: RegExp[] }> = [
  * @returns The step ID if detected, null otherwise
  */
 export function detectStepFromMessage(content: string): string | null {
-  // Don't make messages clickable if they already have "View Report" CTA
-  // These are final completion messages that have the View Report button
-  if (/view report/i.test(content) || /click.*report/i.test(content)) {
+  // Don't attach "See details" to report / finish messages (View Report is enough).
+  if (
+    /view report/i.test(content) ||
+    /click.*report/i.test(content) ||
+    /open the report/i.test(content) ||
+    /report saved/i.test(content) ||
+    /pipeline finished/i.test(content)
+  ) {
     return null
   }
   
@@ -162,5 +157,4 @@ export const STEP_KEYWORDS: Record<string, string[]> = {
   "feature_experiment_runner": ["Feature experiments", "feature sweep", "variants"],
   "training_approval": ["Training Config", "hyperparameters", "training plan", "training strategy"],
   "training": ["Training", "trained", "R²", "accuracy", "RMSE"],
-  "generate_report": ["Report", "complete"],
 }

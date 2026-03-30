@@ -14,6 +14,8 @@ import type {
   ChatMessage,
   ConfirmationRequest,
   ConfirmationAction,
+  TaskPlanSummary,
+  ChatTaskPlanPayload,
 } from "@/types/agent"
 import {
   checkHealth,
@@ -23,6 +25,7 @@ import {
   getExperiment,
   saveExperimentMessages,
   createExperiment,
+  startExperimentAsyncTrain,
   type Dataset,
   type ModelType,
   type AgentStreamEvent,
@@ -34,6 +37,13 @@ import {
   suggestExperimentTitleFromUserMessage,
 } from "@/lib/utils"
 import { buildStepDetailMarkdown } from "@/hooks/stepStreamDetails"
+import { looksLikeLeakedPlanJson, stripLeakedPlanJson } from "@/lib/planDisplay"
+import {
+  toastAcceptAllMode,
+  toastAutoAcceptContinued,
+  toastBackgroundRunStarted,
+  toastStepAccepted,
+} from "@/lib/trainingToasts"
 
 /** Ephemeral merged "thinking" lines from graph custom stream (cleared on each new `started`). */
 const GRAPH_THINKING_MSG_ID = "__graph_thinking__"
@@ -76,7 +86,7 @@ const STEP_LOADING_HINTS: Record<string, string> = {
   feature_experiment_runner: "Running feature experiments and picking the best variant…",
   training_approval: "Preparing training configuration…",
   training: "Training models and comparing validation metrics…",
-  generate_report: "Writing the final report…",
+  generate_report: "Finishing up…",
 }
 
 /**
@@ -93,7 +103,7 @@ function applyNodeCompleteToSteps(
   const currentStepState = prev.find((s) => s.id === nodeName)
   const isRerun = (currentStepState?.runCount || 0) >= 1
 
-  return prev.map((step, index) => {
+  const next: StepInfo[] = prev.map((step, index): StepInfo => {
     if (step.id === nodeName) {
       return {
         ...step,
@@ -118,6 +128,15 @@ function applyNodeCompleteToSteps(
     }
     return step
   })
+  // Parent row for the Features group: the graph runs feature_selection_specification next, not this id.
+  if (nodeName === "feature_selection_specification") {
+    return next.map((step): StepInfo =>
+      step.id === "feature_specification_and_engineering" && step.status === "running"
+        ? { ...step, status: "completed", endTime: Date.now() }
+        : step,
+    )
+  }
+  return next
 }
 
 function subtitleFromSkippedEvent(summary: unknown): string {
@@ -142,6 +161,52 @@ function markStepsDonePreservingSkipped(prev: StepInfo[]): StepInfo[] {
   )
 }
 
+/** Reconcile checklist steps from async task metadata on the experiment. */
+function mergeTaskProgressIntoSteps(
+  prev: StepInfo[],
+  ts: Record<string, unknown>,
+): StepInfo[] {
+  if (ts.lab_mode !== "task") return prev
+  const st = ts.task_status as string | undefined
+  const events = (ts.task_step_events as Array<{ node: string }>) || []
+  const done = new Set(events.map((e) => e.node))
+  const cur = (ts.task_current_node as string | null) || null
+
+  if (st === "completed") {
+    return prev.map((s) => ({ ...s, status: "completed" as const }))
+  }
+  if (st === "failed") {
+    return prev.map((s) => {
+      if (done.has(s.id)) return { ...s, status: "completed" as const }
+      if (s.id === cur) return { ...s, status: "error" as const }
+      if (s.status === "skipped") return s
+      return { ...s, status: "pending" as const }
+    })
+  }
+  // task_current_node is last-completed (see backend merge on step.complete), not the active step.
+  let runningId: string | null = null
+  for (const id of STEP_ORDER_IDS) {
+    if (!done.has(id)) {
+      runningId = id
+      break
+    }
+  }
+  return prev.map((s) => {
+    if (done.has(s.id)) {
+      return { ...s, status: "completed" as const, endTime: s.endTime ?? Date.now() }
+    }
+    if (runningId !== null && s.id === runningId) {
+      return { ...s, status: "running" as const, startTime: s.startTime ?? Date.now() }
+    }
+    return { ...s, status: "pending" as const }
+  })
+}
+
+function userTextForApi(m: ChatMessage): string {
+  if (m.role === "user" && m.apiPayload?.trim()) return m.apiPayload.trim()
+  return m.content.trim()
+}
+
 /** Build user/agent turns for the backend planner (`messages` is pre-send snapshot; `latestUserText` is the outgoing instruction). */
 function buildPlanningConversation(
   messages: ChatMessage[],
@@ -151,7 +216,7 @@ function buildPlanningConversation(
   const turns: Array<{ role: "user" | "agent"; content: string }> = []
   for (const m of messages) {
     if (m.role !== "user" && m.role !== "agent") continue
-    const c = m.content.trim()
+    const c = m.role === "user" ? userTextForApi(m) : m.content.trim()
     if (c) turns.push({ role: m.role, content: c })
   }
   const last = turns[turns.length - 1]
@@ -200,6 +265,7 @@ function createInitialState(): TrainingAgentState {
     explanations: [],
     current_step: "idle",
     error: null,
+    hitl_auto_approve: false,
   }
 }
 
@@ -226,7 +292,23 @@ export interface UseRealAgentReturn {
   
   // Actions
   startAgent: (goal: string, datasets?: string[], modelPreference?: string, hitl?: boolean) => Promise<void>
-  sendMessage: (content: string, opts?: { user_model_preference?: string }) => void
+  sendMessage: (
+    content: string,
+    opts?: {
+      user_model_preference?: string
+      linked_datasets_override?: string[]
+      /** Start “background task intake”: orchestrator only until the user starts a run from the plan card. */
+      begin_background_intake?: boolean
+      force_orchestrator?: boolean
+      persist_linked_datasets?: string[]
+      /** Shown as conversation topic; `content` is still sent to the API */
+      displayTopic?: string
+    },
+  ) => void
+  /** True while assigning a background task: chat is for clarifications only; no training graph in-thread. */
+  backgroundIntakeActive: boolean
+  /** True after Approve on the plan card until the experiment is in task lab mode (API + reload). */
+  startingHandsOffTask: boolean
   linkedDatasets: string[]
   updateLinkedDatasets: (ids: string[]) => void
   handleConfirmation: (action: ConfirmationAction, comment?: string) => void
@@ -244,6 +326,11 @@ export interface UseRealAgentReturn {
   leaveLabSession: () => void
   /** Human-readable hint for what the pipeline is doing right now */
   runningStepHint: string | null
+  /** Pull latest `training_state` from the server (e.g. while an async task runs). */
+  refreshExperimentTraining: () => Promise<void>
+  markTaskPlanResolved: (messageId: string) => void
+  startGuidedTrainingFromPlan: (plan: TaskPlanSummary, refs: string[]) => void
+  startHandsOffTrainingFromPlan: (plan: TaskPlanSummary, refs: string[]) => Promise<void>
 }
 
 export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn {
@@ -264,6 +351,14 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
   const [acceptAllMode, setAcceptAllMode] = useState(false)
   const [experimentId, setExperimentId] = useState<string | null>(null)
   const [linkedDatasets, setLinkedDatasets] = useState<string[]>([])
+  const [backgroundIntakeActive, setBackgroundIntakeActive] = useState(false)
+  const [startingHandsOffTask, setStartingHandsOffTask] = useState(false)
+  const backgroundIntakeActiveRef = useRef(false)
+
+  const setBackgroundIntake = useCallback((active: boolean) => {
+    backgroundIntakeActiveRef.current = active
+    setBackgroundIntakeActive(active)
+  }, [])
   
   // Use a ref to track accept-all mode to avoid stale closure issues in callbacks
   const acceptAllModeRef = useRef(acceptAllMode)
@@ -287,15 +382,19 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
   agentStateRef.current = agentState
   /** Stream end can run before React applies training_metrics to state; cache from step.complete. */
   const lastTrainingSummaryRef = useRef<Record<string, unknown> | null>(null)
+  /** Drop post-tool assistant tokens (e.g. “I’ve set up a plan…”) after propose_training_plan. */
+  const suppressPostPlanTokensRef = useRef(false)
 
   const [runningStepHint, setRunningStepHint] = useState<string | null>(null)
+  /** Overrides checklist hint while the graph emits step.progress (phase matches a pipeline id). */
+  const [progressPhaseHint, setProgressPhaseHint] = useState<string | null>(null)
 
   // Add a message to the chat (optional step metadata for expandable details + report CTA)
   const addMessage = useCallback(
     (
       role: ChatMessage["role"],
       content: string,
-      meta?: Partial<Pick<ChatMessage, "stepId" | "detailMarkdown" | "showReportButton">>,
+      meta?: Partial<Pick<ChatMessage, "stepId" | "detailMarkdown" | "showReportButton" | "taskPlan" | "apiPayload">>,
     ) => {
       setMessages((prev) => [
         ...prev,
@@ -326,6 +425,9 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
           ...(m.stepId ? { stepId: m.stepId } : {}),
           ...(m.detailMarkdown ? { detailMarkdown: m.detailMarkdown } : {}),
           ...(m.showReportButton ? { showReportButton: m.showReportButton } : {}),
+          ...(m.taskPlan ? { task_plan: m.taskPlan } : {}),
+          ...(m.taskPlanResolved ? { task_plan_resolved: true } : {}),
+          ...(m.apiPayload ? { api_payload: m.apiPayload } : {}),
         })),
       )
     } catch {
@@ -387,23 +489,42 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
   useEffect(() => {
     if (!isRunning) {
       setRunningStepHint(null)
+      setProgressPhaseHint(null)
       return
     }
     if (confirmationRequest) {
       setRunningStepHint("Waiting for your review…")
       return
     }
-    const running = steps.find((s) => s.status === "running")
+    if (progressPhaseHint) {
+      setRunningStepHint(progressPhaseHint)
+      return
+    }
+    // Prefer the latest pipeline step when several rows are still marked running (e.g. Features parent + sub-step).
+    let running: StepInfo | undefined
+    let bestIdx = -1
+    for (const s of steps) {
+      if (s.status !== "running") continue
+      const idx = STEP_ORDER_IDS.indexOf(s.id)
+      if (idx >= 0 && idx > bestIdx) {
+        bestIdx = idx
+        running = s
+      }
+    }
+    if (running === undefined) {
+      running = steps.find((s) => s.status === "running")
+    }
     if (running) {
-      setRunningStepHint(STEP_LOADING_HINTS[running.id] ?? `Running ${running.name}…`)
+      const hintKey = running.id === "training_approval" ? "training" : running.id
+      setRunningStepHint(STEP_LOADING_HINTS[hintKey] ?? `Running ${running.name}…`)
       return
     }
     if (steps.length > 0 && steps.every((s) => s.status === "pending")) {
-      setRunningStepHint("Planning your pipeline…")
+      setRunningStepHint("Planning…")
       return
     }
     setRunningStepHint(null)
-  }, [isRunning, steps, confirmationRequest])
+  }, [isRunning, steps, confirmationRequest, progressPhaseHint])
 
   // Derive a brief subtitle for a completed step
   const computeStepSubtitle = useCallback((nodeName: string, summary?: Record<string, unknown>): string => {
@@ -488,9 +609,23 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
 
     if (event.type === "start" || (event.type === "stream.start" && event.pipeline_completed == null)) {
       setIsRunning(true)
+      if (event.type === "stream.start" && event.training_graph) {
+        setProgressPhaseHint(null)
+        emittedStepsRef.current = new Set()
+        setProgress(0)
+        setSteps(() => {
+          const initial = createInitialSteps()
+          return initial.map((step, index) =>
+            index === 0 ? { ...step, status: "running", startTime: Date.now() } : step,
+          )
+        })
+      }
       return
     }
     if (event.type === "token") {
+      if (suppressPostPlanTokensRef.current) {
+        return
+      }
       const phase = event.phase
       const isThinkingPhase = phase === "planner" || phase === "evaluator" || phase === "select_model"
       if (isThinkingPhase) {
@@ -520,11 +655,66 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
         toolName === "check_trained_models" ? "Checking trained models…" :
         toolName === "predict" ? "Making prediction…" :
         toolName === "get_model_details" ? "Loading model details…" :
+        toolName === "propose_training_plan" ? "Preparing training plan…" :
         `Running ${toolName}…`
       addMessage("system", toolLabel)
       return
     }
     if (event.type === "tool_result" || event.type === "tool.end") {
+      if (event.tool === "propose_training_plan" && event.result != null) {
+        try {
+          const raw = typeof event.result === "string" ? event.result : String(event.result)
+          const data = JSON.parse(raw) as {
+            error?: string
+            goal?: string
+            dataset_refs?: string[]
+            dataset_labels?: string[]
+            preferences?: string | null
+            recap_steps?: string[]
+          }
+          if (data.error || !data.goal || !data.dataset_refs?.length) {
+            return
+          }
+          const plan: TaskPlanSummary = {
+            goal: data.goal,
+            datasetLabels: data.dataset_labels?.length ? data.dataset_labels : data.dataset_refs,
+            preferences: data.preferences ?? null,
+            steps: data.recap_steps?.length ? data.recap_steps : [],
+          }
+          const payload: ChatTaskPlanPayload = { plan, datasetRefs: data.dataset_refs }
+          suppressPostPlanTokensRef.current = true
+          setMessages((prev) => {
+            const next = [...prev]
+            while (next.length > 0) {
+              const last = next[next.length - 1]
+              if (last.role !== "agent") break
+              if (last.taskPlan) break
+              const c = last.content ?? ""
+              if (
+                last._streaming ||
+                looksLikeLeakedPlanJson(c) ||
+                stripLeakedPlanJson(c).trim() === ""
+              ) {
+                next.pop()
+                continue
+              }
+              break
+            }
+            return [
+              ...next,
+              {
+                id: uid("msg"),
+                role: "agent",
+                content: "",
+                timestamp: Date.now(),
+                taskPlan: payload,
+              },
+            ]
+          })
+        } catch {
+          // ignore malformed tool JSON
+        }
+      }
       return
     }
     if (event.type === "predict.start") {
@@ -566,6 +756,8 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
       return
     }
     if (event.type === "end" || (event.type === "stream.end" && !event.pipeline_completed)) {
+      suppressPostPlanTokensRef.current = false
+      setProgressPhaseHint(null)
       setMessages((prev) =>
         prev.map((m) => (m._streaming ? { ...m, _streaming: undefined } : m)),
       )
@@ -574,7 +766,14 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
       return
     }
 
-    if (event.type === "thinking" || event.type === "step.progress") {
+    if (event.type === "thinking") {
+      return
+    }
+    if (event.type === "step.progress") {
+      const ph = (event as { phase?: string }).phase
+      if (ph && STEP_LOADING_HINTS[ph]) {
+        setProgressPhaseHint(STEP_LOADING_HINTS[ph])
+      }
       return
     }
 
@@ -652,6 +851,7 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
       // If in accept-all mode, auto-accept
       if (acceptAllModeRef.current) {
         console.log("[stream] Auto-accepting in accept-all mode")
+        toastAutoAcceptContinued()
         setSteps((prev) =>
           prev.map((step) =>
             step.id === nodeName ? { ...step, status: "completed" } : step
@@ -691,6 +891,7 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
     } else if (event.type === "dataset_error" || event.type === "dataset.error") {
       addMessage("system", `Could not load dataset: ${event.dataset || "unknown"}`)
     } else if (event.type === "node_complete" || event.type === "step.complete") {
+      setProgressPhaseHint(null)
       const nodeName = event.node || "unknown"
       const nodeProgress = event.progress || 0
       const stepKey =
@@ -742,6 +943,11 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
         return
       }
 
+      // Report write is internal; completion is surfaced via "Pipeline finished" + View Report only.
+      if (nodeName === "generate_report") {
+        return
+      }
+
       const headline =
         typeof event.headline === "string" && event.headline.trim()
           ? event.headline.trim()
@@ -750,6 +956,34 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
       const detailMarkdown = buildStepDetailMarkdown(nodeName, event)
       const stepIdForMessage =
         nodeName === "cleaning_and_standardization" ? "cleaning" : nodeName
+
+      // Data collection: single chat line; drop placeholder headlines (superseded by merged step.complete).
+      if (nodeName === "data_collection") {
+        const isPlaceholder =
+          !headline.trim() ||
+          /^dataset ready\.?$/i.test(headline) ||
+          /^dataset collected\.?$/i.test(headline)
+        if (isPlaceholder) {
+          return
+        }
+        setMessages((prev) => {
+          const base = prev.filter(
+            (m) => !(m.role === "agent" && m.stepId === "data_collection"),
+          )
+          return [
+            ...base,
+            {
+              id: uid("msg"),
+              role: "agent",
+              content: headline,
+              timestamp: Date.now(),
+              stepId: "data_collection",
+              detailMarkdown: detailMarkdown || undefined,
+            },
+          ]
+        })
+        return
+      }
 
       addMessage("agent", headline, {
         stepId: stepIdForMessage,
@@ -771,6 +1005,7 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
         )
       }
     } else if (event.type === "completed" || (event.type === "stream.end" && event.pipeline_completed === true)) {
+      setProgressPhaseHint(null)
       setProgress(100)
       setIsRunning(false)
 
@@ -802,9 +1037,10 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
       addMessage(
         "agent",
         `**Pipeline finished.** ${recap}\n\nOpen the report for feature importance, comparisons, and next steps.`,
-        { showReportButton: true, stepId: "generate_report" },
+        { showReportButton: true },
       )
     } else if (event.type === "error") {
+      setProgressPhaseHint(null)
       setIsRunning(false)
       
       // Mark current running step as error
@@ -938,7 +1174,8 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
 
     switch (action) {
       case "accept":
-        addMessage("system", "✓ Step accepted")
+        toastStepAccepted()
+        addMessage("system", "Step accepted")
         setSteps((prev) =>
           prev.map((step) =>
             step.id === currentStep ? { ...step, status: "completed" } : step
@@ -950,6 +1187,7 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
         break
 
       case "accept_all":
+        toastAcceptAllMode()
         addMessage("system", "Auto-accepting remaining steps")
         setAcceptAllMode(true)
         acceptAllModeRef.current = true
@@ -985,9 +1223,22 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
   const sendMessage = useCallback(
     (
       content: string,
-      opts?: { user_model_preference?: string },
+      opts?: {
+        user_model_preference?: string
+        linked_datasets_override?: string[]
+        begin_background_intake?: boolean
+        force_orchestrator?: boolean
+        persist_linked_datasets?: string[]
+        displayTopic?: string
+      },
     ) => {
-      addMessage("user", content)
+      suppressPostPlanTokensRef.current = false
+      const topic = opts?.displayTopic?.trim()
+      if (topic) {
+        addMessage("user", topic, { apiPayload: content })
+      } else {
+        addMessage("user", content)
+      }
 
       if (isRunning) {
         addMessage("agent", "Please wait — a task is still running.")
@@ -996,16 +1247,39 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
 
       streamControllerRef.current?.abort()
 
-      const linkedForThisSend = [...linkedDatasetsRef.current]
+      if (opts?.begin_background_intake) {
+        setBackgroundIntake(true)
+      }
+
+      const forceOrch =
+        backgroundIntakeActiveRef.current || opts?.force_orchestrator === true
+
+      const linkedForApi: string[] | null = forceOrch
+        ? null
+        : (() => {
+            const raw =
+              opts?.linked_datasets_override != null
+                ? [...opts.linked_datasets_override]
+                : [...linkedDatasetsRef.current]
+            return raw.length > 0 ? raw : null
+          })()
 
       void (async () => {
-        const eid = await ensureExperimentId(suggestExperimentTitleFromUserMessage(content))
+        const eid = await ensureExperimentId(
+          suggestExperimentTitleFromUserMessage(topic || content),
+        )
         if (!eid) {
           addMessage("system", "Could not create an experiment. Check the backend connection.")
           return
         }
 
-        if (linkedForThisSend.length > 0) {
+        if (opts?.begin_background_intake && opts.persist_linked_datasets?.length) {
+          const ids = [...opts.persist_linked_datasets]
+          setLinkedDatasets(ids)
+          void updateExperiment(eid, { linked_datasets: ids })
+        }
+
+        if (!forceOrch && linkedForApi && linkedForApi.length > 0) {
           setLinkedDatasets([])
           void updateExperiment(eid, { linked_datasets: [] })
           setSteps(createInitialSteps())
@@ -1022,9 +1296,10 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
           {
             message: content,
             experiment_id: eid,
-            linked_datasets: linkedForThisSend.length > 0 ? linkedForThisSend : null,
+            linked_datasets: linkedForApi,
             model_preference: opts?.user_model_preference ?? null,
             conversation,
+            force_orchestrator: forceOrch,
           },
           applyAgentStreamEvent,
           (error: Error) => {
@@ -1034,12 +1309,7 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
         )
       })()
     },
-    [
-      addMessage,
-      isRunning,
-      applyAgentStreamEvent,
-      ensureExperimentId,
-    ],
+    [addMessage, isRunning, applyAgentStreamEvent, ensureExperimentId, setBackgroundIntake],
   )
 
   // Reset everything
@@ -1061,7 +1331,10 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
     pipelineCompletionEmittedRef.current = false
     lastTrainingSummaryRef.current = null
     setLinkedDatasets([])
-  }, [])
+    setBackgroundIntake(false)
+    suppressPostPlanTokensRef.current = false
+    setProgressPhaseHint(null)
+  }, [setBackgroundIntake])
 
   const leaveLabSession = useCallback(() => {
     reset()
@@ -1095,6 +1368,12 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
               ...(typeof m.detailMarkdown === "string" ? { detailMarkdown: m.detailMarkdown } : {}),
               ...(m.show_report_button === true ? { showReportButton: true } : {}),
               ...(m.showReportButton === true ? { showReportButton: true } : {}),
+              ...(m.task_plan && typeof m.task_plan === "object"
+                ? { taskPlan: m.task_plan as ChatTaskPlanPayload }
+                : {}),
+              ...(m.task_plan_resolved === true ? { taskPlanResolved: true } : {}),
+              ...(typeof m.api_payload === "string" ? { apiPayload: m.api_payload } : {}),
+              ...(typeof m.apiPayload === "string" ? { apiPayload: m.apiPayload } : {}),
             })),
         )
       } else {
@@ -1102,23 +1381,112 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
       }
 
       // Restore training state if available
-      if (exp.training_state) {
-        setAgentState((prev) => ({ ...prev, ...(exp.training_state as Partial<TrainingAgentState>) }))
+      const ts = exp.training_state && typeof exp.training_state === "object"
+        ? (exp.training_state as Record<string, unknown>)
+        : null
+      if (ts) {
+        setAgentState((prev) => ({ ...prev, ...(ts as Partial<TrainingAgentState>) }))
       } else {
         setAgentState(createInitialState())
       }
 
-      setSteps(createInitialSteps())
+      const initialSteps = createInitialSteps()
+      setSteps(ts ? mergeTaskProgressIntoSteps(initialSteps, ts) : initialSteps)
       setIsRunning(false)
       setConfirmationRequest(null)
       setAcceptAllMode(false)
       emittedStepsRef.current = new Set()
       const rawLd = exp.linked_datasets
       setLinkedDatasets(Array.isArray(rawLd) ? rawLd.map(String) : [])
+      backgroundIntakeActiveRef.current = false
+      setBackgroundIntakeActive(false)
+      suppressPostPlanTokensRef.current = false
     } catch (err) {
       console.error("Failed to load experiment:", err)
     }
   }, [])
+
+  const refreshExperimentTraining = useCallback(async () => {
+    const id = experimentIdRef.current
+    if (!id) return
+    try {
+      const exp = await getExperiment(id)
+      const ts = exp.training_state && typeof exp.training_state === "object"
+        ? (exp.training_state as Record<string, unknown>)
+        : null
+      if (ts) {
+        setAgentState((prev) => ({ ...prev, ...(ts as Partial<TrainingAgentState>) }))
+        setSteps((prev) => mergeTaskProgressIntoSteps(prev, ts))
+      }
+    } catch {
+      // ignore
+    }
+  }, [])
+
+  const markTaskPlanResolved = useCallback((messageId: string) => {
+    setMessages((prev) =>
+      prev.map((m) => (m.id === messageId ? { ...m, taskPlanResolved: true } : m)),
+    )
+  }, [])
+
+  const startGuidedTrainingFromPlan = useCallback(
+    (plan: TaskPlanSummary, refs: string[]) => {
+      setBackgroundIntake(false)
+      const content = plan.goal.trim() || "Run the agreed training plan."
+      sendMessage(content, {
+        user_model_preference: plan.preferences ?? undefined,
+        linked_datasets_override: refs,
+      })
+    },
+    [sendMessage, setBackgroundIntake],
+  )
+
+  const startHandsOffTrainingFromPlan = useCallback(
+    async (plan: TaskPlanSummary, refs: string[]) => {
+      setStartingHandsOffTask(true)
+      setBackgroundIntake(false)
+      try {
+        const connected = await checkConnection()
+        if (!connected) {
+          addMessage("system", "Backend not connected.")
+          return
+        }
+        let eid = experimentIdRef.current
+        if (!eid) {
+          const title = `Task: ${plan.goal.slice(0, 48)}${plan.goal.length > 48 ? "…" : ""}`
+          const exp = await createExperiment(title, refs)
+          eid = exp.id
+          setExperimentId(eid)
+          experimentIdRef.current = eid
+          onExperimentEnsuredRef.current?.(eid)
+        } else {
+          await updateExperiment(eid, { goal: plan.goal, linked_datasets: refs })
+        }
+        await updateExperiment(eid, {
+          training_state_merge: {
+            lab_mode: "task",
+            task_plan: { ...plan, datasetRefs: refs },
+            task_status: "pending",
+          },
+        })
+        const conv = buildPlanningConversation(messagesRef.current, plan.goal)
+        await startExperimentAsyncTrain(eid, {
+          user_model_preference: plan.preferences ?? null,
+          conversation: conv.map((c) => ({ role: c.role, content: c.content })),
+        })
+        await loadExperiment(eid)
+        toastBackgroundRunStarted()
+      } catch (e) {
+        addMessage(
+          "system",
+          `Could not start background task: ${e instanceof Error ? e.message : String(e)}`,
+        )
+      } finally {
+        setStartingHandsOffTask(false)
+      }
+    },
+    [addMessage, checkConnection, loadExperiment, setBackgroundIntake],
+  )
 
   // Cleanup on unmount
   useEffect(() => {
@@ -1139,6 +1507,8 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
     progress,
     confirmationRequest,
     experimentId,
+    backgroundIntakeActive,
+    startingHandsOffTask,
     linkedDatasets,
     updateLinkedDatasets,
     datasets,
@@ -1155,5 +1525,9 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
     saveCurrentMessages,
     leaveLabSession,
     runningStepHint,
+    refreshExperimentTraining,
+    markTaskPlanResolved,
+    startGuidedTrainingFromPlan,
+    startHandsOffTrainingFromPlan,
   }
 }

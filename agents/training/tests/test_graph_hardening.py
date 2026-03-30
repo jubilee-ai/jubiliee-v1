@@ -49,6 +49,19 @@ def test_run_with_hitl_summary_fn_exception_uses_fallback(mock_interrupt):
     assert call["node"] == "summary_node"
 
 
+@patch("agents.training.core.hitl.interrupt")
+def test_run_with_hitl_auto_approve_skips_interrupt(mock_interrupt):
+    state = {**create_initial_state("g"), "hitl_auto_approve": True}
+
+    def work_fn(s, feedback):
+        return {**s, "done": True}
+
+    out = run_with_hitl("auto_node", state, work_fn, lambda r: "ok")
+
+    assert out.get("done") is True
+    mock_interrupt.assert_not_called()
+
+
 @patch("agents.training.core.dispatcher.emit_graph_stream")
 def test_dispatcher_swaps_data_collection_before_cleaning(mock_emit):
     state = {

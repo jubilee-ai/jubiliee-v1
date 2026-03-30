@@ -1,12 +1,16 @@
-import type { TrainingAgentState } from "@/types/agent"
-import { formatNumber, formatPercent } from "@/lib/utils"
+import { useMemo } from "react"
+import type { TrainingAgentState, TaskPlanSummary } from "@/types/agent"
+import type { Dataset as ApiDataset } from "@/lib/api"
+import { resolveDatasetDisplayNames } from "@/lib/datasetDisplay"
+import { formatDisplayDateTime, formatNumber, formatPercent } from "@/lib/utils"
 import { Section, MetricBox, InfoRow } from "./shared"
 
 interface SummaryTabProps {
   agentState: TrainingAgentState
+  datasets?: ApiDataset[]
 }
 
-export function SummaryTab({ agentState }: SummaryTabProps) {
+export function SummaryTab({ agentState, datasets }: SummaryTabProps) {
   const metrics = agentState.training_metrics
   const dataStep = agentState.audit_trace?.find((t) => t.step === "data_collection") as
     | Record<string, unknown>
@@ -29,6 +33,13 @@ export function SummaryTab({ agentState }: SummaryTabProps) {
     (featureStep?.features_created as unknown[])?.length ||
     0
   const iterLabel = String(metrics?.num_iterations || 1)
+
+  const taskDatasetRecap = useMemo(() => {
+    const tp = agentState.task_plan as TaskPlanSummary | null | undefined
+    if (!tp?.datasetLabels?.length) return ""
+    const refs = tp.datasetRefs?.length ? tp.datasetRefs : (agentState.linked_datasets ?? [])
+    return resolveDatasetDisplayNames(tp.datasetLabels, refs, datasets ?? []).join(", ")
+  }, [agentState.task_plan, agentState.linked_datasets, datasets])
 
   return (
     <div className="space-y-8">
@@ -57,6 +68,45 @@ export function SummaryTab({ agentState }: SummaryTabProps) {
           <MetricBox label="Features" value={featureCount > 0 ? String(featureCount) : "—"} />
         )}
       </div>
+      {(hasClassificationMetrics || hasRegressionMetrics) && metrics?.model_name ? (
+        <p className="text-xs text-muted-foreground -mt-4">
+          Top row shows hold-out test metrics for the saved artifact{" "}
+          <span className="text-foreground font-medium">{metrics.model_name}</span>
+          {metrics.summary ? (
+            <>
+              . The training narrative below may include experiments that were not selected as that
+              artifact.
+            </>
+          ) : (
+            "."
+          )}
+        </p>
+      ) : null}
+
+      {/* Background task recap (assign-task flow) */}
+      {agentState.task_plan && typeof agentState.task_plan === "object" && (
+        <Section title="Assigned task recap">
+          <div className="space-y-3 text-sm">
+            <InfoRow label="Goal" value={agentState.task_plan.goal} />
+            {taskDatasetRecap ? (
+              <InfoRow label="Datasets" value={taskDatasetRecap} />
+            ) : null}
+            {agentState.task_completed_at ? (
+              <InfoRow label="Finished at" value={formatDisplayDateTime(agentState.task_completed_at)} />
+            ) : null}
+            {agentState.task_plan.steps?.length ? (
+              <div>
+                <p className="text-muted-foreground text-xs font-medium uppercase tracking-wide mb-2">Plan</p>
+                <ol className="list-decimal list-inside space-y-1 text-muted-foreground">
+                  {agentState.task_plan.steps.map((step) => (
+                    <li key={step}>{step}</li>
+                  ))}
+                </ol>
+              </div>
+            ) : null}
+          </div>
+        </Section>
+      )}
 
       {/* Overview */}
       <Section title="Overview">

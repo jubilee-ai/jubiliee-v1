@@ -141,6 +141,9 @@ def run_with_hitl(
         # This is critical for LangGraph's checkpointer (msgpack)
         result = {k: make_serializable(v) for k, v in result.items()}
 
+        if result.get("hitl_auto_approve") or state.get("hitl_auto_approve"):
+            return result
+
         if get_summary_fn:
             try:
                 summary = get_summary_fn(result)

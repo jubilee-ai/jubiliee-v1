@@ -134,17 +134,50 @@ def build_node_update(node_name: str, node_output: dict[str, Any]) -> dict[str, 
 
     elif node_name == "data_collection":
         audit = _get_audit_entry(node_output, "data_collection")
-        cols = audit.get("columns", [])
-        update["summary"] = {"dataset": node_output.get("collected_dataset_ref"), "rows": audit.get("rows"), "columns": cols, "source": audit.get("source", "collected")}
+        cols = audit.get("columns") or []
+        rows = audit.get("rows")
+        ref = node_output.get("collected_dataset_ref")
+        missing_shape = rows in (None, "", "N/A", "?") or not cols
+        if missing_shape and ref:
+            try:
+                from utils import get_registered_dataset
+
+                df = get_registered_dataset(ref)
+                if df is not None:
+                    rows = len(df)
+                    cols = list(df.columns)
+            except Exception:
+                pass
+        if not isinstance(cols, list):
+            cols = list(cols) if cols else []
+
+        update["summary"] = {
+            "dataset": ref,
+            "rows": rows,
+            "columns": cols,
+            "source": audit.get("source", "collected"),
+        }
+        ncols = len(cols) if cols else None
+        row_label = rows if rows not in (None, "", "N/A", "?") else None
         update["details"] = {
             "title": "Data Collection Complete",
-            "description": f"Loaded a dataset with **{audit.get('rows', 'unknown')}** rows and **{len(cols) if cols else 'unknown'}** columns.",
-            "stats": {"rows": audit.get("rows", "unknown"), "columns": len(cols) if cols else "unknown", "column_names": cols},
+            "description": (
+                f"Loaded a dataset with **{row_label or 'unknown'}** rows and **{ncols or 'unknown'}** columns."
+            ),
+            "stats": {
+                "rows": row_label if row_label is not None else "unknown",
+                "columns": ncols if ncols is not None else "unknown",
+                "column_names": cols,
+            },
         }
-        _rows = audit.get("rows") or "N/A"
-        _ncols = len(cols) if cols else "N/A"
-        _rows_fmt = f"{_rows:,}" if isinstance(_rows, int) else str(_rows)
-        update["headline"] = f"Loaded **{_rows_fmt} rows** across **{_ncols} columns**"
+        if row_label is not None and ncols is not None:
+            _rows_fmt = f"{row_label:,}" if isinstance(row_label, int) else str(row_label)
+            update["headline"] = f"Loaded **{_rows_fmt} rows** across **{ncols} columns**"
+        elif ref:
+            short = str(ref).rsplit("/", 1)[-1] or str(ref)
+            update["headline"] = f"Loaded dataset **{short}**"
+        else:
+            update["headline"] = "Dataset ready"
 
     elif node_name in ("cleaning", "cleaning_and_standardization"):
         transforms = node_output.get("cleaning_transformations", [])
@@ -368,12 +401,22 @@ def build_node_update(node_name: str, node_output: dict[str, Any]) -> dict[str, 
             "strategy_notes": tp.get("strategy_notes"), "expected_metrics": tp.get("expected_metrics"), "data_summary": ds,
         }
         _mtype = tp.get("model_type") or node_output.get("selected_model") or "model"
+        _n_hp = len(hp)
+        _hp_phrase = (
+            "default hyperparameters"
+            if _n_hp == 0
+            else f"{_n_hp} hyperparameter" + ("s" if _n_hp != 1 else "")
+        )
         update["details"] = {
             "title": "Training Configuration Approved",
-            "description": f"Training will use **{_mtype}** with approved hyperparameters.",
+            "description": (
+                f"Training will use **{_mtype}** with approved hyperparameters."
+                if _n_hp
+                else f"Training will use **{_mtype}** with default hyperparameters."
+            ),
             "training_plan": tp, "hyperparameters": hp, "data_summary": ds,
         }
-        update["headline"] = f"Ready to train **{_mtype}** with {len(hp)} hyperparameters"
+        update["headline"] = f"Ready to train **{_mtype}** with {_hp_phrase}"
 
     elif node_name == "training":
         m = _get_or_empty(node_output, "training_metrics")

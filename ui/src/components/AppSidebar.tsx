@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react"
-import { Plus, MessageSquare, Loader2, CheckCircle2, AlertCircle, Trash2, FlaskConical, Database, Box, Settings } from "lucide-react"
+import { Plus, MessageSquare, Loader2, CheckCircle2, AlertCircle, Trash2, FlaskConical, Database, Box, Settings, Moon } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { ScrollArea } from "@/components/ui/scroll-area"
@@ -48,6 +48,23 @@ function statusIcon(status: string) {
     default:
       return <MessageSquare className="h-3 w-3 text-muted-foreground/40" />
   }
+}
+
+function experimentRowIcon(exp: ExperimentSummary) {
+  const isBackgroundTask = exp.lab_mode === "task" || exp.task_status != null
+  if (isBackgroundTask) {
+    if (exp.task_status === "running") {
+      return <Loader2 className="h-3 w-3 animate-spin text-primary" />
+    }
+    if (exp.task_status === "completed") {
+      return <CheckCircle2 className="h-3 w-3 text-[hsl(var(--step-complete))]" />
+    }
+    if (exp.task_status === "failed") {
+      return <AlertCircle className="h-3 w-3 text-destructive" />
+    }
+    return <Moon className="h-3 w-3 text-primary/70" aria-hidden />
+  }
+  return statusIcon(exp.status)
 }
 
 function stripMarkdown(text: string): string {
@@ -291,7 +308,7 @@ export function AppSidebar({
                     {isSwitching ? (
                       <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
                     ) : (
-                      statusIcon(exp.status)
+                      experimentRowIcon(exp)
                     )}
                   </div>
                   <div

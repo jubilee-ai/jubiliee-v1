@@ -37,7 +37,8 @@ _MODEL_TOOLS_DIR = Path(__file__).parent.parent.parent.parent / "tools" / "model
 if str(_MODEL_TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(_MODEL_TOOLS_DIR))
 
-from model_storage import (delete_model, evaluate_model_tool, get_model_info,
+from model_storage import (classification_roc_auc, delete_model,
+                           evaluate_model_tool, get_model_info,
                            get_model_info_tool, list_models, load_model,
                            list_trained_models_tool)
 from utils import get_registered_dataset
@@ -611,8 +612,10 @@ def _build_continuation_message(
         "Consult the **Hyperparameter Strategy Matrix** and **Architecture Decision Guide** "
         "in the SKILL.md to choose your next experiment based on the diagnosis above. "
         "Change exactly ONE thing. Run the experiment, evaluate, and report results.\n"
-        "Only include NEW iterations from this round in your output — "
-        "prior iterations are already recorded."
+        "In the structured `iterations` array, append only **new** attempts from this round "
+        "(prior attempts are already stored). Your **`summary`** and **`recommendations`** "
+        "must still cover the **entire run** and the model you set as **`best_model_name`** "
+        "(the artifact headline metrics will follow), not only the iterations added here."
     )
 
     return "\n".join(lines)
@@ -686,6 +689,31 @@ def _training_result_updates_from_best_iteration(
     return updates
 
 
+def _maybe_clarify_summary_vs_saved_model(training_result: TrainingResult) -> TrainingResult:
+    """If the LLM's prose focused on a later experiment that is not the saved best model, prepend context.
+
+    Metrics and ``model_name`` are reconciled to the best validation iteration after the agent
+    returns; ``summary`` text often still describes only the last continuation round.
+    """
+    saved = (training_result.best_model_name or "").strip()
+    if not saved:
+        return training_result
+    succ_named = [it for it in training_result.iterations if it.success and (it.model_name or "").strip()]
+    if not succ_named:
+        return training_result
+    last_name = succ_named[-1].model_name
+    if last_name == saved:
+        return training_result
+    body = (training_result.summary or "").strip()
+    if not body:
+        return training_result
+    prefix = (
+        f"The headline test metrics and saved artifact refer to **{saved}**, chosen by validation scores. "
+        f"The text below discusses a later experiment (**{last_name}**) that was not selected as the best model.\n\n"
+    )
+    return training_result.model_copy(update={"summary": prefix + body})
+
+
 def _iteration_to_dict(it: TrainingIteration) -> dict:
     d = it.model_dump()
     d["tool"] = d.pop("tool_used")
@@ -708,7 +736,7 @@ def _evaluate_model_on_test(
     task_type: str,
 ) -> dict[str, float | None]:
     import numpy as np
-    from sklearn.metrics import accuracy_score, roc_auc_score
+    from sklearn.metrics import accuracy_score
 
     result: dict[str, float | None] = {}
     if task_type == "unsupervised":
@@ -735,14 +763,9 @@ def _evaluate_model_on_test(
             if y_true_arr.dtype != y_pred_arr.dtype:
                 y_pred_arr = y_pred_arr.astype(y_true_arr.dtype)
             result["test_accuracy"] = float(accuracy_score(y_true_arr, y_pred_arr))
-            if hasattr(model, "predict_proba"):
-                y_proba = model.predict_proba(X)
-                if y_proba.shape[1] == 2:
-                    result["test_roc_auc"] = float(roc_auc_score(y_true_arr, y_proba[:, 1]))
-                else:
-                    result["test_roc_auc"] = float(
-                        roc_auc_score(y_true_arr, y_proba, multi_class="ovr", average="weighted")
-                    )
+            roc = classification_roc_auc(model, X, y_true_arr)
+            if roc is not None:
+                result["test_roc_auc"] = float(roc)
         print(f"[training_agent] Programmatic test evaluation: {result}")
     except Exception as exc:
         print(f"[training_agent] Programmatic test evaluation failed: {exc}")
@@ -1172,6 +1195,7 @@ Follow the skill documentation below — it covers model selection and training.
                 best_iteration, training_result.best_model_name
             )
         )
+        training_result = _maybe_clarify_summary_vs_saved_model(training_result)
         _log_training_results(training_result, task_type)
 
         # Extract feature importances BEFORE cleanup so we can try all models

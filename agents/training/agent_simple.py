@@ -130,6 +130,8 @@ When you are satisfied (or after 3 feature iterations):
 
 
 def _infer_task_type(goal: str, selected_model: str) -> str:
+    goal = goal or ""
+    selected_model = selected_model or ""
     if selected_model == "unsupervised":
         return "unsupervised"
     goal_lower = goal.lower()

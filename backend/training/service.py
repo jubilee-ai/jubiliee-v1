@@ -2,7 +2,7 @@ import json
 import threading
 import traceback
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -380,6 +380,12 @@ def _iter_graph_sse_lines(agent, config: dict, thread_id: str, stream_input: obj
             raw: dict[str, object] = node_output if isinstance(node_output, dict) else {}
 
             if node_name in GRAPH_PIPELINE_STEP_NAMES:
+                # Node updates can be partial; merge with checkpoint so audit_trace / refs exist for headlines.
+                full_vals = _graph_state_snapshot_values(agent, config)
+                if full_vals:
+                    merged: dict[str, object] = dict(full_vals)
+                    merged.update(raw)
+                    raw = merged
                 step_key = _pipeline_emit_key(node_name, raw)
                 if step_key in emitted_steps:
                     continue
@@ -681,7 +687,7 @@ def generate_graph_sse_events(
     )
 
     config = {"configurable": {"thread_id": thread_id}}
-    yield format_sse(stream_start(experiment_id), experiment_id)
+    yield format_sse(stream_start(experiment_id, training_graph=True), experiment_id)
 
     try:
         for line in _iter_graph_sse_lines(agent, config, thread_id, initial_state, experiment_id):
@@ -888,3 +894,195 @@ def cancel_training(job_id: str) -> dict[str, str]:
     if not deleted:
         raise HTTPException(status_code=404, detail="Job not found")
     return {"status": "deleted", "job_id": job_id}
+
+
+def _parse_sse_data_line(line: str) -> Optional[dict[str, object]]:
+    raw = line.strip()
+    if not raw.startswith("data: "):
+        return None
+    payload = raw[6:].strip()
+    if payload in ("", "[DONE]"):
+        return None
+    try:
+        return json.loads(payload)
+    except json.JSONDecodeError:
+        return None
+
+
+def _run_experiment_graph_task_worker(
+    experiment_id: str,
+    goal: str,
+    linked_datasets: Optional[list[str]],
+    model_pref: Optional[str],
+    conversation: Optional[list[dict]],
+) -> None:
+    """Run the planner graph with HITL auto-approved; persist progress on the experiment row."""
+    from agents.training.core.conversation_context import normalize_conversation_turns
+    from agents.training.core.graph import create_training_agent
+    from agents.training.core.state import create_initial_state
+    from langgraph.checkpoint.memory import MemorySaver
+
+    thread_id = f"graph-{uuid.uuid4().hex[:8]}"
+    repository.merge_experiment_training_state(
+        experiment_id,
+        {
+            "graph_thread_id": thread_id,
+            "task_status": "running",
+            "task_step_events": [],
+            "task_error": None,
+            "lab_mode": "task",
+            "task_started_at": datetime.now(timezone.utc).isoformat(),
+        },
+    )
+    repository.update_experiment(experiment_id, {"status": "running"})
+
+    try:
+        registered_refs: list[str] = []
+        failed_datasets: list[str] = []
+        if linked_datasets:
+            for entry in linked_datasets:
+                ref = resolve_linked_dataset(str(entry))
+                if ref:
+                    registered_refs.append(ref)
+                else:
+                    failed_datasets.append(str(entry))
+
+        if failed_datasets and not registered_refs:
+            raise RuntimeError(
+                "Cannot start training: none of the selected datasets could be loaded ("
+                + ", ".join(failed_datasets)
+                + ")"
+            )
+
+        final_linked = registered_refs or None
+        resolved_ds = registered_refs[0] if len(registered_refs) == 1 else None
+        checkpointer = MemorySaver()
+        agent = create_training_agent(checkpointer=checkpointer)
+        g = (goal or "").strip() or "Training run"
+        conversation_turns = normalize_conversation_turns(
+            conversation,
+            triggering_message=g,
+        )
+        initial_state = create_initial_state(
+            goal=g,
+            linked_datasets=final_linked,
+            user_model_preference=model_pref,
+            resolved_dataset_ref=resolved_ds,
+            resolved_model_type=model_pref,
+            conversation_history=conversation_turns,
+            hitl_auto_approve=True,
+        )
+
+        emitted_steps: set[str] = set()
+        emitted_skipped_steps: set[str] = set()
+        repository.put_simple_agent_store(
+            thread_id,
+            {
+                "agent": agent,
+                "checkpointer": checkpointer,
+                "mode": "graph",
+                "emitted_steps": emitted_steps,
+                "emitted_skipped_steps": emitted_skipped_steps,
+                "experiment_id": experiment_id,
+            },
+        )
+        config = {"configurable": {"thread_id": thread_id}}
+
+        step_events: list[dict[str, object]] = []
+        for line in _iter_graph_sse_lines(
+            agent, config, thread_id, initial_state, experiment_id
+        ):
+            evt = _parse_sse_data_line(line)
+            if not evt:
+                continue
+            et = evt.get("type")
+            if et == "step.complete":
+                node = evt.get("node")
+                if node:
+                    step_events.append(
+                        {
+                            "node": node,
+                            "type": "complete",
+                            "at": datetime.now(timezone.utc).isoformat(),
+                        }
+                    )
+                    repository.merge_experiment_training_state(
+                        experiment_id,
+                        {
+                            "task_step_events": list(step_events),
+                            "task_current_node": node,
+                        },
+                    )
+            elif et == "error":
+                raise RuntimeError(str(evt.get("error", "Unknown error")))
+
+        st = repository.get_simple_agent_store(thread_id)
+        if st and st.get("_graph_sse_interrupted"):
+            raise RuntimeError(
+                "Pipeline paused for review; async mode requires uninterrupted completion"
+            )
+
+        final_values = _graph_state_snapshot_values(agent, config)
+        if final_values:
+            try:
+                repository.save_training_context(final_values, experiment_id=experiment_id)
+                repository.save_run_dataset_links(thread_id, final_values)
+            except Exception:
+                traceback.print_exc()
+
+        serialized = serialize_state(final_values) if final_values else {}
+        pipeline_error = final_values.get("error") if final_values else None
+        ts_complete = {
+            **serialized,
+            "task_status": "failed" if pipeline_error else "completed",
+            "graph_thread_id": thread_id,
+            "lab_mode": "task",
+            "hitl_auto_approve": False,
+            "task_step_events": step_events,
+        }
+        if pipeline_error:
+            ts_complete["task_error"] = str(pipeline_error)
+        else:
+            ts_complete["task_completed_at"] = datetime.now(timezone.utc).isoformat()
+
+        repository.merge_experiment_training_state(experiment_id, ts_complete)
+        repository.update_experiment(
+            experiment_id,
+            {"status": "failed" if pipeline_error else "completed"},
+        )
+    except Exception as e:
+        traceback.print_exc()
+        repository.merge_experiment_training_state(
+            experiment_id,
+            {
+                "task_status": "failed",
+                "task_error": str(e),
+            },
+        )
+        repository.update_experiment(experiment_id, {"status": "failed"})
+
+
+def start_experiment_async_training(
+    experiment_id: str,
+    model_pref: Optional[str] = None,
+    conversation: Optional[list[dict]] = None,
+) -> None:
+    exp = repository.get_experiment(experiment_id)
+    if exp is None:
+        raise ValueError("Experiment not found")
+    ts = exp.get("training_state") or {}
+    if ts.get("task_status") == "running":
+        raise RuntimeError("A training task is already running for this experiment")
+
+    goal = (exp.get("goal") or "").strip() or "Training run"
+    raw_ld = exp.get("linked_datasets")
+    linked: list[str] = []
+    if isinstance(raw_ld, list):
+        linked = [str(x) for x in raw_ld]
+
+    thread = threading.Thread(
+        target=_run_experiment_graph_task_worker,
+        args=(experiment_id, goal, linked, model_pref, conversation),
+        daemon=True,
+    )
+    thread.start()

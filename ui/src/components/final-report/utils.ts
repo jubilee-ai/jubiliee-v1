@@ -92,6 +92,7 @@ Report Path: ${state.report_path}
 
 METRICS
 -------
+(Headline scores below are hold-out / validation metrics for the saved model "${metrics?.model_name || "N/A"}". The training summary may mention experiments that were not selected.)
 Test Accuracy: ${formatPercent(metrics?.test_accuracy)}
 Test ROC-AUC: ${formatNumber(metrics?.test_roc_auc, 3)}
 Validation Accuracy: ${formatPercent(metrics?.val_accuracy)}

@@ -52,7 +52,6 @@ from sklearn.metrics import (
     mean_absolute_error,
     mean_squared_error,
     r2_score,
-    roc_auc_score,
 )
 from sklearn.model_selection import KFold, RandomizedSearchCV
 from sklearn.pipeline import Pipeline
@@ -69,7 +68,7 @@ for _p in [
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-from model_storage import generate_model_path, register_model
+from model_storage import classification_roc_auc, generate_model_path, register_model
 from utils import get_registered_dataset
 
 
@@ -519,19 +518,12 @@ def run(params: dict) -> str:
         metrics["train_accuracy"] = train_acc
         lines.append(f"Train Accuracy: {train_acc:.4f}")
 
-        if hasattr(pipeline, "predict_proba"):
-            try:
-                y_proba = pipeline.predict_proba(X)
-                classes = pipeline.classes_
-                roc = float(
-                    roc_auc_score(y, y_proba[:, 1])
-                    if len(classes) == 2
-                    else roc_auc_score(y, y_proba, multi_class="ovr", average="weighted")
-                )
-                metrics["train_roc_auc"] = roc
-                lines.append(f"Train ROC-AUC: {roc:.4f}")
-            except (ValueError, AttributeError):
-                lines.append("Train ROC-AUC: N/A")
+        roc = classification_roc_auc(pipeline, X, y)
+        if roc is not None:
+            metrics["train_roc_auc"] = roc
+            lines.append(f"Train ROC-AUC: {roc:.4f}")
+        else:
+            lines.append("Train ROC-AUC: N/A")
 
         classes_list = [str(c) for c in (pipeline.classes_ if hasattr(pipeline, "classes_") else sorted(y.unique()))]
         lines.extend(["", "CLASSIFICATION REPORT", classification_report(y, y_pred)])

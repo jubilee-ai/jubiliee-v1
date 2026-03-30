@@ -1,6 +1,6 @@
 from typing import Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class CreateExperimentRequest(BaseModel):
@@ -13,6 +13,15 @@ class UpdateExperimentRequest(BaseModel):
     goal: Optional[str] = None
     status: Optional[str] = None
     linked_datasets: Optional[list[str]] = None
+    training_state_merge: Optional[dict] = Field(
+        default=None,
+        description="Merged into experiments.training_state (top-level keys).",
+    )
+
+
+class AsyncTrainRequest(BaseModel):
+    user_model_preference: Optional[str] = None
+    conversation: Optional[list[dict]] = None
 
 
 class ExperimentSummary(BaseModel):
@@ -25,6 +34,8 @@ class ExperimentSummary(BaseModel):
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
     last_message: Optional[str] = None
+    lab_mode: Optional[str] = None
+    task_status: Optional[str] = None
 
 
 class ExperimentDetail(ExperimentSummary):

@@ -21,6 +21,8 @@ class ChatRequest(BaseModel):
     model_preference: Optional[str] = None
     resume: Optional[ResumePayload] = None
     conversation: Optional[list[dict[str, Any]]] = None
+    #: When True, stream orchestrator chat only (tools / propose_training_plan), never the training graph.
+    force_orchestrator: bool = False
 
     @model_validator(mode="after")
     def require_message_unless_resume(self) -> "ChatRequest":

@@ -25,8 +25,15 @@ def _sse(payload: dict[str, Any], experiment_id: str | None = None) -> str:
 # Typed event builders
 # ---------------------------------------------------------------------------
 
-def stream_start(experiment_id: str | None = None) -> dict[str, Any]:
-    return {"type": "stream.start", "experiment_id": experiment_id}
+def stream_start(
+    experiment_id: str | None = None,
+    *,
+    training_graph: bool = False,
+) -> dict[str, Any]:
+    out: dict[str, Any] = {"type": "stream.start", "experiment_id": experiment_id}
+    if training_graph:
+        out["training_graph"] = True
+    return out
 
 
 def stream_end(

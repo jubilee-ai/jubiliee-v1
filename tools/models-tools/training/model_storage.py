@@ -634,6 +634,40 @@ def delete_trained_model_tool(
         return f"❌ Failed to delete model '{model_name}'."
 
 
+def classification_roc_auc(model: Any, X: Any, y_true: Any) -> Optional[float]:
+    """ROC-AUC for sklearn-style classifiers.
+
+    Uses ``predict_proba`` when available; otherwise ``decision_function`` scores
+    (e.g. :class:`sklearn.linear_model.RidgeClassifier` without probabilities).
+    """
+    import numpy as np
+    from sklearn.metrics import roc_auc_score
+
+    y_true = np.asarray(y_true)
+    if np.unique(y_true).size < 2:
+        return None
+
+    if hasattr(model, "predict_proba"):
+        try:
+            y_proba = model.predict_proba(X)
+            if y_proba.shape[1] == 2:
+                return float(roc_auc_score(y_true, y_proba[:, 1]))
+            return float(roc_auc_score(y_true, y_proba, multi_class="ovr", average="weighted"))
+        except Exception:
+            pass
+
+    if hasattr(model, "decision_function"):
+        try:
+            scores = np.asarray(model.decision_function(X))
+            if scores.ndim == 1:
+                return float(roc_auc_score(y_true, scores))
+            return float(roc_auc_score(y_true, scores, multi_class="ovr", average="weighted"))
+        except Exception:
+            pass
+
+    return None
+
+
 # =============================================================================
 # EVALUATE MODEL TOOL
 # =============================================================================
@@ -770,23 +804,19 @@ def evaluate_model_tool(
         if is_classification:
             # Classification metrics
             from sklearn.metrics import (
-                accuracy_score, roc_auc_score, precision_score, recall_score,
+                accuracy_score, precision_score, recall_score,
                 f1_score, confusion_matrix, classification_report, balanced_accuracy_score
             )
             import numpy as np
             
-            # Get probabilities if available
+            # Get probabilities if available (fallback: decision_function for Ridge, LinearSVC, etc.)
             y_proba = None
-            roc_auc = None
-            if hasattr(model, 'predict_proba'):
+            roc_auc = classification_roc_auc(model, X, y_true)
+            if hasattr(model, "predict_proba"):
                 try:
                     y_proba = model.predict_proba(X)
-                    if y_proba.shape[1] == 2:
-                        roc_auc = roc_auc_score(y_true, y_proba[:, 1])
-                    else:
-                        roc_auc = roc_auc_score(y_true, y_proba, multi_class='ovr', average='weighted')
                 except Exception:
-                    pass
+                    y_proba = None
             
             # Threshold optimization for binary classification
             optimal_threshold = 0.5
@@ -885,7 +915,7 @@ def evaluate_model_tool(
             lines.extend([
                 "📈 CLASSIFICATION METRICS",
                 f"  Accuracy: {accuracy:.4f}",
-                f"  ROC-AUC: {roc_auc:.4f}" if roc_auc else "  ROC-AUC: N/A",
+                f"  ROC-AUC: {roc_auc:.4f}" if roc_auc is not None else "  ROC-AUC: N/A",
                 f"  Precision (weighted): {precision:.4f}" if precision else "  Precision: N/A",
                 f"  Recall (weighted): {recall:.4f}" if recall else "  Recall: N/A",
                 f"  F1 Score (weighted): {f1:.4f}" if f1 else "  F1: N/A",

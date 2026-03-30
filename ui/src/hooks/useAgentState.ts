@@ -175,7 +175,7 @@ export function useAgentState(): UseAgentStateReturn {
     
     switch (action) {
       case "accept":
-        addMessage("system", "✓ Step accepted")
+        addMessage("system", "Step accepted")
         updateStep(currentStep, { status: "completed" })
         setConfirmationRequest(null)
         const nextStep = getNextStep(currentStep)

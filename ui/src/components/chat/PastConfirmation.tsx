@@ -58,8 +58,8 @@ export function PastConfirmation({
             <ConfirmationDetails details={confirmation.details} />
           )}
           
-          {/* View details link */}
-          {agentState && steps && (
+          {/* View details link — planner HITL has no checklist row / step modal */}
+          {agentState && steps && confirmation.step !== "planner" && (
             <button
               onClick={() => onViewDetails(confirmation.step)}
               className="mt-2 flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"

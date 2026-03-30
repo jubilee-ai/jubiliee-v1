@@ -14,6 +14,7 @@ Training is handled by the intent router + training graph (not the orchestrator)
 """
 
 import asyncio
+import json
 import sys
 from typing import Optional
 
@@ -461,6 +462,76 @@ def curate_dataset(goal: str, source: str, identifier: str) -> str:
 
 
 # ============================================================================
+# Tool — Training plan proposal (conversational intake → structured plan for UI)
+# ============================================================================
+
+_DEFAULT_TRAINING_RECAP = [
+    "Load and validate the dataset",
+    "Choose model family, clean and standardize columns",
+    "Define target, splits, and features",
+    "Train, evaluate, and generate the audit report",
+]
+
+
+class ProposeTrainingPlanInput(BaseModel):
+    goal: str = Field(description="Clear, specific training objective (one or two sentences).")
+    dataset_refs: list[str] = Field(
+        description=(
+             "Exact local dataset ref strings from search_datasets or the user's selection. "
+            "Must match workspace refs — never invent names."
+        ),
+    )
+    dataset_labels: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Human-readable dataset names in the same order as dataset_refs "
+            "(for display). If empty, refs are shown as labels."
+        ),
+    )
+    preferences: str = Field(
+        default="",
+        description="Optional: model family, metric to optimize, class imbalance, etc.",
+    )
+    recap_steps: list[str] = Field(
+        default_factory=list,
+        description="Short bullets describing what the pipeline will do; omit to use defaults.",
+    )
+
+
+@tool(args_schema=ProposeTrainingPlanInput)
+def propose_training_plan(
+    goal: str,
+    dataset_refs: list[str],
+    dataset_labels: Optional[list[str]] = None,
+    preferences: str = "",
+    recap_steps: Optional[list[str]] = None,
+) -> str:
+    """Finalize a training plan after you have a clear goal and concrete dataset ref(s).
+
+    Call ONLY when:
+    - The user wants to train / build a predictive model, and
+    - You have at least one real local dataset ref (use search_datasets if needed).
+
+    After calling, reply in normal Markdown: confirm the plan briefly. Do NOT paste this JSON.
+    The app shows **Run step-by-step** and **Run in background** buttons from the tool result.
+    """
+    refs = [str(r).strip() for r in (dataset_refs or []) if str(r).strip()]
+    raw_labels = [str(x).strip() for x in (dataset_labels or []) if str(x).strip()]
+    labels = [raw_labels[i] if i < len(raw_labels) else refs[i] for i in range(len(refs))]
+    steps = [str(s).strip() for s in (recap_steps or []) if str(s).strip()]
+    if not steps:
+        steps = list(_DEFAULT_TRAINING_RECAP)
+    payload = {
+        "goal": goal.strip(),
+        "dataset_refs": refs,
+        "dataset_labels": labels,
+        "preferences": (preferences or "").strip() or None,
+        "recap_steps": steps,
+    }
+    return json.dumps(payload, ensure_ascii=False)
+
+
+# ============================================================================
 # System Prompt
 # ============================================================================
 
@@ -477,6 +548,7 @@ You are **Jubilee**, an AI assistant for data analysis and machine learning.
 | `evaluate_model` | Evaluate a trained model's performance on a labeled dataset |
 | `list_trained_models` | List all trained models with their metrics |
 | `get_model_info` | Get detailed info about a specific trained model |
+| `propose_training_plan` | After a short dialogue (or a `[Background task` message): user wants to **train** and dataset refs are decided |
 
 ## Prediction & Model Tools
 - **predict_with_model**: Run predictions on a dataset using a trained model. Use when the user wants to make predictions, score new data, or test a model on a dataset. Requires a model name and a registered dataset ref.
@@ -497,9 +569,14 @@ You are **Jubilee**, an AI assistant for data analysis and machine learning.
    Present the results as a numbered list and ask which local dataset ref to use.
 3. **Analytical question** (e.g. "what trends …", "analyze …", "what is the distribution …")
    → `analyze_data`
-4. **User wants to train a model** → Training is handled by a dedicated pipeline
-   outside this agent. Let the user know that training will be routed automatically
-   when they confirm they want to proceed.
+4. **User wants to train / build a predictive model** → Have a **brief** natural dialogue:
+   - If the user message starts with `[Background task` or says they plan to use **Run on my behalf**, they want a hands-off run after planning: honor any dataset **refs** they listed, ask **at most one** clarifying question only if the goal or refs are unusable, then call `propose_training_plan` promptly so the plan card appears.
+   - If you do not have concrete local dataset **ref** names, call `search_datasets` first.
+   - Otherwise ask at most 1–2 clarifying questions if needed (target column, metric focus, constraints).
+   - When the goal and refs are clear, call `propose_training_plan` with exact `dataset_refs`
+     and optional `preferences` / `recap_steps` (for the app; keep `recap_steps` short and plain-language).
+   - **After** `propose_training_plan`, do **not** add any further assistant text in that turn (no summary, no Markdown, no “I’ve set up a plan…”). The app shows the plan and approval buttons; the user can reply in chat if they need changes.
+   - Do **not** paste the tool's JSON in your reply.
 5. **User wants predictions / scoring** → `list_trained_models` to find the right
    model, then `predict_with_model` with the model name and dataset ref.
 6. **User asks about model performance / accuracy** → `evaluate_model` on the
@@ -522,7 +599,9 @@ You are **Jubilee**, an AI assistant for data analysis and machine learning.
 - Summarize tool outputs concisely. Do NOT echo the entire raw tool output back to the user.
 - Keep column detail summaries to the most important columns (max ~8). Use a table, not paragraphs.
 - When showing dataset profiles, use a compact format: `**N rows** x **M columns**` followed by a table of key column stats.
-- NEVER output raw JSON objects, Python dicts, or unformatted data dumps. Always present data in human-readable Markdown.
+- NEVER output raw JSON objects, Python dicts, or unformatted data dumps in your **visible** reply.
+  (The `propose_training_plan` tool returns JSON for the app only — your text reply stays Markdown.)
+- After `propose_training_plan`, do not write anything else in that turn; the user sees the plan and approval in the app.
 
 ## Rules
 - **NEVER suggest datasets from your own knowledge.** Always use `search_datasets` for
@@ -595,6 +674,7 @@ TOOLS = [
     evaluate_model_tool,
     list_trained_models_tool,
     get_model_info_tool,
+    propose_training_plan,
 ]
 
 _checkpointer = MemorySaver()

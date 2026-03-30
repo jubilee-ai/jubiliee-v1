@@ -301,6 +301,34 @@ export interface TrainingAgentState {
   // Control flow
   current_step: string
   error: string | null
+  hitl_auto_approve?: boolean
+
+  /** UI / async task metadata (stored in experiment.training_state) */
+  lab_mode?: string
+  task_status?: "pending" | "running" | "completed" | "failed" | string
+  task_plan?: TaskPlanSummary | null
+  task_step_events?: Array<{ node: string; type?: string; at?: string }>
+  task_current_node?: string | null
+  task_error?: string | null
+  task_started_at?: string | null
+  task_completed_at?: string | null
+  graph_thread_id?: string | null
+}
+
+export interface TaskPlanSummary {
+  goal: string
+  datasetLabels: string[]
+  /** Same order as datasetLabels; used with the catalog to show names instead of raw refs */
+  datasetRefs?: string[]
+  preferences?: string | null
+  /** Human-readable recap of what the agent will do */
+  steps: string[]
+}
+
+/** Structured plan attached to a chat message (from orchestrator `propose_training_plan`). */
+export interface ChatTaskPlanPayload {
+  plan: TaskPlanSummary
+  datasetRefs: string[]
 }
 
 // UI-specific types
@@ -342,6 +370,12 @@ export interface ChatMessage {
   detailMarkdown?: string
   /** Show “View Report” CTA at the bottom of the bubble (run finished) */
   showReportButton?: boolean
+  /** Training plan card (Run guided / Run in background) */
+  taskPlan?: ChatTaskPlanPayload
+  /** User already started a run from this card */
+  taskPlanResolved?: boolean
+  /** Full prompt sent to the API when `content` is a short topic label (e.g. background task) */
+  apiPayload?: string
   links?: Array<{
     type: "dataset" | "model" | "step"
     id: string
