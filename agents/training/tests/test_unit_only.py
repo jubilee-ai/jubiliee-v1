@@ -184,8 +184,8 @@ check("data_collection redo option present",
       "Unsuitable dataset" in SYSTEM_PROMPT)
 check("no curator leakage",
       "curator" not in SYSTEM_PROMPT.lower())
-check("4-iteration limit",
-      "4 total training iterations" in SYSTEM_PROMPT)
+check("training prompt mentions iterative refinement",
+      "per iteration" in SYSTEM_PROMPT and "refine" in SYSTEM_PROMPT.lower())
 check("all 9 steps present",
       all(s in SYSTEM_PROMPT for s in [
           "data_collection", "select_model", "cleaning",

@@ -1157,7 +1157,10 @@ function TrainingDetail({ agentState }: { agentState: TrainingAgentState }) {
       {/* Training Iterations */}
       {iterations.length > 0 && (
         <div>
-          <div className="text-sm font-medium mb-2">Training Iterations ({iterations.length})</div>
+          <div className="text-sm font-medium mb-1">Training Iterations ({iterations.length})</div>
+          <p className="text-xs text-muted-foreground mb-2">
+            Best (val) ranks by validation metric (ROC-AUC first, then accuracy for classification).
+          </p>
           <div className="space-y-3">
             {displayedIterations.map((iter, i) => {
               const iterNum = iter.iteration ?? i + 1
@@ -1174,7 +1177,15 @@ function TrainingDetail({ agentState }: { agentState: TrainingAgentState }) {
                   <div className="flex items-center justify-between mb-3">
                     <div className="flex items-center gap-2">
                       <span className="font-medium">Iteration {iterNum}</span>
-                      {isBest && <Badge variant="secondary" className="text-xs">Best</Badge>}
+                      {isBest && (
+                        <Badge
+                          variant="secondary"
+                          className="text-xs"
+                          title="Highest validation ROC-AUC then accuracy (classification), or val R² (regression)"
+                        >
+                          Best (val)
+                        </Badge>
+                      )}
                       {iter.success === false && <Badge variant="destructive" className="text-xs">Failed</Badge>}
                     </div>
                     {iter.tool && (

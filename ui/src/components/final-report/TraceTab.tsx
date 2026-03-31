@@ -559,9 +559,12 @@ function TrainingStepContent({ agentState }: { agentState: TrainingAgentState })
       {/* All Iterations Log */}
       {iterations.length > 0 && (
         <div>
-          <div className="text-sm font-medium mb-2">
+          <div className="text-sm font-medium mb-1">
             All Training Iterations ({iterations.length})
           </div>
+          <p className="text-xs text-muted-foreground mb-2">
+            Best (val) = validation ranking (ROC-AUC then accuracy for classification; R² for regression).
+          </p>
           <div className="space-y-2 max-h-[400px] overflow-y-auto">
             {iterations.map((iter, i) => (
               <TrainingIterationRow
@@ -630,8 +633,9 @@ function TrainingIterationRow({
             <Badge
               variant="secondary"
               className="text-xs bg-success/15 text-success dark:bg-success/20"
+              title="Highest validation ROC-AUC then accuracy (classification), or val R² (regression)"
             >
-              Best
+              Best (val)
             </Badge>
           )}
           {iterMetrics.success === false && (

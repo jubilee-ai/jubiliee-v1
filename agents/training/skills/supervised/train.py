@@ -82,7 +82,11 @@ def _discover_estimators() -> dict[str, tuple[str, str]]:
     catalog = {}
     try:
         estimator_list = all_estimators(type_filter=["classifier", "regressor"])
-    except Exception:
+    except Exception as exc:
+        print(
+            f"[supervised/train] sklearn.utils.all_estimators() failed "
+            f"({type(exc).__name__}: {exc!r}) — will fall back to SEARCH_SPACES probe if needed."
+        )
         estimator_list = []
     for name, cls in estimator_list:
         try:
@@ -99,25 +103,7 @@ def _discover_estimators() -> dict[str, tuple[str, str]]:
     return catalog
 
 
-ESTIMATORS: dict[str, tuple[str, str]] = _discover_estimators()
-
-# Defaults applied at construction time.
-_INIT_DEFAULTS: dict[str, dict] = {
-    "SVC": {"probability": True},
-    "SGDClassifier": {"loss": "modified_huber"},
-    "LogisticRegression": {"max_iter": 1000},
-    "MLPClassifier": {"max_iter": 500},
-    "MLPRegressor": {"max_iter": 500},
-}
-
-_PARALLELIZABLE = {
-    "RandomForestClassifier", "RandomForestRegressor",
-    "ExtraTreesClassifier", "ExtraTreesRegressor",
-    "BaggingClassifier", "BaggingRegressor",
-}
-
-
-# ── Hyperparameter search spaces ─────────────────────────────────────────
+# ── Hyperparameter search spaces (before ESTIMATORS: fallback probes these keys) ──
 # Uses scipy.stats distributions for continuous/integer parameters so
 # RandomizedSearchCV samples broadly instead of from fixed grids.
 # Estimators without a defined space still work — they just skip tuning.
@@ -146,6 +132,16 @@ _MLP = {
     "hidden_layer_sizes": [(50,), (100,), (50, 50), (100, 50), (100, 100), (200,), (100, 50, 25)],
     "alpha": loguniform(1e-5, 1e-1),
     "learning_rate": ["constant", "invscaling", "adaptive"],
+}
+# XGBoost (optional dependency — only in ESTIMATORS when xgboost is installed)
+_XGB = {
+    "n_estimators": randint(50, 400),
+    "max_depth": randint(3, 12),
+    "learning_rate": loguniform(5e-3, 0.3),
+    "subsample": uniform(0.6, 0.4),
+    "colsample_bytree": uniform(0.6, 0.4),
+    "reg_alpha": loguniform(1e-8, 1.0),
+    "reg_lambda": loguniform(1e-8, 5.0),
 }
 
 SEARCH_SPACES: dict[str, dict] = {
@@ -192,6 +188,8 @@ SEARCH_SPACES: dict[str, dict] = {
         "l2_regularization": loguniform(1e-6, 10),
         "max_bins": [63, 127, 255],
     },
+    "XGBClassifier": _XGB,
+    "XGBRegressor": _XGB,
     # Other boosting
     "AdaBoostClassifier": {"n_estimators": randint(30, 300), "learning_rate": loguniform(5e-3, 2.0)},
     "AdaBoostRegressor":  {"n_estimators": randint(30, 300), "learning_rate": loguniform(5e-3, 2.0)},
@@ -212,6 +210,89 @@ SEARCH_SPACES: dict[str, dict] = {
     "MultinomialNB": {"alpha": loguniform(1e-3, 10)},
     "ComplementNB":  {"alpha": loguniform(1e-3, 10)},
     "BernoulliNB":   {"alpha": loguniform(1e-3, 10)},
+}
+
+
+_SKLEARN_FALLBACK_PACKAGES: tuple[str, ...] = (
+    "sklearn.ensemble",
+    "sklearn.linear_model",
+    "sklearn.svm",
+    "sklearn.neighbors",
+    "sklearn.tree",
+    "sklearn.neural_network",
+    "sklearn.naive_bayes",
+)
+
+_NON_SKLEARN_SEARCH_KEYS = frozenset({"XGBClassifier", "XGBRegressor"})
+
+
+def _fallback_catalog_from_search_spaces() -> dict[str, tuple[str, str]]:
+    """When all_estimators() fails: resolve sklearn estimators by probing SEARCH_SPACES keys."""
+    catalog: dict[str, tuple[str, str]] = {}
+    for est_name in SEARCH_SPACES:
+        if est_name in _NON_SKLEARN_SEARCH_KEYS:
+            continue
+        resolved: tuple[str, str] | None = None
+        for pkg in _SKLEARN_FALLBACK_PACKAGES:
+            try:
+                mod = importlib.import_module(pkg)
+            except ImportError:
+                continue
+            cls = getattr(mod, est_name, None)
+            if cls is None or not isinstance(cls, type):
+                continue
+            resolved = (pkg, est_name)
+            break
+        if resolved is not None:
+            catalog[est_name] = resolved
+        else:
+            print(
+                f"[supervised/train] Fallback probe could not resolve {est_name!r} "
+                f"in sklearn packages {_SKLEARN_FALLBACK_PACKAGES}."
+            )
+    return catalog
+
+
+def _maybe_register_xgboost(catalog: dict[str, tuple[str, str]]) -> None:
+    """Register XGBoost estimators when the package is installed (optional dependency)."""
+    try:
+        import xgboost  # noqa: F401
+    except ImportError:
+        return
+    catalog["XGBClassifier"] = ("xgboost", "XGBClassifier")
+    catalog["XGBRegressor"] = ("xgboost", "XGBRegressor")
+
+
+def _build_estimator_catalog() -> dict[str, tuple[str, str]]:
+    catalog = _discover_estimators()
+    if not catalog:
+        print(
+            "[supervised/train] Estimator discovery returned empty catalog; "
+            "using probed fallback from SEARCH_SPACES keys (see earlier log if all_estimators failed)."
+        )
+        catalog = _fallback_catalog_from_search_spaces()
+    _maybe_register_xgboost(catalog)
+    return catalog
+
+
+ESTIMATORS: dict[str, tuple[str, str]] = _build_estimator_catalog()
+
+# Defaults applied at construction time.
+_INIT_DEFAULTS: dict[str, dict] = {
+    "SVC": {"probability": True},
+    "SGDClassifier": {"loss": "modified_huber"},
+    "LogisticRegression": {"max_iter": 1000},
+    "MLPClassifier": {"max_iter": 500},
+    "MLPRegressor": {"max_iter": 500},
+    "XGBClassifier": {"tree_method": "hist", "n_jobs": -1},
+    "XGBRegressor": {"tree_method": "hist", "n_jobs": -1},
+}
+
+_PARALLELIZABLE = {
+    "RandomForestClassifier", "RandomForestRegressor",
+    "ExtraTreesClassifier", "ExtraTreesRegressor",
+    "BaggingClassifier", "BaggingRegressor",
+    "XGBClassifier", "XGBRegressor",
 }
 
 
@@ -296,6 +377,7 @@ _SLOW_ESTIMATORS = {
     "MLPClassifier", "MLPRegressor",
     "SVC", "SVR", "NuSVC", "NuSVR",
     "KNeighborsClassifier", "KNeighborsRegressor",
+    "XGBClassifier", "XGBRegressor",
 }
 
 

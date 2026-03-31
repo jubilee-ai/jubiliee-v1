@@ -571,6 +571,92 @@ def _diagnose_trend(
     }
 
 
+def _format_training_plan_section(training_plan: dict | None) -> str:
+    """Inject human-approved plan from training_approval into the training agent context."""
+    if not training_plan:
+        return ""
+    skip = {"data_summary"}
+    parts: list[str] = []
+    for key in (
+        "model_type",
+        "task_type",
+        "hyperparameters",
+        "class_weight",
+        "strategy_notes",
+        "expected_metrics",
+    ):
+        if key in skip:
+            continue
+        val = training_plan.get(key)
+        if val is None or val == "" or val == {}:
+            continue
+        if key == "hyperparameters" and isinstance(val, dict):
+            parts.append(f"- **{key}**: {json.dumps(val, default=str)}")
+        else:
+            parts.append(f"- **{key}**: {val}")
+    if not parts:
+        return ""
+    return (
+        "\n## Human-approved training plan\n\n"
+        "The pipeline (or user) approved this configuration — **start here**, then refine using "
+        "validation metrics. You may override hyperparameters if diagnostics demand it.\n\n"
+        + "\n".join(parts)
+        + "\n\n"
+    )
+
+
+def _truncate_jsonish(obj: Any, max_len: int = 420) -> str:
+    s = json.dumps(obj, default=str, sort_keys=True) if isinstance(obj, (dict, list)) else str(obj)
+    if len(s) <= max_len:
+        return s
+    return s[: max_len - 3] + "..."
+
+
+def _format_best_iteration_continuation_block(
+    iterations: list[TrainingIteration],
+    task_type: str,
+) -> str:
+    """Concrete anchor so continuation rounds refine the validation leader, not random models."""
+    dicts = [_iteration_to_dict(it) for it in iterations]
+    best = _find_best_iteration(dicts, task_type)
+    if not best:
+        return ""
+
+    name = best.get("model_name", "")
+    tool = best.get("tool") or best.get("tool_used") or ""
+    hp = best.get("hyperparams") or {}
+    hp_s = _truncate_jsonish(hp) if hp else "(defaults or see model registry)"
+
+    if task_type == "unsupervised":
+        metrics_line = (
+            f"- silhouette={best.get('silhouette_score')}, "
+            f"davies_bouldin={best.get('davies_bouldin')}"
+        )
+        metric_name = "unsupervised objective"
+    elif task_type == "regression":
+        metrics_line = (
+            f"- val R²={best.get('val_r2')}, val RMSE={best.get('val_rmse')}"
+        )
+        metric_name = "validation R² (primary)"
+    else:
+        metrics_line = (
+            f"- val ROC-AUC={best.get('val_roc_auc')}, val accuracy={best.get('val_accuracy')}"
+        )
+        metric_name = "validation ROC-AUC (primary), then accuracy"
+
+    return (
+        f"## Current validation best — refine THIS\n\n"
+        f"Leader by **{metric_name}**:\n"
+        f"- **model_name**: `{name}`\n"
+        f"- **tool**: `{tool}`\n"
+        f"- **hyperparams**: {hp_s}\n"
+        f"{metrics_line}\n\n"
+        f"**Next experiment:** Improve this configuration (same estimator family) unless the last "
+        f"runs were within noise (~1%) of each other *and* train/val diagnostics clearly favor "
+        f"switching families. If you switch, state why in your reasoning.\n\n"
+    )
+
+
 def _build_continuation_message(
     iterations: list[TrainingIteration],
     max_iterations: int,
@@ -611,12 +697,13 @@ def _build_continuation_message(
                 )
 
     lines.append(f"## Diagnosis\n{diag['diagnosis']}\n")
+    lines.append(_format_best_iteration_continuation_block(iterations, task_type))
 
     lines.append(
         "## Next Steps\n"
         "Consult the **Hyperparameter Strategy Matrix** and **Architecture Decision Guide** "
-        "in the SKILL.md to choose your next experiment based on the diagnosis above. "
-        "Change exactly ONE thing. Run the experiment, evaluate, and report results.\n"
+        "in the SKILL.md. Prefer **refining the validation leader** above; change exactly ONE "
+        "focused thing per attempt. Run the experiment, evaluate, and report results.\n"
         "In the structured `iterations` array, append only **new** attempts from this round "
         "(prior attempts are already stored). Your **`summary`** and **`recommendations`** "
         "must still cover the **entire run** and the model you set as **`best_model_name`** "
@@ -945,16 +1032,21 @@ def run_training_agent(
     selected_model: str,
     goal: str,
     model_name: Optional[str] = None,
-    max_iterations: int = 8,
+    max_iterations: int = 10,
     llm_model: str = "openai:gpt-5.1",
     estimator_hint: Optional[str] = None,
     experiment_result: Optional[dict[str, Any]] = None,
     feature_rankings: Optional[dict[str, float]] = None,
+    training_plan: Optional[dict[str, Any]] = None,
+    max_continuation_rounds: int = 3,
 ) -> dict[str, Any]:
     """Run the training agent.
 
     The agent reads the skill's SKILL.md (injected in context) to select the
     right estimator, trains via train_with_skill, evaluates, and iterates.
+
+    ``training_plan`` (from training_approval) is injected into context so the
+    sub-agent aligns with the approved hyperparameters and strategy.
     """
     train_df = get_registered_dataset(train_ref)
     val_df = get_registered_dataset(val_ref) if val_ref else None
@@ -1060,6 +1152,8 @@ def run_training_agent(
             for fname, imp in top_ranked:
                 experiment_section += f"- {fname}: {imp:.4f}\n"
 
+    plan_section = _format_training_plan_section(training_plan)
+
     if task_type == "unsupervised":
         target_line = "- Target column: N/A (unsupervised)"
         class_section = ""
@@ -1083,8 +1177,7 @@ Follow the skill documentation below — it covers model selection and training.
 <skill_documentation>
 {skill_docs}
 </skill_documentation>
-{estimator_section}{baseline_section}{experiment_section}
-## Data
+{estimator_section}{baseline_section}{experiment_section}{plan_section}## Data
 - Task type: {task_type}
 {target_line}
 - Training: {len(train_df)} rows (ref: `{train_ref}`)
@@ -1129,9 +1222,20 @@ Follow the skill documentation below — it covers model selection and training.
         )
     else:
         start_instruction = (
-            "Begin training now. Maximize validation performance by exploring "
-            "different estimators and hyperparameters. Use the dataset refs above. "
-            "Run final test evaluation on your best model before finishing."
+            "Begin training now. Maximize **validation** performance (ROC-AUC primary, then "
+            "accuracy for classification; R² for regression).\n\n"
+            "**Iteration protocol:**\n"
+            "1) **First** experiment: use `batch_train_with_skill` to compare 2–3 estimators "
+            "from different families in parallel (unless the Human-approved training plan "
+            "already prescribes a single starting point — then align with it first).\n"
+            "2) Identify the **validation leader** from that batch.\n"
+            "3) **All further iterations** must **refine that leader** (same estimator family) "
+            "by tuning hyperparameters — one focused change at a time. Do **not** jump to "
+            "unrelated estimators unless leaders tie within ~1% and diagnostics clearly "
+            "suggest a different failure mode; if you switch, explain why.\n"
+            "4) After each run, compare metrics to your **best validation score so far** and "
+            "state what you will change next to beat it.\n\n"
+            "Use the dataset refs above. Run final test evaluation on your best model before finishing."
         )
 
     messages = [
@@ -1141,8 +1245,10 @@ Follow the skill documentation below — it covers model selection and training.
 
     all_iterations: list[TrainingIteration] = []
     continuation_round = 0
-    max_continuation_rounds = 2
     _baseline = baseline_metrics
+    cont_cap = max(1, min(6, max_continuation_rounds))
+    if training_plan and isinstance(training_plan.get("max_continuation_rounds"), int):
+        cont_cap = max(1, min(6, int(training_plan["max_continuation_rounds"])))
 
     try:
         result = agent.invoke({"messages": messages})
@@ -1151,7 +1257,7 @@ Follow the skill documentation below — it covers model selection and training.
         all_iterations.extend(training_result.iterations)
 
         while (
-            continuation_round < max_continuation_rounds
+            continuation_round < cont_cap
             and training_result.success
             and not training_result.feature_redo_requested
             and _should_continue_iterating(all_iterations, max_iterations, task_type)

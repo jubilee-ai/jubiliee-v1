@@ -72,6 +72,10 @@ export function MetricsTab({ agentState }: MetricsTabProps) {
 
       {/* Iteration History */}
       <Section title="Training Iterations">
+        <p className="text-xs text-muted-foreground -mt-2 mb-3">
+          “Best” uses validation ranking: ROC-AUC first, then accuracy (classification); R²
+          (regression); unsupervised objectives as reported.
+        </p>
         <div className="space-y-2">
           {metrics?.iterations && metrics.iterations.length > 0 ? (
             metrics.iterations.map((iter, i) => {
@@ -96,8 +100,12 @@ export function MetricsTab({ agentState }: MetricsTabProps) {
                     <div className="flex flex-wrap items-center gap-x-3 gap-y-1 shrink-0 min-w-0">
                       <span className="font-medium">Iteration {iter.iteration ?? i + 1}</span>
                       {isBest && (
-                        <Badge variant="secondary" className="text-xs">
-                          Best
+                        <Badge
+                          variant="secondary"
+                          className="text-xs"
+                          title="Highest validation ROC-AUC then accuracy (classification), or val R² (regression)"
+                        >
+                          Best (val)
                         </Badge>
                       )}
                       {iterMetrics.success === false && (
@@ -173,8 +181,12 @@ export function MetricsTab({ agentState }: MetricsTabProps) {
             <div className="p-4 rounded-xl bg-foreground/5 ring-1 ring-foreground/10">
               <div className="flex items-center gap-3">
                 <span className="font-medium">Iteration 1</span>
-                <Badge variant="secondary" className="text-xs">
-                  Best
+                <Badge
+                  variant="secondary"
+                  className="text-xs"
+                  title="Highest validation ROC-AUC then accuracy (classification), or val R² (regression)"
+                >
+                  Best (val)
                 </Badge>
               </div>
               <p className="text-sm text-muted-foreground mt-2">Training completed in 1 iteration</p>
