@@ -5,7 +5,6 @@ import { Input } from "@/components/ui/input"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import {
   listExperiments,
-  createExperiment,
   deleteExperiment,
   updateExperiment,
   type ExperimentSummary,
@@ -18,14 +17,13 @@ interface AppSidebarProps {
   activeTab: AppTab
   onTabChange: (tab: AppTab) => void
   activeExperimentId: string | null
-  onSelectExperiment: (id: string) => void
-  onNewExperiment: () => void
+  onSelectExperiment: (id: string, opts?: { freshSummary?: ExperimentSummary }) => void | Promise<void>
+  /** Clear to a blank draft locally; experiment row is created on first message send. */
+  onStartBlankChat: () => void | Promise<void>
   isBackendConnected: boolean
   switchingTo?: string | null
   /** Increment from parent after any experiment list mutation outside this component. */
   experimentsListNonce?: number
-  /** Call after creating an experiment from the sidebar (+ button). */
-  onExperimentsChanged?: () => void
   /** When the user deletes the currently open experiment, return to lab home instead of creating a new one. */
   onActiveExperimentDeleted?: () => void
 }
@@ -171,11 +169,10 @@ export function AppSidebar({
   onTabChange,
   activeExperimentId,
   onSelectExperiment,
-  onNewExperiment,
+  onStartBlankChat,
   isBackendConnected,
   switchingTo,
   experimentsListNonce = 0,
-  onExperimentsChanged,
   onActiveExperimentDeleted,
 }: AppSidebarProps) {
   const [experiments, setExperiments] = useState<ExperimentSummary[]>([])
@@ -209,16 +206,9 @@ export function AppSidebar({
     setExperiments((prev) => prev.map((ex) => (ex.id === id ? { ...ex, name: nextName } : ex)))
   }, [])
 
-  const handleNew = async () => {
+  const handleNew = () => {
     onTabChange("experiment_lab")
-    try {
-      const exp = await createExperiment()
-      setExperiments((prev) => [exp, ...prev])
-      onExperimentsChanged?.()
-      onSelectExperiment(exp.id)
-    } catch {
-      onNewExperiment()
-    }
+    void onStartBlankChat()
   }
 
   const handleDelete = async (e: React.MouseEvent, id: string) => {

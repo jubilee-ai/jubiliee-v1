@@ -9,7 +9,7 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog"
-import { Send, Database, X, ChevronRight, Download, Moon } from "lucide-react"
+import { Send, Database, X, ChevronRight, Download } from "lucide-react"
 import { cn } from "@/lib/utils"
 import type { Dataset } from "@/types/agent"
 import { type Dataset as ApiDataset } from "@/lib/api"
@@ -40,7 +40,7 @@ export function ChatInput({
   onDatasetRemove,
   availableDatasets,
   experimentId,
-  onAssignBackgroundTask,
+  onAssignBackgroundTask: _onAssignBackgroundTask,
 }: ChatInputProps) {
   const [showDatasetPicker, setShowDatasetPicker] = useState(false)
   const [artifacts, setArtifacts] = useState<{ datasets: Array<{ id?: string; ref?: string; name?: string; role?: string; rows?: number }>; models: Array<{ name: string; metrics?: { accuracy?: number } }> }>({ datasets: [], models: [] })

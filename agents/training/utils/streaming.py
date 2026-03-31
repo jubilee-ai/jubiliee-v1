@@ -29,7 +29,7 @@ def _humanize_split_strategy(strategy: object) -> str:
     if raw == "random":
         return (
             "rows are shuffled, then split into train, validation, and test "
-            "(default mix ~70% / 15% / 15%) — appropriate when rows are exchangeable"
+            "(~70% / 15% / 15%) — appropriate when rows are exchangeable"
         )
     if raw == "time_based":
         return "earlier periods are used for training and later periods for validation and test — preserves time order"

@@ -4,12 +4,8 @@ import {
   Search, ChevronDown, ChevronRight,
 } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
-import type { ModelType, TrainedModelEntry } from "@/lib/api"
+import type { TrainedModelEntry } from "@/lib/api"
 import { getTrainedModels } from "@/lib/api"
-
-interface ModelsPageProps {
-  modelTypes: ModelType[]
-}
 
 function MetricPill({ label, value }: { label: string; value: number }) {
   const display = value < 1 && value > 0 ? (value * 100).toFixed(1) + "%" : value.toFixed(4)
@@ -81,7 +77,7 @@ function formatDate(iso: string): string {
   }
 }
 
-export function ModelsPage({ modelTypes: _modelTypes }: ModelsPageProps) {
+export function ModelsPage() {
   const [trainedModels, setTrainedModels] = useState<TrainedModelEntry[]>([])
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState("")

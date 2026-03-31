@@ -738,7 +738,7 @@ Propose a training configuration. Respond with a JSON object containing:
     "task_type": "{task_type}",
     "hyperparameters": {{}},
     "class_weight": "balanced" or null,
-    "max_iterations": 3,
+    "max_iterations": 5,
     "strategy_notes": "Brief explanation of why these hyperparameters were chosen",
     "expected_metrics": "What metrics to optimize and expected performance range"
 }}
@@ -760,7 +760,7 @@ Be specific with hyperparameter values. Consider:
         except json.JSONDecodeError:
             training_plan = {
                 "model_type": selected_model, "task_type": task_type, "hyperparameters": {},
-                "class_weight": "balanced" if is_imbalanced else None, "max_iterations": 3,
+                "class_weight": "balanced" if is_imbalanced else None, "max_iterations": 5,
                 "strategy_notes": "Default configuration - LLM response could not be parsed",
                 "expected_metrics": "Standard metrics for the task type",
             }
@@ -770,7 +770,7 @@ Be specific with hyperparameter values. Consider:
         # Ensure required fields and add data summary
         training_plan.setdefault("model_type", selected_model)
         training_plan.setdefault("task_type", task_type)
-        training_plan.setdefault("max_iterations", 3)
+        training_plan.setdefault("max_iterations", 5)
         training_plan["data_summary"] = {
             "train_rows": n_rows, "val_rows": len(val_df) if val_df is not None else None,
             "n_features": n_features, "class_distribution": class_counts, "is_imbalanced": is_imbalanced,
@@ -845,13 +845,17 @@ def training(state: TrainingAgentState) -> TrainingAgentState:
             raise ValueError("No target_column in label_definition")
 
         model_name = f"{selected_model}_{int(time.time())}"
+        training_plan = s.get("training_plan") or {}
+        plan_max_iters = training_plan.get(
+            "max_iterations", 7 if selected_model == "neural_networks" else 5
+        )
         print(f"[training] Starting training with {selected_model}...")
         print(f"  Train: {train_ref}\n  Val: {val_ref}\n  Test: {test_ref}\n  Target: {target_column}")
 
         result = _run_training(
             train_ref=train_ref, val_ref=val_ref, test_ref=test_ref,
             target_column=target_column, selected_model=selected_model,
-            goal=goal, model_name=model_name, max_iterations=3,
+            goal=goal, model_name=model_name, max_iterations=plan_max_iters,
             experiment_result=s.get("experiment_result"),
             feature_rankings=s.get("feature_rankings"),
         )

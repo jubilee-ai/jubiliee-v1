@@ -15,7 +15,7 @@ import {
 } from "@/components/ui/dialog"
 import { RotateCcw, FileText, Search, Bell, ArrowLeft } from "lucide-react"
 import type { StepInfo, TrainingAgentState, ConfirmationAction, TaskPlanSummary } from "@/types/agent"
-import { createExperiment } from "@/lib/api"
+import type { ExperimentSummary } from "@/lib/api"
 import { cn } from "@/lib/utils"
 import { DatasetsPage } from "@/components/DatasetsPage"
 import { ModelsPage } from "@/components/ModelsPage"
@@ -219,24 +219,27 @@ function AuthenticatedApp() {
 
   const [switchingTo, setSwitchingTo] = useState<string | null>(null)
 
-  const handleSelectExperiment = useCallback(async (id: string) => {
-    setSwitchingTo(id)
-    try {
-      await realAgent.loadExperiment(id)
-    } finally {
-      setSwitchingTo(null)
-    }
-  }, [realAgent.loadExperiment])
+  const handleSelectExperiment = useCallback(
+    async (id: string, opts?: { freshSummary?: ExperimentSummary }) => {
+      setSwitchingTo(id)
+      try {
+        if (opts?.freshSummary && opts.freshSummary.id === id) {
+          await realAgent.loadExperimentFromSummary(opts.freshSummary)
+        } else {
+          await realAgent.loadExperiment(id)
+        }
+      } finally {
+        setSwitchingTo(null)
+      }
+    },
+    [realAgent.loadExperiment, realAgent.loadExperimentFromSummary],
+  )
 
-  const openBlankExperiment = useCallback(async () => {
-    try {
-      const exp = await createExperiment()
-      bumpExperimentsList()
-      await realAgent.loadExperiment(exp.id)
-    } catch {
-      realAgent.leaveLabSession()
-    }
-  }, [realAgent, bumpExperimentsList])
+  /** Instant new chat: no POST /experiments until the first send (ensureExperimentId). Sidebar row appears after that. */
+  const handleStartBlankChat = useCallback(async () => {
+    await realAgent.saveCurrentMessages()
+    realAgent.leaveLabSession()
+  }, [realAgent])
 
   const handleLeaveLabSession = useCallback(() => {
     realAgent.leaveLabSession()
@@ -399,11 +402,10 @@ function AuthenticatedApp() {
               onTabChange={setActiveTab}
               activeExperimentId={realAgent.experimentId}
               onSelectExperiment={handleSelectExperiment}
-              onNewExperiment={() => void openBlankExperiment()}
+              onStartBlankChat={handleStartBlankChat}
               isBackendConnected={realAgent.isBackendConnected}
               switchingTo={switchingTo}
               experimentsListNonce={experimentsListNonce}
-              onExperimentsChanged={bumpExperimentsList}
               onActiveExperimentDeleted={() => {
                 realAgent.leaveLabSession()
                 bumpExperimentsList()
@@ -491,7 +493,7 @@ function AuthenticatedApp() {
             ) : activeTab === "datasets" ? (
               <DatasetsPage datasets={realAgent.datasets} />
             ) : activeTab === "models" ? (
-              <ModelsPage modelTypes={realAgent.modelTypes} />
+              <ModelsPage />
             ) : activeTab === "settings" ? (
               <div className="flex-1 overflow-auto">
                 <div className="max-w-5xl mx-auto px-8 py-10">

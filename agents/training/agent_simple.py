@@ -60,7 +60,7 @@ class TrainingPlan(BaseModel):
         description="Class weighting strategy for imbalanced data. E.g. 'balanced', 'use CrossEntropyLoss weight param', or null.",
     )
     max_iterations: int = Field(
-        default=5,
+        default=7,
         description="Number of experiment iterations the training agent should run",
     )
     strategy_notes: str = Field(description="High-level training strategy and experiment plan")
@@ -1084,7 +1084,7 @@ def create_simple_training_agent(
 
         model_name = f"{selected_model}_{int(time.time())}"
         training_plan = state.get("training_plan") or {}
-        plan_max_iters = training_plan.get("max_iterations", 5 if selected_model == "neural_networks" else 3)
+        plan_max_iters = training_plan.get("max_iterations", 7 if selected_model == "neural_networks" else 5)
         result = _run_training(
             train_ref=train_ref,
             val_ref=state.get("transformed_val_ref"),

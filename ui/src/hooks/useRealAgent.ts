@@ -29,6 +29,8 @@ import {
   type Dataset,
   type ModelType,
   type AgentStreamEvent,
+  type ExperimentDetail,
+  type ExperimentSummary,
   updateExperiment,
 } from "@/lib/api"
 import {
@@ -340,6 +342,8 @@ export interface UseRealAgentReturn {
   refreshModelTypes: () => Promise<void>
   setExperimentId: (id: string | null) => void
   loadExperiment: (id: string) => Promise<void>
+  /** Apply a row just returned from POST /experiments without a follow-up GET (avoids flaky open after create). */
+  loadExperimentFromSummary: (summary: ExperimentSummary) => Promise<void>
   saveCurrentMessages: () => Promise<void>
   /** Clear local session and deselect experiment (experiment row remains in the list). */
   leaveLabSession: () => void
@@ -1413,69 +1417,92 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
     experimentIdRef.current = null
   }, [reset])
 
-  const loadExperiment = useCallback(async (id: string) => {
-    try {
-      // Save current experiment's messages before switching
-      await saveCurrentMessages()
+  const applyExperimentDetail = useCallback((exp: ExperimentDetail) => {
+    streamControllerRef.current?.abort()
 
-      const exp = await getExperiment(id)
-      streamControllerRef.current?.abort()
+    setExperimentId(exp.id)
 
-      setExperimentId(exp.id)
-
-      // Restore chat history
-      if (exp.chat_history && Array.isArray(exp.chat_history)) {
-        setMessages(
-          exp.chat_history
-            .filter((m: Record<string, unknown>) => m.id !== GRAPH_THINKING_MSG_ID)
-            .map((m: Record<string, unknown>) => ({
-              id: (m.id as string) || uid("msg"),
-              role: (m.role as ChatMessage["role"]) || "agent",
-              content: (m.content as string) || "",
-              timestamp: (m.timestamp as number) || Date.now(),
-              ...(typeof m.step_id === "string" ? { stepId: m.step_id } : {}),
-              ...(typeof m.stepId === "string" ? { stepId: m.stepId } : {}),
-              ...(typeof m.detail_markdown === "string" ? { detailMarkdown: m.detail_markdown } : {}),
-              ...(typeof m.detailMarkdown === "string" ? { detailMarkdown: m.detailMarkdown } : {}),
-              ...(m.show_report_button === true ? { showReportButton: true } : {}),
-              ...(m.showReportButton === true ? { showReportButton: true } : {}),
-              ...(m.task_plan && typeof m.task_plan === "object"
-                ? { taskPlan: m.task_plan as ChatTaskPlanPayload }
-                : {}),
-              ...(m.task_plan_resolved === true ? { taskPlanResolved: true } : {}),
-              ...(typeof m.api_payload === "string" ? { apiPayload: m.api_payload } : {}),
-              ...(typeof m.apiPayload === "string" ? { apiPayload: m.apiPayload } : {}),
-            })),
-        )
-      } else {
-        setMessages([])
-      }
-
-      // Restore training state if available
-      const ts = exp.training_state && typeof exp.training_state === "object"
-        ? (exp.training_state as Record<string, unknown>)
-        : null
-      if (ts) {
-        setAgentState((prev) => ({ ...prev, ...(ts as Partial<TrainingAgentState>) }))
-      } else {
-        setAgentState(createInitialState())
-      }
-
-      const initialSteps = createInitialSteps()
-      setSteps(ts ? mergeTaskProgressIntoSteps(initialSteps, ts) : initialSteps)
-      setIsRunning(false)
-      setConfirmationRequest(null)
-      setAcceptAllMode(false)
-      emittedStepsRef.current = new Set()
-      const rawLd = exp.linked_datasets
-      setLinkedDatasets(Array.isArray(rawLd) ? rawLd.map(String) : [])
-      backgroundIntakeActiveRef.current = false
-      setBackgroundIntakeActive(false)
-      suppressPostPlanTokensRef.current = false
-    } catch (err) {
-      console.error("Failed to load experiment:", err)
+    // Restore chat history
+    if (exp.chat_history && Array.isArray(exp.chat_history)) {
+      setMessages(
+        exp.chat_history
+          .filter((m: Record<string, unknown>) => m.id !== GRAPH_THINKING_MSG_ID)
+          .map((m: Record<string, unknown>) => ({
+            id: (m.id as string) || uid("msg"),
+            role: (m.role as ChatMessage["role"]) || "agent",
+            content: (m.content as string) || "",
+            timestamp: (m.timestamp as number) || Date.now(),
+            ...(typeof m.step_id === "string" ? { stepId: m.step_id } : {}),
+            ...(typeof m.stepId === "string" ? { stepId: m.stepId } : {}),
+            ...(typeof m.detail_markdown === "string" ? { detailMarkdown: m.detail_markdown } : {}),
+            ...(typeof m.detailMarkdown === "string" ? { detailMarkdown: m.detailMarkdown } : {}),
+            ...(m.show_report_button === true ? { showReportButton: true } : {}),
+            ...(m.showReportButton === true ? { showReportButton: true } : {}),
+            ...(m.task_plan && typeof m.task_plan === "object"
+              ? { taskPlan: m.task_plan as ChatTaskPlanPayload }
+              : {}),
+            ...(m.task_plan_resolved === true ? { taskPlanResolved: true } : {}),
+            ...(typeof m.api_payload === "string" ? { apiPayload: m.api_payload } : {}),
+            ...(typeof m.apiPayload === "string" ? { apiPayload: m.apiPayload } : {}),
+          })),
+      )
+    } else {
+      setMessages([])
     }
+
+    // Restore training state if available
+    const ts = exp.training_state && typeof exp.training_state === "object"
+      ? (exp.training_state as Record<string, unknown>)
+      : null
+    if (ts) {
+      setAgentState((prev) => ({ ...prev, ...(ts as Partial<TrainingAgentState>) }))
+    } else {
+      setAgentState(createInitialState())
+    }
+
+    const initialSteps = createInitialSteps()
+    setSteps(ts ? mergeTaskProgressIntoSteps(initialSteps, ts) : initialSteps)
+    setIsRunning(false)
+    setConfirmationRequest(null)
+    setAcceptAllMode(false)
+    emittedStepsRef.current = new Set()
+    const rawLd = exp.linked_datasets
+    setLinkedDatasets(Array.isArray(rawLd) ? rawLd.map(String) : [])
+    backgroundIntakeActiveRef.current = false
+    setBackgroundIntakeActive(false)
+    suppressPostPlanTokensRef.current = false
   }, [])
+
+  const loadExperiment = useCallback(
+    async (id: string) => {
+      try {
+        await saveCurrentMessages()
+        const exp = await getExperiment(id)
+        applyExperimentDetail(exp)
+      } catch (err) {
+        console.error("Failed to load experiment:", err)
+      }
+    },
+    [applyExperimentDetail, saveCurrentMessages],
+  )
+
+  const loadExperimentFromSummary = useCallback(
+    async (summary: ExperimentSummary) => {
+      try {
+        await saveCurrentMessages()
+        const exp: ExperimentDetail = {
+          ...summary,
+          chat_history: [],
+          training_state: null,
+          training_context: null,
+        }
+        applyExperimentDetail(exp)
+      } catch (err) {
+        console.error("Failed to open experiment from summary:", err)
+      }
+    },
+    [applyExperimentDetail, saveCurrentMessages],
+  )
 
   const refreshExperimentTraining = useCallback(async () => {
     const id = experimentIdRef.current
@@ -1593,6 +1620,7 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
     refreshModelTypes,
     setExperimentId,
     loadExperiment,
+    loadExperimentFromSummary,
     saveCurrentMessages,
     leaveLabSession,
     runningStepHint,

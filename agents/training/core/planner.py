@@ -345,15 +345,8 @@ def planner_node(state: "TrainingAgentState") -> "TrainingAgentState":
         }
 
     def get_summary(result: "TrainingAgentState") -> str:
-        plan_steps = result.get("plan") or []
         strategy = result.get("plan_strategy", "N/A")
         lines = [f"**Plan:** {strategy}"]
-        names: list[str] = []
-        for step in plan_steps:
-            name = step["step"] if isinstance(step, dict) else step.step
-            names.append(str(name).replace("_", " "))
-        if names:
-            lines.append("**Steps:** " + " → ".join(f"`{n}`" for n in names))
         history = result.get("plan_history") or []
         if history:
             lines.append(f"_(Replan #{len(history)})_")
