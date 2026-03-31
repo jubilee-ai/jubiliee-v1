@@ -1,24 +1,11 @@
 import { useEffect, useState } from "react"
 import {
   Box, Download, Activity, Hash, Calendar, Layers, Target,
-  Search, ChevronDown, ChevronRight, Cpu,
+  Search, ChevronDown, ChevronRight,
 } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
-import type { ModelType, TrainedModelEntry } from "@/lib/api"
+import type { TrainedModelEntry } from "@/lib/api"
 import { getTrainedModels } from "@/lib/api"
-
-interface ModelsPageProps {
-  modelTypes: ModelType[]
-}
-
-const modelTypeIcon: Record<string, string> = {
-  logistic_regression: "LR",
-  random_forest: "RF",
-  xgboost: "XG",
-  naive_bayes: "NB",
-  glm: "GL",
-  survival_analysis: "SA",
-}
 
 function MetricPill({ label, value }: { label: string; value: number }) {
   const display = value < 1 && value > 0 ? (value * 100).toFixed(1) + "%" : value.toFixed(4)
@@ -90,7 +77,7 @@ function formatDate(iso: string): string {
   }
 }
 
-export function ModelsPage({ modelTypes }: ModelsPageProps) {
+export function ModelsPage() {
   const [trainedModels, setTrainedModels] = useState<TrainedModelEntry[]>([])
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState("")

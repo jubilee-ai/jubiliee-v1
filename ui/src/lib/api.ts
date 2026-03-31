@@ -85,8 +85,18 @@ export interface AgentStreamEvent {
   // Pipeline completion flag
   pipeline_completed?: boolean
 
+  /** True only for LangGraph training pipeline streams (not orchestrator chat). */
+  training_graph?: boolean
+
   // Error
   error?: string
+
+  /** task_plan.proposed (background intake, no tools) */
+  goal?: string
+  dataset_refs?: string[]
+  dataset_labels?: string[]
+  preferences?: string | null
+  recap_steps?: string[]
 }
 
 export interface AgentStreamRequest {
@@ -100,6 +110,10 @@ export interface AgentStreamRequest {
     approved: boolean
     feedback?: string
   }
+  /** Keep orchestrator/tools (e.g. propose_training_plan); do not start the training graph. */
+  force_orchestrator?: boolean
+  /** Tool-free planning agent; server emits task_plan.proposed instead of propose_training_plan. */
+  background_intake?: boolean
 }
 
 
@@ -159,6 +173,8 @@ export interface ExperimentSummary {
   created_at?: string | null
   updated_at?: string | null
   last_message?: string | null
+  lab_mode?: string | null
+  task_status?: string | null
 }
 
 export interface ExperimentDetail extends ExperimentSummary {
@@ -194,7 +210,13 @@ export async function getExperiment(id: string): Promise<ExperimentDetail> {
 
 export async function updateExperiment(
   id: string,
-  updates: { name?: string; status?: string; goal?: string; linked_datasets?: string[] },
+  updates: {
+    name?: string
+    status?: string
+    goal?: string
+    linked_datasets?: string[]
+    training_state_merge?: Record<string, unknown>
+  },
 ): Promise<void> {
   const res = await fetch(`${API_BASE}/api/experiments/${id}`, {
     method: "PATCH",
@@ -202,6 +224,21 @@ export async function updateExperiment(
     body: JSON.stringify(updates),
   })
   if (!res.ok) throw new Error(`Failed to update experiment: ${res.status}`)
+}
+
+export async function startExperimentAsyncTrain(
+  experimentId: string,
+  body?: { user_model_preference?: string | null; conversation?: Array<{ role: string; content: string }> },
+): Promise<void> {
+  const res = await fetch(`${API_BASE}/api/experiments/${experimentId}/async-train`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body ?? {}),
+  })
+  if (!res.ok) {
+    const detail = await res.text().catch(() => "")
+    throw new Error(`Async train failed: ${res.status}${detail ? ` ${detail}` : ""}`)
+  }
 }
 
 export async function deleteExperiment(id: string): Promise<void> {

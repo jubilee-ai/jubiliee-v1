@@ -41,12 +41,13 @@ Before your next action, explicitly reason through:
    - Which estimators have you tried? How did each respond to tuning?
    - Are hyperparameter changes still yielding meaningful improvement (>1%)?
    - Have you exhausted the obvious tuning levers for the current estimator?
+   - Compare this run to your **best validation result so far**: did the change help or hurt? Attribute the delta to specific hyperparameter or estimator choices so the next iteration is a deliberate improvement, not a random retry.
 
 3. **Decision** — Pick ONE of:
    - **Tune hyperparameters** — when the current estimator is promising but metrics suggest specific adjustments
    - **Switch estimator** — when tuning is hitting diminishing returns or the failure pattern suggests a different model family
 
-State your reasoning before acting.
+State your reasoning before acting. Use remaining iterations to close the gap to your best validation score—each round should learn from the last, not repeat the same mistake.
 
 ## Strategy
 
@@ -56,7 +57,9 @@ This replaces sequential single-model exploration and saves time. Start with the
 suggested estimator plus 1-2 alternatives from different families (e.g., tree-based + linear).
 
 ### Phase 2: Exploit (remaining iterations)
-Focus on the best-performing estimator and tune its hyperparameters.
+After Phase 1, pick the **validation leader** (ROC-AUC / R²) and **stay in that estimator family** —
+refine hyperparameters one change at a time. Do not scatter across unrelated models unless the
+leader ties alternatives within ~1% and the train/val gap clearly warrants a different family.
 
 **Tune hyperparameters when:**
 - The current estimator clearly outperforms alternatives
@@ -131,6 +134,12 @@ Report all iterations, final metrics, and your chosen best model. Include:
   - **Always fill `hyperparams`** with the best hyperparameters from the training output (look for the "BEST HYPERPARAMETERS" section in each training result)
 - `num_iterations`, `summary`, `recommendations`
 - `feature_redo_requested`: true only if you called request_feature_engineering_redo
+
+### `summary` and `recommendations` (critical)
+The pipeline may re-select the winning run by validation metrics after you respond. User-facing test scores always refer to **`best_model_name`**.
+
+- **`summary`**: Experiment arc (what you tried, outcomes), why **`best_model_name`** won, and headline metrics once each. **Be concise** — no repeated metrics, no filler. If the last iteration is not the best, say so; do not frame the last run as the deliverable when an earlier run won.
+- **`recommendations`**: Short, actionable items for **`best_model_name`** (deploy, thresholds, monitoring, tuning). Other models only for brief comparison.
 """
 
 FEATURE_ENGINEERING_SIMPLE_SYSTEM_PROMPT = """You are a senior data scientist selecting and engineering features for a machine learning model.

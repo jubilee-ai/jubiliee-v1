@@ -17,8 +17,10 @@ const STEP_GROUPS: Array<{ label: string; ids: string[] }> = [
   { label: "Preparation", ids: ["cleaning", "label_split_definition"] },
   { label: "Features", ids: ["feature_specification_and_engineering", "feature_selection_specification", "feature_engineering_executor"] },
   { label: "Training", ids: ["training_approval", "training"] },
-  { label: "Output", ids: ["generate_report"] },
 ]
+
+/** Still runs in the pipeline but not shown as its own checklist row */
+const CHECKLIST_EXCLUDED_IDS = new Set(["generate_report"])
 
 export function ProgressPanel({
   steps,
@@ -27,9 +29,10 @@ export function ProgressPanel({
   isRunning: _isRunning,
   onStepClick,
 }: ProgressPanelProps) {
-  const completedSteps = steps.filter((s) => s.status === "completed").length
-  const totalSteps = steps.length
-  const progress = Math.round((completedSteps / totalSteps) * 100)
+  const checklistSteps = steps.filter((s) => !CHECKLIST_EXCLUDED_IDS.has(s.id))
+  const completedSteps = checklistSteps.filter((s) => s.status === "completed").length
+  const totalSteps = checklistSteps.length
+  const progress = totalSteps > 0 ? Math.round((completedSteps / totalSteps) * 100) : 0
 
     return (
     <div className="h-full flex flex-col">

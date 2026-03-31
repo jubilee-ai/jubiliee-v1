@@ -35,11 +35,6 @@ from .feature_experiment_runner import run_experiment_grid
 from .training import run_training_agent as _run_training
 
 
-def _latest_audit_entry(audit_trace: list[dict[str, Any]] | None, step: str) -> dict[str, Any]:
-    """Most recent audit row for a step (planner/replans can append multiple rows)."""
-    matches = [t for t in (audit_trace or []) if t.get("step") == step]
-    return matches[-1] if matches else {}
-
 # =============================================================================
 # HELPER FUNCTIONS
 # =============================================================================
@@ -61,6 +56,8 @@ def _is_unsupervised(state: TrainingAgentState) -> bool:
 
 def _infer_task_type(goal: str, selected_model: str) -> str:
     """Infer task type from goal and model selection."""
+    goal = goal or ""
+    selected_model = selected_model or ""
     if selected_model == "unsupervised":
         return "unsupervised"
     goal_lower = goal.lower()
@@ -91,6 +88,7 @@ def _infer_target_column(goal: str, dataset_ref: str) -> Optional[str]:
     if df is None:
         return None
 
+    goal = goal or ""
     goal_lower = goal.lower()
     goal_words = set(goal_lower.split())
     columns_lower_map = {c.lower(): c for c in df.columns}
@@ -159,12 +157,17 @@ def data_collection(state: TrainingAgentState) -> TrainingAgentState:
         return _data_collection_impl(s)
 
     def get_summary(r: TrainingAgentState) -> str:
-        audit = _latest_audit_entry(r.get("audit_trace"), "data_collection")
-        col_list = audit.get("columns") or []
-        cols = len(col_list) if isinstance(col_list, list) and col_list else "?"
-        rows = audit.get("rows")
-        rows_s = rows if rows is not None else "?"
-        return f"Collected dataset: {r.get('collected_dataset_ref', 'unknown')}\nRows: {rows_s}, Columns: {cols}"
+        from ..utils.streaming import build_node_update
+
+        u = build_node_update("data_collection", dict(r))
+        headline = (u.get("headline") or "").strip()
+        if headline:
+            return headline
+        ref = r.get("collected_dataset_ref")
+        if ref:
+            short = str(ref).rsplit("/", 1)[-1] or str(ref)
+            return f"Dataset **{short}** is ready. Approve to continue."
+        return "Data collection finished. Approve to continue."
 
     return run_with_hitl("data_collection", state, do_work, get_summary)
 
@@ -735,7 +738,7 @@ Propose a training configuration. Respond with a JSON object containing:
     "task_type": "{task_type}",
     "hyperparameters": {{}},
     "class_weight": "balanced" or null,
-    "max_iterations": 3,
+    "max_iterations": 7,
     "strategy_notes": "Brief explanation of why these hyperparameters were chosen",
     "expected_metrics": "What metrics to optimize and expected performance range"
 }}
@@ -757,7 +760,7 @@ Be specific with hyperparameter values. Consider:
         except json.JSONDecodeError:
             training_plan = {
                 "model_type": selected_model, "task_type": task_type, "hyperparameters": {},
-                "class_weight": "balanced" if is_imbalanced else None, "max_iterations": 3,
+                "class_weight": "balanced" if is_imbalanced else None, "max_iterations": 7,
                 "strategy_notes": "Default configuration - LLM response could not be parsed",
                 "expected_metrics": "Standard metrics for the task type",
             }
@@ -767,7 +770,7 @@ Be specific with hyperparameter values. Consider:
         # Ensure required fields and add data summary
         training_plan.setdefault("model_type", selected_model)
         training_plan.setdefault("task_type", task_type)
-        training_plan.setdefault("max_iterations", 3)
+        training_plan.setdefault("max_iterations", 7)
         training_plan["data_summary"] = {
             "train_rows": n_rows, "val_rows": len(val_df) if val_df is not None else None,
             "n_features": n_features, "class_distribution": class_counts, "is_imbalanced": is_imbalanced,
@@ -805,6 +808,9 @@ Be specific with hyperparameter values. Consider:
 """
 
         training_plan = make_serializable(training_plan)
+        if state.get("hitl_auto_approve"):
+            return {**state, "training_plan": training_plan, "training_plan_approved": True, "current_step": "training"}
+
         decision = interrupt({
             "node": "training_approval", "summary": summary,
             "message": "Review the proposed training configuration. Approve to start training, or provide feedback to adjust the plan.",
@@ -839,15 +845,21 @@ def training(state: TrainingAgentState) -> TrainingAgentState:
             raise ValueError("No target_column in label_definition")
 
         model_name = f"{selected_model}_{int(time.time())}"
+        training_plan = s.get("training_plan") or {}
+        plan_max_iters = training_plan.get(
+            "max_iterations", 9 if selected_model == "neural_networks" else 7
+        )
         print(f"[training] Starting training with {selected_model}...")
         print(f"  Train: {train_ref}\n  Val: {val_ref}\n  Test: {test_ref}\n  Target: {target_column}")
 
+        plan_for_agent = training_plan if training_plan else None
         result = _run_training(
             train_ref=train_ref, val_ref=val_ref, test_ref=test_ref,
             target_column=target_column, selected_model=selected_model,
-            goal=goal, model_name=model_name, max_iterations=3,
+            goal=goal, model_name=model_name, max_iterations=plan_max_iters,
             experiment_result=s.get("experiment_result"),
             feature_rankings=s.get("feature_rankings"),
+            training_plan=plan_for_agent,
         )
 
         if result.get("success"):

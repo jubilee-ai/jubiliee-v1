@@ -14,8 +14,8 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog"
 import { RotateCcw, FileText, Search, Bell, ArrowLeft } from "lucide-react"
-import type { StepInfo, TrainingAgentState, ConfirmationAction } from "@/types/agent"
-import { createExperiment } from "@/lib/api"
+import type { StepInfo, TrainingAgentState, ConfirmationAction, TaskPlanSummary } from "@/types/agent"
+import type { ExperimentSummary } from "@/lib/api"
 import { cn } from "@/lib/utils"
 import { DatasetsPage } from "@/components/DatasetsPage"
 import { ModelsPage } from "@/components/ModelsPage"
@@ -190,6 +190,19 @@ function AuthenticatedApp() {
     if (activeTab === "models") void realAgent.refreshModelTypes()
   }, [activeTab, realAgent.refreshDatasets, realAgent.refreshModelTypes])
 
+  const taskRunning =
+    realAgent.agentState.lab_mode === "task" &&
+    realAgent.agentState.task_status === "running" &&
+    !!realAgent.experimentId
+
+  useEffect(() => {
+    if (!taskRunning) return
+    const t = window.setInterval(() => {
+      void realAgent.refreshExperimentTraining()
+    }, 5000)
+    return () => window.clearInterval(t)
+  }, [taskRunning, realAgent.refreshExperimentTraining])
+
   const handleStepClick = useCallback((stepId: string) => {
     if (chatPanelRef.current) {
       const messageId = chatPanelRef.current.findMessageByStepName(stepId)
@@ -206,24 +219,69 @@ function AuthenticatedApp() {
 
   const [switchingTo, setSwitchingTo] = useState<string | null>(null)
 
-  const handleSelectExperiment = useCallback(async (id: string) => {
-    setSwitchingTo(id)
-    try {
-      await realAgent.loadExperiment(id)
-    } finally {
-      setSwitchingTo(null)
-    }
-  }, [realAgent.loadExperiment])
+  const handleSelectExperiment = useCallback(
+    async (id: string, opts?: { freshSummary?: ExperimentSummary }) => {
+      setSwitchingTo(id)
+      try {
+        if (opts?.freshSummary && opts.freshSummary.id === id) {
+          await realAgent.loadExperimentFromSummary(opts.freshSummary)
+        } else {
+          await realAgent.loadExperiment(id)
+        }
+      } finally {
+        setSwitchingTo(null)
+      }
+    },
+    [realAgent.loadExperiment, realAgent.loadExperimentFromSummary],
+  )
 
-  const openBlankExperiment = useCallback(async () => {
-    try {
-      const exp = await createExperiment()
-      bumpExperimentsList()
-      await realAgent.loadExperiment(exp.id)
-    } catch {
-      realAgent.leaveLabSession()
-    }
-  }, [realAgent, bumpExperimentsList])
+  /** Instant new chat: no POST /experiments until the first send (ensureExperimentId). Sidebar row appears after that. */
+  const handleStartBlankChat = useCallback(async () => {
+    await realAgent.saveCurrentMessages()
+    realAgent.leaveLabSession()
+  }, [realAgent])
+
+  const handleLeaveLabSession = useCallback(() => {
+    realAgent.leaveLabSession()
+  }, [realAgent])
+
+  const handleApproveTrainingPlan = useCallback(
+    async (messageId: string, plan: TaskPlanSummary, refs: string[]) => {
+      realAgent.markTaskPlanResolved(messageId)
+      await realAgent.startHandsOffTrainingFromPlan(plan, refs)
+    },
+    [realAgent],
+  )
+
+  const handleSubmitBackgroundTask = useCallback(
+    ({
+      goal,
+      preferences,
+      linkedKeys,
+    }: {
+      goal: string
+      preferences: string
+      linkedKeys: string[]
+    }) => {
+      const g = goal.trim()
+      if (!g) return
+      const tail = [
+        preferences.trim() ? `Prefs: ${preferences.trim()}` : "",
+        linkedKeys.length > 0 ? `Refs: ${linkedKeys.join(", ")}` : "",
+      ]
+        .filter(Boolean)
+        .join(" ")
+      const msg = `[Background task] ${g} ${tail}`.trim()
+      realAgent.sendMessage(msg, {
+        displayTopic: g,
+        user_model_preference: preferences.trim() || undefined,
+        begin_background_intake: true,
+        force_orchestrator: true,
+        persist_linked_datasets: linkedKeys.length > 0 ? linkedKeys : undefined,
+      })
+    },
+    [realAgent],
+  )
 
   const handleSidebarResizeStart = useCallback((event: ReactMouseEvent<HTMLButtonElement>) => {
     event.preventDefault()
@@ -255,16 +313,25 @@ function AuthenticatedApp() {
     }
   }, [isResizingSidebar, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH])
 
-  const completedSteps = agent.steps.filter((s) => s.status === "completed").length
-  const totalSteps = agent.steps.length
+  const CHECKLIST_EXCLUDE = new Set(["generate_report"])
+  const checklistSteps = agent.steps.filter((s) => !CHECKLIST_EXCLUDE.has(s.id))
+  const completedSteps = checklistSteps.filter((s) => s.status === "completed").length
+  const totalSteps = checklistSteps.length
   const currentStep = agent.steps.find(s => s.status === "running" || s.status === "awaiting_confirmation")
+  const displayCurrentStep =
+    currentStep?.id === "generate_report"
+      ? { ...currentStep, name: "Finishing up" }
+      : currentStep
   const trainingPhaseStepIds = ["training_approval", "training", "generate_report"] as const
   const isInTrainingPhase = agent.steps.some(
     (s) =>
       trainingPhaseStepIds.includes(s.id as (typeof trainingPhaseStepIds)[number]) &&
       s.status !== "pending",
   )
-  const hasExperimentChecklist = !!realAgent.experimentId && isInTrainingPhase
+  const hasExperimentChecklist =
+    !!realAgent.experimentId &&
+    isInTrainingPhase &&
+    agent.agentState.lab_mode !== "task"
   const layoutStyle = { "--sidebar-width": `${sidebarWidth}px` } as CSSProperties
 
   return (
@@ -278,7 +345,7 @@ function AuthenticatedApp() {
           </div>
 
           <div className="flex items-center gap-1.5">
-            {isComplete && (
+            {(isComplete || (agent.agentState.lab_mode === "task" && agent.agentState.task_status === "completed" && agent.agentState.training_metrics?.success)) && (
               <Button
                 variant="outline"
                 size="sm"
@@ -335,11 +402,10 @@ function AuthenticatedApp() {
               onTabChange={setActiveTab}
               activeExperimentId={realAgent.experimentId}
               onSelectExperiment={handleSelectExperiment}
-              onNewExperiment={() => void openBlankExperiment()}
+              onStartBlankChat={handleStartBlankChat}
               isBackendConnected={realAgent.isBackendConnected}
               switchingTo={switchingTo}
               experimentsListNonce={experimentsListNonce}
-              onExperimentsChanged={bumpExperimentsList}
               onActiveExperimentDeleted={() => {
                 realAgent.leaveLabSession()
                 bumpExperimentsList()
@@ -377,7 +443,7 @@ function AuthenticatedApp() {
                       variant="ghost"
                       size="sm"
                       className="gap-1.5 h-8 text-muted-foreground hover:text-foreground"
-                      onClick={() => realAgent.leaveLabSession()}
+                      onClick={() => handleLeaveLabSession()}
                     >
                       <ArrowLeft className="h-4 w-4" />
                       Back
@@ -388,8 +454,8 @@ function AuthenticatedApp() {
                   {hasExperimentChecklist && (
                     <div className="absolute top-3 left-1/2 -translate-x-1/2 z-10">
                       <ExperimentChecklistIndicator
-                        steps={agent.steps}
-                        currentStep={currentStep ?? null}
+                        steps={checklistSteps}
+                        currentStep={displayCurrentStep ?? null}
                         completedSteps={completedSteps}
                         totalSteps={totalSteps}
                         agentState={agent.agentState}
@@ -403,6 +469,7 @@ function AuthenticatedApp() {
                     messages={agent.messages}
                     confirmationRequest={agent.confirmationRequest}
                     isRunning={agent.isRunning}
+                    backgroundIntakeActive={realAgent.backgroundIntakeActive}
                     onSendMessage={agent.sendMessage}
                     onConfirmation={agent.handleConfirmation as (action: ConfirmationAction, comment?: string) => void}
                     linkedDatasets={realAgent.linkedDatasets}
@@ -416,13 +483,17 @@ function AuthenticatedApp() {
                     hasExperimentChecklist={hasExperimentChecklist}
                     experimentId={realAgent.experimentId}
                     runningStepHint={realAgent.runningStepHint}
+                    hideComposer={agent.agentState.lab_mode === "task"}
+                    startingHandsOffTask={realAgent.startingHandsOffTask}
+                    onApproveTrainingPlan={handleApproveTrainingPlan}
+                    onSubmitBackgroundTask={handleSubmitBackgroundTask}
                   />
                 </div>
               </div>
             ) : activeTab === "datasets" ? (
               <DatasetsPage datasets={realAgent.datasets} />
             ) : activeTab === "models" ? (
-              <ModelsPage modelTypes={realAgent.modelTypes} />
+              <ModelsPage />
             ) : activeTab === "settings" ? (
               <div className="flex-1 overflow-auto">
                 <div className="max-w-5xl mx-auto px-8 py-10">
@@ -444,6 +515,7 @@ function AuthenticatedApp() {
             agentState={agent.agentState}
             steps={agent.steps}
             onClose={() => setShowReport(false)}
+            datasets={realAgent.datasets}
           />
         )}
       </div>

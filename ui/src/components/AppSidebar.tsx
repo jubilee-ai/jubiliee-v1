@@ -1,11 +1,10 @@
 import { useState, useEffect, useCallback, useRef } from "react"
-import { Plus, MessageSquare, Loader2, CheckCircle2, AlertCircle, Trash2, FlaskConical, Database, Box, Settings } from "lucide-react"
+import { Plus, MessageSquare, Loader2, CheckCircle2, AlertCircle, Trash2, FlaskConical, Database, Box, Settings, Moon } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import {
   listExperiments,
-  createExperiment,
   deleteExperiment,
   updateExperiment,
   type ExperimentSummary,
@@ -18,14 +17,13 @@ interface AppSidebarProps {
   activeTab: AppTab
   onTabChange: (tab: AppTab) => void
   activeExperimentId: string | null
-  onSelectExperiment: (id: string) => void
-  onNewExperiment: () => void
+  onSelectExperiment: (id: string, opts?: { freshSummary?: ExperimentSummary }) => void | Promise<void>
+  /** Clear to a blank draft locally; experiment row is created on first message send. */
+  onStartBlankChat: () => void | Promise<void>
   isBackendConnected: boolean
   switchingTo?: string | null
   /** Increment from parent after any experiment list mutation outside this component. */
   experimentsListNonce?: number
-  /** Call after creating an experiment from the sidebar (+ button). */
-  onExperimentsChanged?: () => void
   /** When the user deletes the currently open experiment, return to lab home instead of creating a new one. */
   onActiveExperimentDeleted?: () => void
 }
@@ -48,6 +46,23 @@ function statusIcon(status: string) {
     default:
       return <MessageSquare className="h-3 w-3 text-muted-foreground/40" />
   }
+}
+
+function experimentRowIcon(exp: ExperimentSummary) {
+  const isBackgroundTask = exp.lab_mode === "task" || exp.task_status != null
+  if (isBackgroundTask) {
+    if (exp.task_status === "running") {
+      return <Loader2 className="h-3 w-3 animate-spin text-primary" />
+    }
+    if (exp.task_status === "completed") {
+      return <CheckCircle2 className="h-3 w-3 text-[hsl(var(--step-complete))]" />
+    }
+    if (exp.task_status === "failed") {
+      return <AlertCircle className="h-3 w-3 text-destructive" />
+    }
+    return <Moon className="h-3 w-3 text-primary/70" aria-hidden />
+  }
+  return statusIcon(exp.status)
 }
 
 function stripMarkdown(text: string): string {
@@ -154,11 +169,10 @@ export function AppSidebar({
   onTabChange,
   activeExperimentId,
   onSelectExperiment,
-  onNewExperiment,
+  onStartBlankChat,
   isBackendConnected,
   switchingTo,
   experimentsListNonce = 0,
-  onExperimentsChanged,
   onActiveExperimentDeleted,
 }: AppSidebarProps) {
   const [experiments, setExperiments] = useState<ExperimentSummary[]>([])
@@ -192,16 +206,9 @@ export function AppSidebar({
     setExperiments((prev) => prev.map((ex) => (ex.id === id ? { ...ex, name: nextName } : ex)))
   }, [])
 
-  const handleNew = async () => {
+  const handleNew = () => {
     onTabChange("experiment_lab")
-    try {
-      const exp = await createExperiment()
-      setExperiments((prev) => [exp, ...prev])
-      onExperimentsChanged?.()
-      onSelectExperiment(exp.id)
-    } catch {
-      onNewExperiment()
-    }
+    void onStartBlankChat()
   }
 
   const handleDelete = async (e: React.MouseEvent, id: string) => {
@@ -291,7 +298,7 @@ export function AppSidebar({
                     {isSwitching ? (
                       <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
                     ) : (
-                      statusIcon(exp.status)
+                      experimentRowIcon(exp)
                     )}
                   </div>
                   <div

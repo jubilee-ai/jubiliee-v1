@@ -380,6 +380,16 @@ def list_experiments() -> list[dict[str, object]]:
                     if r.chat_history and isinstance(r.chat_history, list) and r.chat_history
                     else None
                 ),
+                "lab_mode": (
+                    (r.training_state or {}).get("lab_mode")
+                    if isinstance(r.training_state, dict)
+                    else None
+                ),
+                "task_status": (
+                    (r.training_state or {}).get("task_status")
+                    if isinstance(r.training_state, dict)
+                    else None
+                ),
             }
             for r in rows
         ]
@@ -413,6 +423,19 @@ def update_experiment(experiment_id: str, updates: dict[str, object]) -> bool:
         for key, value in updates.items():
             if hasattr(exp, key) and key not in ("id", "created_at"):
                 setattr(exp, key, value)
+        return True
+
+
+def merge_experiment_training_state(experiment_id: str, patch: dict[str, object]) -> bool:
+    """Deep-shallow merge JSON `training_state` on an experiment (patch wins for top-level keys)."""
+    with get_db_session() as session:
+        exp = session.get(Experiment, experiment_id)
+        if exp is None:
+            return False
+        cur = dict(exp.training_state or {})
+        for k, v in patch.items():
+            cur[k] = v
+        exp.training_state = cur
         return True
 
 

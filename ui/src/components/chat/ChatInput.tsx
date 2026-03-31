@@ -9,12 +9,7 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog"
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from "@/components/ui/tooltip"
-import { Send, Database, X, ShieldCheck, ChevronRight, Download } from "lucide-react"
+import { Send, Database, X, ChevronRight, Download } from "lucide-react"
 import { cn } from "@/lib/utils"
 import type { Dataset } from "@/types/agent"
 import { type Dataset as ApiDataset } from "@/lib/api"
@@ -29,9 +24,9 @@ interface ChatInputProps {
   onDatasetSelect: (dataset: Dataset) => void
   onDatasetRemove: (datasetFile: string) => void
   availableDatasets: ApiDataset[]
-  useHitl: boolean
-  onToggleHitl: () => void
   experimentId?: string | null
+  /** Opens background-task dialog (Experimental Lab) */
+  onAssignBackgroundTask?: () => void
 }
 
 export function ChatInput({
@@ -44,9 +39,8 @@ export function ChatInput({
   onDatasetSelect,
   onDatasetRemove,
   availableDatasets,
-  useHitl,
-  onToggleHitl,
   experimentId,
+  onAssignBackgroundTask: _onAssignBackgroundTask,
 }: ChatInputProps) {
   const [showDatasetPicker, setShowDatasetPicker] = useState(false)
   const [artifacts, setArtifacts] = useState<{ datasets: Array<{ id?: string; ref?: string; name?: string; role?: string; rows?: number }>; models: Array<{ name: string; metrics?: { accuracy?: number } }> }>({ datasets: [], models: [] })
@@ -232,23 +226,8 @@ export function ChatInput({
               </DialogContent>
             </Dialog>
 
-            <div className="h-5 w-px bg-muted mx-1" />
 
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  variant={useHitl ? "default" : "ghost"}
-                  size="sm"
-                  className={`h-8 w-8 p-0 ${useHitl ? "" : "text-muted-foreground hover:text-foreground"}`}
-                  onClick={onToggleHitl}
-                >
-                  <ShieldCheck className="h-4 w-4" />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent side="top">
-                <p>{useHitl ? "Human review (on)" : "Human review (off)"}</p>
-              </TooltipContent>
-            </Tooltip>
+
           </div>
 
           <Button

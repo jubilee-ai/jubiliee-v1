@@ -60,11 +60,15 @@ class TrainingPlan(BaseModel):
         description="Class weighting strategy for imbalanced data. E.g. 'balanced', 'use CrossEntropyLoss weight param', or null.",
     )
     max_iterations: int = Field(
-        default=5,
+        default=9,
         description="Number of experiment iterations the training agent should run",
     )
     strategy_notes: str = Field(description="High-level training strategy and experiment plan")
     expected_metrics: str = Field(description="Expected range of validation metrics for this task")
+    max_continuation_rounds: Optional[int] = Field(
+        default=None,
+        description="Optional cap (1–6) on post-hoc LLM continuation rounds; omit to use default 3.",
+    )
 
 
 PREP_SYSTEM_PROMPT = """\
@@ -96,7 +100,9 @@ on the current feature set. Good for quick model family comparison.
 - training_approval — Propose a training plan for human review.
 - training — Full hyperparameter-tuned training with the best model. The training \
 agent can use batch_train_with_skill internally to train 2-3 estimators in parallel \
-per iteration, making the search faster.
+per iteration, making the search faster. Each iteration should analyze validation \
+results vs prior attempts and refine hyperparameters or the estimator toward the \
+strongest model.
 - generate_report — Save the final report.
 
 ## Strategy: Iterate Like a Data Scientist
@@ -128,8 +134,13 @@ When you are satisfied (or after 3 feature iterations):
 - Always call generate_report at the end.
 """
 
+# Alias for tests and callers that expect a single combined training-phase prompt.
+SYSTEM_PROMPT = FEATURE_TRAINING_SYSTEM_PROMPT
+
 
 def _infer_task_type(goal: str, selected_model: str) -> str:
+    goal = goal or ""
+    selected_model = selected_model or ""
     if selected_model == "unsupervised":
         return "unsupervised"
     goal_lower = goal.lower()
@@ -1082,7 +1093,8 @@ def create_simple_training_agent(
 
         model_name = f"{selected_model}_{int(time.time())}"
         training_plan = state.get("training_plan") or {}
-        plan_max_iters = training_plan.get("max_iterations", 5 if selected_model == "neural_networks" else 3)
+        plan_max_iters = training_plan.get("max_iterations", 9 if selected_model == "neural_networks" else 7)
+        plan_for_agent = training_plan if isinstance(training_plan, dict) and training_plan else None
         result = _run_training(
             train_ref=train_ref,
             val_ref=state.get("transformed_val_ref"),
@@ -1094,6 +1106,7 @@ def create_simple_training_agent(
             max_iterations=plan_max_iters,
             experiment_result=state.get("experiment_result"),
             feature_rankings=state.get("feature_rankings"),
+            training_plan=plan_for_agent,
         )
 
         feature_redo_requested = result.get("feature_redo_requested", False)

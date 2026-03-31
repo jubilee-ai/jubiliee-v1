@@ -26,6 +26,24 @@ export function formatPercent(value: number | null | undefined, decimals = 2): s
 }
 
 /**
+ * Format an ISO-8601 timestamp for UI (locale-aware date + short time).
+ */
+export function formatDisplayDateTime(iso: string | null | undefined): string {
+  const s = iso?.trim()
+  if (!s) return ""
+  const d = new Date(s)
+  if (Number.isNaN(d.getTime())) return s
+  try {
+    return new Intl.DateTimeFormat(undefined, {
+      dateStyle: "medium",
+      timeStyle: "short",
+    }).format(d)
+  } catch {
+    return d.toLocaleString()
+  }
+}
+
+/**
  * Generate a unique id with optional prefix.
  */
 export function uid(prefix = "id"): string {

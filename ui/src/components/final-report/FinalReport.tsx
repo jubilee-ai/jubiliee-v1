@@ -3,6 +3,7 @@ import { Button } from "@/components/ui/button"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { X, Download, Copy, Check } from "lucide-react"
+import type { Dataset as ApiDataset } from "@/lib/api"
 import type { TrainingAgentState, StepInfo } from "@/types/agent"
 import { SummaryTab } from "./SummaryTab"
 import { MetricsTab } from "./MetricsTab"
@@ -15,9 +16,10 @@ interface FinalReportProps {
   agentState: TrainingAgentState
   steps: StepInfo[]
   onClose: () => void
+  datasets?: ApiDataset[]
 }
 
-export function FinalReport({ agentState, steps, onClose }: FinalReportProps) {
+export function FinalReport({ agentState, steps, onClose, datasets }: FinalReportProps) {
   const [activeTab, setActiveTab] = useState("summary")
   const [copied, setCopied] = useState(false)
   const metrics = agentState.training_metrics
@@ -77,7 +79,7 @@ export function FinalReport({ agentState, steps, onClose }: FinalReportProps) {
           <ScrollArea className="flex-1">
             <div className="p-6">
               <TabsContent value="summary" className="mt-0">
-                <SummaryTab agentState={agentState} />
+                <SummaryTab agentState={agentState} datasets={datasets} />
               </TabsContent>
               <TabsContent value="metrics" className="mt-0">
                 <MetricsTab agentState={agentState} />
@@ -119,7 +121,9 @@ function ReportHeader({
     <div className="flex items-center justify-between px-6 py-4 border-b">
       <div>
         <h2 className="text-xl font-semibold tracking-tight">Training Report</h2>
-        <p className="text-sm text-muted-foreground mt-0.5">{modelName}</p>
+        <p className="text-sm text-muted-foreground mt-0.5 break-words [overflow-wrap:anywhere] max-w-full">
+          {modelName}
+        </p>
       </div>
       <div className="flex items-center gap-2">
         <Button variant="ghost" size="sm" onClick={onCopy} className="h-8 gap-2">

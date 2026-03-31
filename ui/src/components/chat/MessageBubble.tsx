@@ -4,14 +4,34 @@ import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import { cn } from "@/lib/utils"
 import { FileText, ChevronRight, Check, RotateCcw, Info } from "lucide-react"
-import type { ChatMessage } from "@/types/agent"
+import type { Dataset as ApiDataset } from "@/lib/api"
+import type { ChatMessage, ChatTaskPlanPayload, TaskPlanSummary } from "@/types/agent"
+import { looksLikeLeakedPlanJson, stripLeakedPlanJson } from "@/lib/planDisplay"
+import { TaskPlanCard } from "@/components/TaskPlanCard"
 
-const MAX_CONTENT_LENGTH = 1200
+/** Long follow-up explanations from the model; keep readable without walls of text. */
+const MAX_AGENT_BODY = 380
 
 function sanitizeAgentContent(content: string): string {
-  const trimmed = content.trim()
+  const trimmed = stripLeakedPlanJson(content).trim()
 
-  if ((trimmed.startsWith("{") || trimmed.startsWith("[")) && trimmed.length > 20) {
+  if (trimmed.startsWith("{") && trimmed.length > 10) {
+    try {
+      const obj = JSON.parse(trimmed) as Record<string, unknown>
+      if (Array.isArray(obj.dataset_refs) && typeof obj.goal === "string") {
+        return ""
+      }
+      if (obj.headline) return String(obj.headline)
+      if (obj.summary && typeof obj.summary === "string") return obj.summary
+      if (obj.message && typeof obj.message === "string") return obj.message
+      if (obj.node) return `**${obj.node}** completed`
+      return "Step completed"
+    } catch {
+      if (looksLikeLeakedPlanJson(trimmed)) return ""
+    }
+  }
+
+  if (trimmed.startsWith("[") && trimmed.length > 20) {
     try {
       const obj = JSON.parse(trimmed)
       if (obj.headline) return obj.headline
@@ -20,16 +40,25 @@ function sanitizeAgentContent(content: string): string {
       if (obj.node) return `**${obj.node}** completed`
       return "Step completed"
     } catch {
-      // Not valid JSON — check for Python-dict-style dumps
+      // ignore
     }
   }
 
-  // Filter out graph state keys leaked into messages (e.g. 'plan': ..., 'steps': ...)
   if (/^\s*\{?\s*'(plan|steps|status|goal|current_step|resolved_)/.test(trimmed)) {
-    return "Processing..."
+    return ""
   }
 
-  return content
+  const lower = trimmed.toLowerCase()
+  if (
+    trimmed.length > 0 &&
+    trimmed.length < 900 &&
+    /i['']?ve set up|you can now run|you can start/i.test(lower) &&
+    /training plan|dataset|background|step/i.test(lower)
+  ) {
+    return ""
+  }
+
+  return trimmed
 }
 
 interface MessageBubbleProps {
@@ -39,6 +68,9 @@ interface MessageBubbleProps {
   stepId?: string | null
   isClickable?: boolean
   onStepClick?: () => void
+  isRunning?: boolean
+  onApproveTrainingPlan?: (messageId: string, plan: TaskPlanSummary, refs: string[]) => void
+  datasets?: ApiDataset[]
 }
 
 function assignRef<T>(r: Ref<T> | undefined, value: T | null) {
@@ -49,7 +81,20 @@ function assignRef<T>(r: Ref<T> | undefined, value: T | null) {
 }
 
 export const MessageBubble = forwardRef<HTMLDivElement, MessageBubbleProps>(
-  function MessageBubble({ message, isHighlighted, onViewReport, stepId, isClickable, onStepClick }, ref) {
+  function MessageBubble(
+    {
+      message,
+      isHighlighted,
+      onViewReport,
+      stepId,
+      isClickable,
+      onStepClick,
+      isRunning,
+      onApproveTrainingPlan,
+      datasets,
+    },
+    ref,
+  ) {
     const [isExpanded, setIsExpanded] = useState(false)
     const rootRef = useRef<HTMLDivElement | null>(null) as MutableRefObject<HTMLDivElement | null>
     const isUser = message.role === "user"
@@ -61,13 +106,17 @@ export const MessageBubble = forwardRef<HTMLDivElement, MessageBubbleProps>(
       message.showReportButton === true &&
       Boolean(onViewReport)
 
-    const shouldTruncate = message.content.length > MAX_CONTENT_LENGTH
-    const displayContent = shouldTruncate && !isExpanded
-      ? message.content.slice(0, MAX_CONTENT_LENGTH) + "..."
-      : message.content
+    const hasTaskPlan = Boolean(message.taskPlan)
+    const sanitizedAgent = sanitizeAgentContent(message.content)
+    const agentBodyForMarkdown = hasTaskPlan ? "" : sanitizedAgent.trim()
+    const shouldTruncateAgent = !hasTaskPlan && agentBodyForMarkdown.length > MAX_AGENT_BODY
+    const displayAgentBody =
+      shouldTruncateAgent && !isExpanded
+        ? `${agentBodyForMarkdown.slice(0, MAX_AGENT_BODY).trim()}…`
+        : agentBodyForMarkdown
 
     useEffect(() => {
-      if (!isExpanded || !shouldTruncate) return
+      if (!isExpanded || !shouldTruncateAgent) return
       const el = rootRef.current
       if (!el) return
       let inner = 0
@@ -80,7 +129,7 @@ export const MessageBubble = forwardRef<HTMLDivElement, MessageBubbleProps>(
         cancelAnimationFrame(outer)
         cancelAnimationFrame(inner)
       }
-    }, [isExpanded, shouldTruncate])
+    }, [isExpanded, shouldTruncateAgent])
 
     if (isSystem) {
       if (message.id === "__graph_thinking__") {
@@ -127,28 +176,53 @@ export const MessageBubble = forwardRef<HTMLDivElement, MessageBubbleProps>(
         data-step-id={stepId}
         className={cn(
           "w-full flex transition-all duration-300 animate-message-in",
-          isUser && "justify-end",
-          isHighlighted && "scale-[1.01]"
+          isUser && !message.apiPayload && "justify-end",
+          isHighlighted && "scale-[1.01]",
         )}
       >
         <div
           onClick={handleBubbleClick}
           className={cn(
-            bubbleBase,
-            isUser ? userBubble : agentBubble,
+            message.apiPayload ? "w-full max-w-3xl mx-auto px-1" : bubbleBase,
+            isUser && !message.apiPayload ? userBubble : !isUser ? agentBubble : "",
             isHighlighted && "ring-2 ring-foreground/20 shadow-lg",
             isClickable && "cursor-pointer hover:bg-muted/50 hover:shadow-md group"
           )}
         >
           {isUser ? (
-            <p className="text-[14px] leading-6 whitespace-pre-wrap">{displayContent}</p>
+            message.apiPayload ? (
+              <div className="rounded-xl border border-border/45 bg-muted/20 px-4 py-3 text-left w-full">
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-1.5">
+                  Topic
+                </p>
+                <p className="text-sm text-foreground leading-snug">{message.content}</p>
+              </div>
+            ) : (
+              <p className="text-[14px] leading-6 whitespace-pre-wrap">{message.content}</p>
+            )
           ) : (
-            <div className="text-[14px] leading-relaxed prose prose-sm dark:prose-invert max-w-none prose-p:my-1 prose-p:leading-relaxed prose-headings:my-2 prose-headings:font-medium prose-ul:my-1 prose-ol:my-1 prose-li:my-0 prose-a:text-primary prose-a:no-underline hover:prose-a:underline prose-code:bg-primary/10 prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded-md prose-code:text-[13px] prose-code:font-normal prose-code:before:content-none prose-code:after:content-none prose-strong:font-semibold">
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>{sanitizeAgentContent(displayContent)}</ReactMarkdown>
-            </div>
+            <>
+              {hasTaskPlan ? null : displayAgentBody ? (
+                <div className="text-[14px] leading-relaxed prose prose-sm dark:prose-invert max-w-none prose-p:my-1 prose-p:leading-relaxed prose-headings:my-2 prose-headings:font-medium prose-ul:my-1 prose-ol:my-1 prose-li:my-0 prose-a:text-primary prose-a:no-underline hover:prose-a:underline prose-code:bg-primary/10 prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded-md prose-code:text-[13px] prose-code:font-normal prose-code:before:content-none prose-code:after:content-none prose-strong:font-semibold">
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{displayAgentBody}</ReactMarkdown>
+                </div>
+              ) : null}
+              {message.taskPlan && onApproveTrainingPlan && (
+                <TaskPlanCard
+                  payload={message.taskPlan as ChatTaskPlanPayload}
+                  datasets={datasets}
+                  resolved={message.taskPlanResolved}
+                  isRunning={isRunning}
+                  disabled={isRunning || Boolean(message.taskPlanResolved)}
+                  onApproveStart={() =>
+                    onApproveTrainingPlan(message.id, message.taskPlan!.plan, message.taskPlan!.datasetRefs)
+                  }
+                />
+              )}
+            </>
           )}
 
-          {shouldTruncate && (
+          {shouldTruncateAgent && (
             <button
               onClick={(e) => {
                 e.stopPropagation()

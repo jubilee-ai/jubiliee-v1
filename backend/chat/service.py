@@ -1,9 +1,20 @@
 import json
 import uuid
-from typing import Optional
+from typing import Any, Optional
 
 from backend.chat import repository
-from backend.chat.events import format_sse, stream_start, stream_end, token as token_event, tool_start, tool_end, error_event, predict_start, predict_complete
+from backend.chat.events import (
+    format_sse,
+    stream_start,
+    stream_end,
+    token as token_event,
+    tool_start,
+    tool_end,
+    error_event,
+    predict_start,
+    predict_complete,
+    task_plan_proposed as task_plan_proposed_event,
+)
 from backend.chat.intent_router import should_route_to_training_graph
 from backend.chat.schemas import ChatRequest
 from backend.shared.serialization import serialize_state
@@ -228,6 +239,67 @@ def generate_chat_sse(
         yield format_sse(error_event(str(exc), experiment_id), experiment_id)
 
 
+def generate_background_intake_sse(
+    message: str,
+    experiment_id: Optional[str] = None,
+    conversation: Optional[list[dict[str, Any]]] = None,
+):
+    """
+    Structured LLM output (``IntakeResponse``): stream ``message`` only, then ``task_plan.proposed``
+    when ``plan`` is set — no JSON in the model's visible text.
+    """
+    from agents.background_intake_agent import run_intake_turn
+
+    yield format_sse(stream_start(experiment_id), experiment_id)
+
+    try:
+        response = run_intake_turn(conversation, message)
+        text = (response.message or "").strip()
+        chunk_size = 200
+        for i in range(0, len(text), chunk_size):
+            yield format_sse(token_event(text[i : i + chunk_size], experiment_id), experiment_id)
+
+        plan = response.plan
+        if plan is not None and plan.goal.strip():
+            refs = [str(r).strip() for r in plan.dataset_refs if str(r).strip()]
+            raw_labels = [str(x).strip() for x in plan.dataset_labels if str(x).strip()]
+            label_final = [
+                raw_labels[i] if i < len(raw_labels) else refs[i] for i in range(len(refs))
+            ]
+            steps = [str(s).strip() for s in plan.recap_steps if str(s).strip()]
+            pref_str = plan.preferences.strip() if plan.preferences else None
+            yield format_sse(
+                task_plan_proposed_event(
+                    goal=plan.goal.strip(),
+                    dataset_refs=refs,
+                    dataset_labels=label_final,
+                    preferences=pref_str,
+                    recap_steps=steps if steps else None,
+                    experiment_id=experiment_id,
+                ),
+                experiment_id,
+            )
+
+        if experiment_id and text:
+            try:
+                import time as _t
+
+                now = int(_t.time() * 1000)
+                existing = []
+                exp_data = training_repo.get_experiment(experiment_id)
+                if exp_data and exp_data.get("chat_history"):
+                    existing = list(exp_data["chat_history"])
+                existing.append({"role": "user", "content": message, "timestamp": now - 1})
+                existing.append({"role": "agent", "content": text, "timestamp": now})
+                training_repo.save_experiment_chat_history(experiment_id, existing)
+            except Exception:
+                pass
+
+        yield format_sse(stream_end(experiment_id), experiment_id)
+    except Exception as exc:
+        yield format_sse(error_event(str(exc), experiment_id), experiment_id)
+
+
 def chat(request: ChatRequest) -> tuple[str, object]:
     """Route unified /api/chat body to graph training or orchestrator SSE."""
     from backend.training import service as training_service
@@ -263,6 +335,13 @@ def chat(request: ChatRequest) -> tuple[str, object]:
         resolved_thread_id = exp["chat_thread_id"] if exp else f"chat-{uuid.uuid4().hex[:8]}"
     else:
         resolved_thread_id = f"chat-{uuid.uuid4().hex[:8]}"
+
+    if getattr(request, "background_intake", False):
+        return resolved_thread_id, generate_background_intake_sse(
+            request.message,
+            experiment_id=request.experiment_id,
+            conversation=request.conversation,
+        )
 
     training_context = None
     ctx = training_repo.get_latest_training_context(experiment_id=request.experiment_id)

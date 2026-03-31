@@ -1,11 +1,10 @@
 import uuid
-from typing import Optional
-
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Body, HTTPException
 from pydantic import BaseModel
 
 from backend.catalog.repository import _dataset_to_dict
 from backend.experiments.schemas import (
+    AsyncTrainRequest,
     CreateExperimentRequest,
     ExperimentDetail,
     ExperimentSummary,
@@ -20,6 +19,7 @@ from backend.shared.models import (
     TrainingJob,
 )
 from backend.training import repository
+from backend.training import service as training_service
 
 router = APIRouter()
 
@@ -58,12 +58,38 @@ def get_experiment(experiment_id: str):
 @router.patch("/api/experiments/{experiment_id}")
 def update_experiment(experiment_id: str, request: UpdateExperimentRequest):
     updates = request.model_dump(exclude_none=True)
-    if not updates:
+    merge_patch = updates.pop("training_state_merge", None)
+    did_something = False
+    if merge_patch is not None:
+        if not repository.merge_experiment_training_state(experiment_id, merge_patch):
+            raise HTTPException(status_code=404, detail="Experiment not found")
+        did_something = True
+    if updates:
+        if not repository.update_experiment(experiment_id, updates):
+            raise HTTPException(status_code=404, detail="Experiment not found")
+        did_something = True
+    if not did_something:
         raise HTTPException(status_code=400, detail="No fields to update")
-    ok = repository.update_experiment(experiment_id, updates)
-    if not ok:
-        raise HTTPException(status_code=404, detail="Experiment not found")
     return {"status": "ok"}
+
+
+@router.post("/api/experiments/{experiment_id}/async-train")
+def start_async_training(
+    experiment_id: str,
+    request: AsyncTrainRequest = Body(default_factory=AsyncTrainRequest),
+):
+    body = request
+    try:
+        training_service.start_experiment_async_training(
+            experiment_id,
+            model_pref=body.user_model_preference,
+            conversation=body.conversation,
+        )
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Experiment not found")
+    except RuntimeError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    return {"status": "ok", "experiment_id": experiment_id}
 
 
 @router.delete("/api/experiments/{experiment_id}")

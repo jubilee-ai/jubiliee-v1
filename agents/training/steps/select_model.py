@@ -142,7 +142,7 @@ class ModelFamilySelectionOutput(BaseModel):
         description="The selected model family for training"
     )
     explanation: str = Field(
-        description="Explanation of why this model family was selected based on the goal"
+        description="Brief (2–4 sentences) explanation of why this model family fits the goal"
     )
     confidence: Literal["high", "medium", "low"] = Field(
         description="Confidence level in the model family selection"
@@ -173,7 +173,7 @@ Your job is NOT to pick a specific algorithm — only to narrow the approach dow
 
 1. **If the user explicitly names a model family** (e.g. "use supervised learning", "cluster my customers", "deep learning"), you MUST select that family. The user's explicit request overrides your own preference.
 2. Otherwise, analyze the goal to understand what kind of problem this is and select the most appropriate family.
-3. Explain your reasoning.
+3. Explain your reasoning in **2–4 short sentences** — tight and direct; skip preamble; do not paste long “alternative families” essays into the explanation (use the structured alternative_families field for those).
 4. List any alternative families that could also work.
 """
 

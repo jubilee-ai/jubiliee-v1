@@ -1,6 +1,5 @@
 // Chat subcomponents barrel export
 export { MessageBubble } from "./MessageBubble"
-export { SuggestionChip } from "./SuggestionChip"
 export { EmptyState } from "./EmptyState"
 export { LoadingIndicator } from "./LoadingIndicator"
 export { ConfirmationPanel } from "./ConfirmationPanel"
