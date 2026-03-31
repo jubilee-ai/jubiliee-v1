@@ -1,4 +1,5 @@
 import React from "react"
+import { cn } from "@/lib/utils"
 
 /**
  * Section wrapper with a title
@@ -19,15 +20,25 @@ export function MetricBox({
   label,
   value,
   highlight,
+  className,
 }: {
   label: string
   value: string
   highlight?: boolean
+  className?: string
 }) {
   return (
-    <div className={`rounded-xl p-4 ${highlight ? "bg-foreground/5" : "bg-muted/30"}`}>
-      <div className="text-xs text-muted-foreground mb-1">{label}</div>
-      <div className="text-sm font-semibold">{value}</div>
+    <div
+      className={cn(
+        "rounded-xl p-4 min-w-0 max-w-full flex flex-col",
+        highlight ? "bg-foreground/5" : "bg-muted/30",
+        className
+      )}
+    >
+      <div className="text-xs text-muted-foreground mb-1 shrink-0">{label}</div>
+      <div className="text-sm font-semibold leading-snug break-words [overflow-wrap:anywhere]">
+        {value}
+      </div>
     </div>
   )
 }
@@ -45,9 +56,13 @@ export function MetricRow({
   highlight?: boolean
 }) {
   return (
-    <div className="flex justify-between items-center">
-      <span className="text-muted-foreground">{label}</span>
-      <span className={`text-xl font-semibold ${highlight ? "text-success" : ""}`}>{value}</span>
+    <div className="flex justify-between items-center gap-3 min-w-0">
+      <span className="text-muted-foreground shrink-0">{label}</span>
+      <span
+        className={`text-xl font-semibold text-right min-w-0 break-words [overflow-wrap:anywhere] ${highlight ? "text-success" : ""}`}
+      >
+        {value}
+      </span>
     </div>
   )
 }

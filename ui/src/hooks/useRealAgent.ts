@@ -208,6 +208,25 @@ function userTextForApi(m: ChatMessage): string {
 }
 
 /** Build user/agent turns for the backend planner (`messages` is pre-send snapshot; `latestUserText` is the outgoing instruction). */
+/** Normalize plan fields from tool JSON or task_plan.proposed SSE into a card payload. */
+function chatTaskPlanFromPlanFields(data: {
+  goal?: string
+  dataset_refs?: string[]
+  dataset_labels?: string[]
+  preferences?: string | null
+  recap_steps?: string[]
+}): ChatTaskPlanPayload | null {
+  if (!data.goal?.trim()) return null
+  const refs = data.dataset_refs ?? []
+  const plan: TaskPlanSummary = {
+    goal: data.goal.trim(),
+    datasetLabels: data.dataset_labels?.length ? data.dataset_labels : refs,
+    preferences: data.preferences ?? null,
+    steps: data.recap_steps?.length ? data.recap_steps : [],
+  }
+  return { plan, datasetRefs: refs }
+}
+
 function buildPlanningConversation(
   messages: ChatMessage[],
   latestUserText: string,
@@ -634,15 +653,16 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
 
       setMessages((prev) => {
         const last = prev[prev.length - 1]
+        const chunk = event.content || ""
         if (last && last.role === "agent" && last._streaming) {
           return [
             ...prev.slice(0, -1),
-            { ...last, content: last.content + (event.content || "") },
+            { ...last, content: last.content + chunk },
           ]
         }
         return [
           ...prev,
-          { id: uid("msg"), role: "agent", content: event.content || "", timestamp: Date.now(), _streaming: true },
+          { id: uid("msg"), role: "agent", content: chunk, timestamp: Date.now(), _streaming: true },
         ]
       })
       return
@@ -660,6 +680,53 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
       addMessage("system", toolLabel)
       return
     }
+    if (event.type === "task_plan.proposed") {
+      const payload = chatTaskPlanFromPlanFields({
+        goal: event.goal,
+        dataset_refs: event.dataset_refs,
+        dataset_labels: event.dataset_labels,
+        preferences: event.preferences ?? null,
+        recap_steps: event.recap_steps,
+      })
+      if (!payload) return
+      suppressPostPlanTokensRef.current = true
+      setMessages((prev) => {
+        const next = [...prev]
+        while (next.length > 0) {
+          const last = next[next.length - 1]
+          if (last.role !== "agent") break
+          if (last.taskPlan) break
+          const c = last.content ?? ""
+          if (
+            last._streaming ||
+            looksLikeLeakedPlanJson(c) ||
+            stripLeakedPlanJson(c).trim() === ""
+          ) {
+            next.pop()
+            continue
+          }
+          break
+        }
+        const lastAfter = next[next.length - 1]
+        if (lastAfter?.role === "agent" && lastAfter.content && !lastAfter.taskPlan) {
+          const stripped = stripLeakedPlanJson(lastAfter.content)
+          if (stripped !== lastAfter.content) {
+            next[next.length - 1] = { ...lastAfter, content: stripped }
+          }
+        }
+        return [
+          ...next,
+          {
+            id: uid("msg"),
+            role: "agent",
+            content: "",
+            timestamp: Date.now(),
+            taskPlan: payload,
+          },
+        ]
+      })
+      return
+    }
     if (event.type === "tool_result" || event.type === "tool.end") {
       if (event.tool === "propose_training_plan" && event.result != null) {
         try {
@@ -672,16 +739,11 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
             preferences?: string | null
             recap_steps?: string[]
           }
-          if (data.error || !data.goal || !data.dataset_refs?.length) {
+          if (data.error) {
             return
           }
-          const plan: TaskPlanSummary = {
-            goal: data.goal,
-            datasetLabels: data.dataset_labels?.length ? data.dataset_labels : data.dataset_refs,
-            preferences: data.preferences ?? null,
-            steps: data.recap_steps?.length ? data.recap_steps : [],
-          }
-          const payload: ChatTaskPlanPayload = { plan, datasetRefs: data.dataset_refs }
+          const payload = chatTaskPlanFromPlanFields(data)
+          if (!payload) return
           suppressPostPlanTokensRef.current = true
           setMessages((prev) => {
             const next = [...prev]
@@ -699,6 +761,13 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
                 continue
               }
               break
+            }
+            const lastAfter = next[next.length - 1]
+            if (lastAfter?.role === "agent" && lastAfter.content && !lastAfter.taskPlan) {
+              const stripped = stripLeakedPlanJson(lastAfter.content)
+              if (stripped !== lastAfter.content) {
+                next[next.length - 1] = { ...lastAfter, content: stripped }
+              }
             }
             return [
               ...next,
@@ -1300,6 +1369,8 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
             model_preference: opts?.user_model_preference ?? null,
             conversation,
             force_orchestrator: forceOrch,
+            background_intake:
+              backgroundIntakeActiveRef.current || opts?.begin_background_intake === true,
           },
           applyAgentStreamEvent,
           (error: Error) => {

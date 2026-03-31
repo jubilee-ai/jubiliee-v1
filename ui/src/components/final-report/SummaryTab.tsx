@@ -44,7 +44,7 @@ export function SummaryTab({ agentState, datasets }: SummaryTabProps) {
   return (
     <div className="space-y-8">
       {/* Hero metrics — test headline scores + run shape; model type once (or feature count when model is already in slot 2) */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 [&>div>div:first-child]:text-[11px] [&>div>div:last-child]:text-md">
+      <div className="flex flex-wrap gap-4 [&>div]:flex-[1_1_11rem] [&>div]:min-w-0 [&>div]:max-w-full [&>div>div:first-child]:text-[11px] [&>div>div:last-child]:text-md">
         {hasClassificationMetrics ? (
           <>
             <MetricBox label="Test Accuracy" value={formatPercent(metrics?.test_accuracy)} highlight />
@@ -184,7 +184,7 @@ export function SummaryTab({ agentState, datasets }: SummaryTabProps) {
       )}
 
       {/* Artifacts — name and paths only; model type is in the hero row */}
-      <Section title="Saved artifacts">
+      {/* <Section title="Saved artifacts">
         <div className="space-y-3">
           <div>
             <div className="text-sm text-muted-foreground mb-1">Model artifact</div>
@@ -201,14 +201,6 @@ export function SummaryTab({ agentState, datasets }: SummaryTabProps) {
                 </code>
               </div>
             )}
-          {agentState.report_path && (
-            <div>
-              <div className="text-sm text-muted-foreground mb-1">Report file</div>
-              <code className="text-sm bg-muted/50 px-3 py-2 rounded-lg block break-all">
-                {agentState.report_path}
-              </code>
-            </div>
-          )}
           {agentState.model_explanation && (
             <div>
               <div className="text-sm text-muted-foreground mb-1">Why this model</div>
@@ -218,7 +210,7 @@ export function SummaryTab({ agentState, datasets }: SummaryTabProps) {
             </div>
           )}
         </div>
-      </Section>
+      </Section> */}
     </div>
   )
 }

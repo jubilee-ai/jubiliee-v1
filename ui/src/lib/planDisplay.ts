@@ -21,7 +21,11 @@ export function stripLeakedPlanJson(content: string): string {
     const inner = fm[1]?.trim() ?? ""
     try {
       const j = JSON.parse(inner) as { goal?: unknown; dataset_refs?: unknown }
-      if (typeof j.goal === "string" && Array.isArray(j.dataset_refs)) {
+      const refsOk =
+        j.dataset_refs === undefined ||
+        (Array.isArray(j.dataset_refs) &&
+          (j.dataset_refs as unknown[]).every((r) => typeof r === "string"))
+      if (typeof j.goal === "string" && refsOk) {
         t = t.slice(fm[0].length).trim()
         fm = t.match(fence)
         continue
@@ -32,7 +36,7 @@ export function stripLeakedPlanJson(content: string): string {
     break
   }
 
-  if (t.startsWith("{") && t.includes('"dataset_refs"')) {
+  if (t.startsWith("{") && (t.includes('"dataset_refs"') || t.includes('"goal"'))) {
     let depth = 0
     let i = 0
     for (; i < t.length; i++) {
@@ -57,12 +61,14 @@ export function stripLeakedPlanJson(content: string): string {
 /** True when the whole (or partial stream) blob is the training plan JSON from the tool. */
 export function looksLikeLeakedPlanJson(content: string): boolean {
   const t = content.trim()
-  if (!t.startsWith("{") || !t.includes('"dataset_refs"') || !t.includes('"goal"')) {
+  if (!t.startsWith("{") || !t.includes('"goal"')) {
     return false
   }
   try {
     const j = JSON.parse(t) as { goal?: unknown; dataset_refs?: unknown }
-    return typeof j.goal === "string" && Array.isArray(j.dataset_refs)
+    if (typeof j.goal !== "string") return false
+    if (j.dataset_refs === undefined) return true
+    return Array.isArray(j.dataset_refs)
   } catch {
     return t.length > 120 && /"recap_steps"\s*:/.test(t)
   }

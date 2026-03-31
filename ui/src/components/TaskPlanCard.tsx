@@ -4,7 +4,6 @@ import { useMemo } from "react"
 import type { ChatTaskPlanPayload } from "@/types/agent"
 import type { Dataset as ApiDataset } from "@/lib/api"
 import { resolveDatasetDisplayNames } from "@/lib/datasetDisplay"
-import { truncateGoalForCard } from "@/lib/planDisplay"
 import { cn } from "@/lib/utils"
 
 export interface TaskPlanCardProps {
@@ -44,8 +43,8 @@ export function TaskPlanCard({
       <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-2">
         Review plan
       </p>
-      <p className="text-sm font-medium text-foreground leading-snug mb-2">
-        {truncateGoalForCard(plan.goal)}
+      <p className="text-sm font-medium text-foreground leading-snug mb-2 whitespace-pre-wrap break-words">
+        {plan.goal.trim()}
       </p>
       {dataLine ? (
         <p className="text-xs text-muted-foreground mb-3">

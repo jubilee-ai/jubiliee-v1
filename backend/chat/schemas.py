@@ -23,6 +23,8 @@ class ChatRequest(BaseModel):
     conversation: Optional[list[dict[str, Any]]] = None
     #: When True, stream orchestrator chat only (tools / propose_training_plan), never the training graph.
     force_orchestrator: bool = False
+    #: Tool-free background task planning; streams ``task_plan.proposed`` instead of ``propose_training_plan``.
+    background_intake: bool = False
 
     @model_validator(mode="after")
     def require_message_unless_resume(self) -> "ChatRequest":

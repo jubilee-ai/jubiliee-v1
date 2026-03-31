@@ -227,6 +227,26 @@ def error_event(
     return {"type": "error", "error": error_msg, "experiment_id": experiment_id}
 
 
+def task_plan_proposed(
+    goal: str,
+    dataset_refs: list[str],
+    dataset_labels: list[str] | None,
+    preferences: str | None,
+    recap_steps: list[str] | None,
+    experiment_id: str | None = None,
+) -> dict[str, Any]:
+    """Structured training plan for the UI plan card (tool-free background intake)."""
+    return {
+        "type": "task_plan.proposed",
+        "goal": goal,
+        "dataset_refs": dataset_refs,
+        "dataset_labels": list(dataset_labels or []),
+        "preferences": preferences,
+        "recap_steps": list(recap_steps or []),
+        "experiment_id": experiment_id,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Validation & public API
 # ---------------------------------------------------------------------------
@@ -247,6 +267,7 @@ ALL_EVENT_TYPES: list[str] = [
     "dataset.resolved",
     "dataset.error",
     "error",
+    "task_plan.proposed",
 ]
 
 

@@ -90,6 +90,13 @@ export interface AgentStreamEvent {
 
   // Error
   error?: string
+
+  /** task_plan.proposed (background intake, no tools) */
+  goal?: string
+  dataset_refs?: string[]
+  dataset_labels?: string[]
+  preferences?: string | null
+  recap_steps?: string[]
 }
 
 export interface AgentStreamRequest {
@@ -105,6 +112,8 @@ export interface AgentStreamRequest {
   }
   /** Keep orchestrator/tools (e.g. propose_training_plan); do not start the training graph. */
   force_orchestrator?: boolean
+  /** Tool-free planning agent; server emits task_plan.proposed instead of propose_training_plan. */
+  background_intake?: boolean
 }
 
 

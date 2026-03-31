@@ -63,7 +63,7 @@ export function AnalysisTab({ agentState }: AnalysisTabProps) {
       {/* Dataset Overview */}
       {hasDatasetOverview && (
         <Section title="Dataset Overview">
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <div className="flex flex-wrap gap-4 [&>div]:flex-[1_1_11rem] [&>div]:min-w-0 [&>div]:max-w-full">
             <MetricBox
               label="Rows"
               value={keyStats.dataset_overview.rows?.toLocaleString() || "N/A"}

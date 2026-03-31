@@ -35,6 +35,8 @@ def should_route_to_training_graph(request: ChatRequest) -> bool:
     """
     if getattr(request, "force_orchestrator", False):
         return False
+    if getattr(request, "background_intake", False):
+        return False
     if request.linked_datasets and len(request.linked_datasets) > 0:
         return True
 

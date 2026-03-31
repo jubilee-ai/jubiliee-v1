@@ -265,7 +265,6 @@ function AuthenticatedApp() {
       const tail = [
         preferences.trim() ? `Prefs: ${preferences.trim()}` : "",
         linkedKeys.length > 0 ? `Refs: ${linkedKeys.join(", ")}` : "",
-        "Call propose_training_plan when ready.",
       ]
         .filter(Boolean)
         .join(" ")

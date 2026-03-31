@@ -27,7 +27,7 @@ export function MetricsTab({ agentState }: MetricsTabProps) {
   return (
     <div className="space-y-8">
       {/* Validation vs Test comparison */}
-      <div className="grid md:grid-cols-2 gap-6">
+      <div className="grid md:grid-cols-2 gap-6 min-w-0 [&>div]:min-w-0">
         <Section title="Validation Metrics">
           <div className="space-y-4">
             {hasClassificationMetrics ? (
@@ -92,8 +92,8 @@ export function MetricsTab({ agentState }: MetricsTabProps) {
                     isBest ? "bg-foreground/5 ring-1 ring-foreground/10" : "bg-muted/30"
                   }`}
                 >
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-3">
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between sm:gap-4 min-w-0">
+                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 shrink-0 min-w-0">
                       <span className="font-medium">Iteration {iter.iteration ?? i + 1}</span>
                       {isBest && (
                         <Badge variant="secondary" className="text-xs">
@@ -106,7 +106,7 @@ export function MetricsTab({ agentState }: MetricsTabProps) {
                         </Badge>
                       )}
                     </div>
-                    <div className="flex gap-6 text-sm">
+                    <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm min-w-0 sm:justify-end">
                       {hasIterClassificationMetrics ? (
                         <>
                           <span className="text-muted-foreground">
@@ -146,15 +146,16 @@ export function MetricsTab({ agentState }: MetricsTabProps) {
                   </div>
 
                   {/* Show model name and tool used */}
-                  <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
+                  <div className="mt-2 flex flex-col gap-1.5 text-xs text-muted-foreground min-w-0 sm:flex-row sm:flex-wrap sm:gap-x-4 sm:gap-y-1">
                     {iterMetrics.model_name && (
-                      <span>
-                        Model: <code className="text-foreground">{iterMetrics.model_name}</code>
+                      <span className="min-w-0 break-words [overflow-wrap:anywhere]">
+                        Model:{" "}
+                        <code className="text-foreground break-all align-baseline">{iterMetrics.model_name}</code>
                       </span>
                     )}
                     {iterMetrics.tool && (
-                      <span>
-                        Tool: <code className="text-foreground">{iterMetrics.tool}</code>
+                      <span className="min-w-0 break-words [overflow-wrap:anywhere]">
+                        Tool: <code className="text-foreground break-all align-baseline">{iterMetrics.tool}</code>
                       </span>
                     )}
                   </div>
