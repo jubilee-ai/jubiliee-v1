@@ -1,7 +1,13 @@
 import logging
+from pathlib import Path
 from typing import Any
 
 log = logging.getLogger(__name__)
+
+
+def _trained_model_report_path(model_name: str) -> Path:
+    """Same layout as ``GET /api/trained-models/{model_name}/report``."""
+    return Path(__file__).resolve().parents[2] / "trained_models" / f"{model_name}_report.json"
 
 
 def get_datasets(include_derived: bool = False) -> list[dict[str, object]]:
@@ -91,7 +97,7 @@ def get_trained_models() -> dict[str, object]:
 
 def _get_trained_models_from_db() -> dict[str, object]:
     from backend.shared.database import get_db_session
-    from backend.shared.models import Model, ModelVersion
+    from backend.shared.models import Experiment, Model, ModelVersion
 
     with get_db_session() as session:
         models = session.query(Model).all()
@@ -108,7 +114,17 @@ def _get_trained_models_from_db() -> dict[str, object]:
             if version is None:
                 continue
             props = model.properties or {}
+            exp_id = props.get("experiment_id") if isinstance(props.get("experiment_id"), str) else None
+            experiment_name = None
+            if exp_id:
+                exp = session.get(Experiment, exp_id)
+                if exp is not None:
+                    experiment_name = exp.name
+                else:
+                    snap = props.get("experiment_name")
+                    experiment_name = snap if isinstance(snap, str) else None
             v_props = version.properties or {}
+            report_path = _trained_model_report_path(model.name)
             result[model.name] = {
                 "model_name": model.name,
                 "model_type": props.get("model_type", ""),
@@ -122,5 +138,8 @@ def _get_trained_models_from_db() -> dict[str, object]:
                 "created_at": model.created_at.isoformat() if model.created_at else "",
                 "updated_at": model.updated_at.isoformat() if model.updated_at else "",
                 "version": version.version,
+                "experiment_id": exp_id,
+                "experiment_name": experiment_name,
+                "report_available": report_path.is_file(),
             }
         return result

@@ -212,6 +212,10 @@ The broader families above are included so the guide matches the scikit-learn un
 - **Treat dimensionality reduction and clustering as different goals.** PCA can improve a later clustering model, but it is not itself a clustering model.
 - When in doubt, train 2-3 models from different families and compare silhouette score, Davies-Bouldin score, cluster counts, noise ratio, or explained variance.
 
+## Holdout diagnostics (recommended for trust)
+
+Training-only silhouette can be optimistic. When the row count is sufficient (≥40 rows in the skill), pass **`eval_holdout_fraction`** (e.g. `0.15`–`0.2`) in `params`. The skill fits preprocessing on a training slice, scores **out-of-sample** `val_silhouette_score` / `val_davies_bouldin_score` where `predict` exists, then **refits on all rows** for the saved model. DBSCAN, AgglomerativeClustering, and PCA do not produce standard val cluster metrics via `predict` in this path.
+
 ## Example
 
 ```json
@@ -219,6 +223,7 @@ The broader families above are included so the guide matches the scikit-learn un
   "estimator": "KMeans",
   "model_name": "customer_segments_v1",
   "train_dataset_ref": "customer_features_train",
+  "eval_holdout_fraction": 0.15,
   "hyperparameters": {
     "n_clusters": 6,
     "random_state": 42
@@ -236,10 +241,11 @@ Call `train_with_skill(skill_name="unsupervised", params={...})` with:
 - `"estimator"`: the sklearn class name (e.g. `"KMeans"`, `"DBSCAN"`, `"IsolationForest"`, `"PCA"`)
 - `"model_name"`: a descriptive unique name (e.g. `"segments_v1"`, `"iforest_v2"`, `"pca_v1"`)
 - `"train_dataset_ref"`: the training dataset reference
+- `"eval_holdout_fraction"`: (optional, recommended when n is large enough) e.g. `0.15` for internal holdout metrics (`val_*`)
 - `"feature_columns"`: (optional) explicit feature subset
 - `"hyperparameters"`: (optional) override estimator hyperparameters
 
-The training tool automatically preprocesses the data, fits the estimator, saves the artifact, and returns unsupervised diagnostics such as silhouette score, Davies-Bouldin score, inertia, anomaly ratio, or explained variance when applicable.
+The training tool automatically preprocesses the data, fits the estimator, saves the artifact, and returns unsupervised diagnostics such as silhouette score, Davies-Bouldin score, inertia, anomaly ratio, or explained variance when applicable. Prefer comparing **`val_silhouette_score`** (when present) over training-only scores for model selection.
 
 ### Step 2 - Compare and iterate
 

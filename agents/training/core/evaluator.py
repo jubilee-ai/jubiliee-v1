@@ -126,9 +126,7 @@ def _summarise_completed_step(state: "TrainingAgentState") -> str:
         parts.append(f"Dataset: {state.get('collected_dataset_ref', 'N/A')}")
         parts.append(f"Source: {state.get('data_source', 'N/A')}")
     elif step == "select_model":
-        parts.append(f"Family: {state.get('selected_model', 'N/A')}")
-        parts.append(f"Task type: {state.get('task_type', 'N/A')}")
-        parts.append(f"Explanation: {state.get('model_explanation', 'N/A')}")
+        parts.append("Setup step completed (approach configured internally).")
     elif step == "cleaning":
         parts.append(f"Cleaned ref: {state.get('cleaned_dataset_ref', 'N/A')}")
         parts.append(f"Summary: {state.get('cleaning_summary', 'N/A')}")

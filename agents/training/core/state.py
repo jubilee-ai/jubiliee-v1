@@ -24,6 +24,7 @@ STATE_SNAPSHOT_KEYS = [
     "transformed_val_ref",
     "transformed_test_ref",
     "feature_validation_passed",
+    "feature_pipeline_mode",
     "experiment_result",
     "feature_rankings",
     "audit_trace",
@@ -125,6 +126,8 @@ class TrainingAgentState(TypedDict):
     transformed_val_ref: Optional[str]  # NEW: transformed val dataset
     transformed_test_ref: Optional[str]  # NEW: transformed test dataset
     feature_validation_passed: bool
+    # "engineered" = spec executed; "passthrough" = unsupervised / use cleaned table as-is
+    feature_pipeline_mode: Optional[str]
 
     # Step 5.5: Feature Experiment Runner
     experiment_result: Optional[dict[str, Any]]
@@ -220,6 +223,7 @@ def create_initial_state(
         "transformed_val_ref": None,
         "transformed_test_ref": None,
         "feature_validation_passed": False,
+        "feature_pipeline_mode": None,
         "experiment_result": None,
         "feature_rankings": None,
         "experiment_grid_summary": None,

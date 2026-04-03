@@ -2,8 +2,63 @@ import { useState } from "react"
 import { Badge } from "@/components/ui/badge"
 import { CheckCircle2, ChevronDown, ChevronRight } from "lucide-react"
 import type { TrainingAgentState, StepInfo, KeyStats } from "@/types/agent"
+import { TRACE_EXCLUDE_IDS } from "@/lib/trainingSteps"
+import { formatCleaningTransformationParts } from "@/lib/cleaningTransformDisplay"
+import { FeatureExperimentDetail } from "@/components/StepDetailModal"
 import { Section, InfoBox } from "./shared"
 import { getIterationMetrics, renderValue } from "./utils"
+
+/** Pipeline steps that are shown as a single "Features" row in the execution trace. */
+const FEATURE_TRACE_STEP_IDS = new Set([
+  "feature_specification_and_engineering",
+  "feature_selection_specification",
+  "feature_engineering_executor",
+  "feature_experiment_runner",
+])
+
+const FEATURES_MERGED_ID = "features_merged"
+
+interface TraceDisplayStep extends StepInfo {
+  /** When set, this row combines multiple feature pipeline steps. */
+  mergedFeatureStepIds?: string[]
+}
+
+function mergeFeatureStepsForTrace(steps: StepInfo[]): TraceDisplayStep[] {
+  const out: TraceDisplayStep[] = []
+  let i = 0
+  while (i < steps.length) {
+    const s = steps[i]
+    if (!FEATURE_TRACE_STEP_IDS.has(s.id)) {
+      out.push(s)
+      i++
+      continue
+    }
+    const mergedIds: string[] = []
+    let start: number | undefined
+    let end: number | undefined
+    while (i < steps.length && FEATURE_TRACE_STEP_IDS.has(steps[i].id)) {
+      const st = steps[i]
+      mergedIds.push(st.id)
+      if (st.startTime != null) {
+        start = start === undefined ? st.startTime : Math.min(start, st.startTime)
+      }
+      if (st.endTime != null) {
+        end = end === undefined ? st.endTime : Math.max(end, st.endTime)
+      }
+      i++
+    }
+    out.push({
+      id: FEATURES_MERGED_ID,
+      name: "Features",
+      description: "Selection, engineering, and experiments",
+      status: "completed",
+      startTime: start,
+      endTime: end,
+      mergedFeatureStepIds: mergedIds,
+    })
+  }
+  return out
+}
 
 interface TraceTabProps {
   steps: StepInfo[]
@@ -13,7 +68,8 @@ interface TraceTabProps {
 export function TraceTab({ steps, agentState }: TraceTabProps) {
   const [expanded, setExpanded] = useState<string | null>(null)
   const auditTrace = agentState.audit_trace || []
-  const completedSteps = steps.filter((s) => s.status === "completed")
+  const completedRaw = steps.filter((s) => s.status === "completed" && !TRACE_EXCLUDE_IDS.has(s.id))
+  const completedSteps = mergeFeatureStepsForTrace(completedRaw)
 
   const toggle = (id: string) => setExpanded(expanded === id ? null : id)
 
@@ -68,6 +124,8 @@ export function TraceTab({ steps, agentState }: TraceTabProps) {
                       agentState={agentState}
                       audit={getAuditEntry(step.id)}
                       auditTrace={auditTrace}
+                      mergedFeatureStepIds={(step as TraceDisplayStep).mergedFeatureStepIds}
+                      getAuditEntry={getAuditEntry}
                     />
                   </div>
                 </div>
@@ -103,33 +161,23 @@ function StepContent({
   agentState,
   audit,
   auditTrace,
+  mergedFeatureStepIds,
+  getAuditEntry,
 }: {
   stepId: string
   agentState: TrainingAgentState
   audit: Record<string, unknown> | undefined
   auditTrace: Record<string, unknown>[]
+  mergedFeatureStepIds?: string[]
+  getAuditEntry: (stepId: string) => Record<string, unknown> | undefined
 }) {
-  if (stepId === "select_model") {
+  if (stepId === FEATURES_MERGED_ID && mergedFeatureStepIds?.length) {
     return (
-      <div className="space-y-3">
-        <InfoBox label="Selected Model" value={agentState.selected_model} highlight />
-        {agentState.model_explanation && (
-          <div>
-            <div className="text-sm text-muted-foreground mb-1">Explanation</div>
-            <p className="text-sm leading-relaxed">{agentState.model_explanation}</p>
-          </div>
-        )}
-        {audit && (
-          <div className="grid grid-cols-2 gap-3">
-            {audit.confidence != null && (
-              <InfoBox label="Confidence" value={String(audit.confidence)} />
-            )}
-            {Array.isArray(audit.alternatives) && audit.alternatives.length > 0 && (
-              <InfoBox label="Alternatives" value={(audit.alternatives as string[]).join(", ")} />
-            )}
-          </div>
-        )}
-      </div>
+      <FeaturesMergedStepContent
+        agentState={agentState}
+        mergedIds={mergedFeatureStepIds}
+        getAuditEntry={getAuditEntry}
+      />
     )
   }
 
@@ -163,23 +211,6 @@ function StepContent({
     return <LabelSplitStepContent agentState={agentState} />
   }
 
-  if (stepId === "feature_selection_specification") {
-    return <FeatureSelectionStepContent agentState={agentState} />
-  }
-
-  if (stepId === "feature_specification_and_engineering") {
-    return (
-      <div className="space-y-6">
-        <FeatureSelectionStepContent agentState={agentState} />
-        <FeatureEngineeringStepContent agentState={agentState} audit={audit} />
-      </div>
-    )
-  }
-
-  if (stepId === "feature_engineering_executor") {
-    return <FeatureEngineeringStepContent agentState={agentState} audit={audit} />
-  }
-
   if (stepId === "training") {
     return <TrainingStepContent agentState={agentState} />
   }
@@ -205,6 +236,52 @@ function StepContent({
   return <p className="text-sm text-muted-foreground">No details available</p>
 }
 
+/** Single trace row: selection, engineering, and optional feature experiments. */
+function FeaturesMergedStepContent({
+  agentState,
+  mergedIds,
+  getAuditEntry,
+}: {
+  agentState: TrainingAgentState
+  mergedIds: string[]
+  getAuditEntry: (stepId: string) => Record<string, unknown> | undefined
+}) {
+  const hasCombined = mergedIds.includes("feature_specification_and_engineering")
+  const hasSel = mergedIds.includes("feature_selection_specification")
+  const hasEng = mergedIds.includes("feature_engineering_executor")
+  const hasExp = mergedIds.includes("feature_experiment_runner")
+
+  return (
+    <div className="space-y-8">
+      {hasCombined ? (
+        <div className="space-y-6">
+          <FeatureSelectionStepContent agentState={agentState} />
+          <FeatureEngineeringStepContent
+            agentState={agentState}
+            audit={getAuditEntry("feature_specification_and_engineering")}
+          />
+        </div>
+      ) : (
+        <>
+          {hasSel ? <FeatureSelectionStepContent agentState={agentState} /> : null}
+          {hasEng ? (
+            <FeatureEngineeringStepContent
+              agentState={agentState}
+              audit={getAuditEntry("feature_engineering_executor")}
+            />
+          ) : null}
+        </>
+      )}
+      {hasExp ? (
+        <FeatureExperimentDetail
+          agentState={agentState}
+          audit={getAuditEntry("feature_experiment_runner")}
+        />
+      ) : null}
+    </div>
+  )
+}
+
 /**
  * Content for the cleaning step
  */
@@ -216,30 +293,7 @@ function CleaningStepContent({ agentState }: { agentState: TrainingAgentState })
     if (typeof t === "object" && t !== null) {
       const transform = t as Record<string, unknown>
       const toolName = transform.tool || transform.op || transform.operation || "transform"
-      const args = transform.args as Record<string, unknown> | undefined
-      const result = transform.result as string | undefined
-
-      let columns = ""
-      let extraInfo = ""
-      if (args) {
-        if (args.columns) {
-          columns = Array.isArray(args.columns)
-            ? (args.columns as string[]).join(", ")
-            : String(args.columns)
-        } else if (args.column) {
-          columns = String(args.column)
-        }
-        if (args.value !== undefined) extraInfo = `= ${args.value}`
-        if (args.strategy) extraInfo = `(${args.strategy})`
-      }
-
-      let resultInfo = ""
-      if (result) {
-        const match = String(result).match(/→\s*`([^`]+)`\s*(.*)/)
-        if (match) {
-          resultInfo = match[2] || ""
-        }
-      }
+      const { primary, secondary } = formatCleaningTransformationParts(transform)
 
       return (
         <div key={index} className="flex items-start gap-3 py-2 px-3 bg-muted/30 rounded-lg">
@@ -247,9 +301,8 @@ function CleaningStepContent({ agentState }: { agentState: TrainingAgentState })
             {String(toolName).replace(/_tool$/, "")}
           </span>
           <div className="flex-1 text-sm min-w-0">
-            {columns && <span className="font-medium">{columns}</span>}
-            {extraInfo && <span className="text-muted-foreground ml-2">{extraInfo}</span>}
-            {resultInfo && <span className="text-muted-foreground ml-2">{resultInfo}</span>}
+            {primary && <span className="font-medium break-words">{primary}</span>}
+            {secondary && <span className="text-muted-foreground ml-2">{secondary}</span>}
           </div>
         </div>
       )
@@ -419,6 +472,21 @@ function FeatureEngineeringStepContent({
   agentState: TrainingAgentState
   audit: Record<string, unknown> | undefined
 }) {
+  if (agentState.feature_pipeline_mode === "passthrough") {
+    return (
+      <div className="space-y-3">
+        <InfoBox label="Mode" value="Passthrough (unsupervised)" highlight />
+        <p className="text-xs text-muted-foreground leading-relaxed">
+          The cleaned training table is used directly. No encoded feature matrix was produced for this run.
+        </p>
+        <div>
+          <div className="text-sm text-muted-foreground mb-2">Training table</div>
+          <InfoBox label="Train" value={agentState.transformed_train_ref} mono small />
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="space-y-3">
       <InfoBox
@@ -426,10 +494,14 @@ function FeatureEngineeringStepContent({
         value={agentState.feature_validation_passed ? "Passed" : "Issues Found"}
         highlight={agentState.feature_validation_passed}
       />
+      <p className="text-xs text-muted-foreground leading-relaxed">
+        First build pass: spec → encoded columns below. Feature experiments (if any) can change the final matrix; see the
+        experiments section below or training approval for final column counts.
+      </p>
       {audit?.features_created != null && Array.isArray(audit.features_created) ? (
         <div>
           <div className="text-sm text-muted-foreground mb-1">
-            Features Created ({(audit.features_created as string[]).length})
+            Initial encoded columns ({(audit.features_created as string[]).length})
           </div>
           <p className="text-sm">{(audit.features_created as string[]).join(", ")}</p>
         </div>
@@ -563,7 +635,8 @@ function TrainingStepContent({ agentState }: { agentState: TrainingAgentState })
             All Training Iterations ({iterations.length})
           </div>
           <p className="text-xs text-muted-foreground mb-2">
-            Best (val) = validation ranking (ROC-AUC then accuracy for classification; R² for regression).
+            Best (val) uses validation ranking: ROC-AUC then accuracy (classification); R² (regression);
+            unsupervised metrics as logged.
           </p>
           <div className="space-y-2 max-h-[400px] overflow-y-auto">
             {iterations.map((iter, i) => (
@@ -590,12 +663,6 @@ function TrainingStepContent({ agentState }: { agentState: TrainingAgentState })
         </div>
       )}
 
-      {metrics?.recommendations && (
-        <div className="bg-muted/30 rounded-lg p-3">
-          <div className="text-sm font-medium mb-1">Recommendations</div>
-          <p className="text-sm">{metrics.recommendations}</p>
-        </div>
-      )}
     </div>
   )
 }
@@ -651,21 +718,12 @@ function TrainingIterationRow({
         </div>
       </div>
 
-      {/* Model and tool info */}
-      <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground mb-2">
-        {iterMetrics.model_name && (
-          <span>
-            Model:{" "}
-            <code className="text-foreground bg-muted/50 px-1 rounded">{iterMetrics.model_name}</code>
-          </span>
-        )}
-        {iterMetrics.tool && (
-          <span>
-            Tool:{" "}
-            <code className="text-foreground bg-muted/50 px-1 rounded">{iterMetrics.tool}</code>
-          </span>
-        )}
-      </div>
+      {iterMetrics.model_name && (
+        <div className="text-xs text-muted-foreground mb-2">
+          Model:{" "}
+          <code className="text-foreground bg-muted/50 px-1 rounded">{iterMetrics.model_name}</code>
+        </div>
+      )}
 
       {/* Metrics */}
       {hasIterClassification && (

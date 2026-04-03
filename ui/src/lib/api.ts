@@ -37,6 +37,10 @@ export interface TrainedModelEntry {
   created_at: string
   updated_at: string
   version: number
+  experiment_id?: string | null
+  experiment_name?: string | null
+  /** True when `trained_models/{model_name}_report.json` exists on the server. */
+  report_available?: boolean
 }
 
 /** Unified SSE payloads from POST /api/chat (orchestrator and/or training graph). */
@@ -143,6 +147,12 @@ export async function getModelTypes(): Promise<ModelType[]> {
 export async function getTrainedModels(): Promise<Record<string, TrainedModelEntry>> {
   const res = await fetch(`${API_BASE}/api/trained-models`)
   if (!res.ok) throw new Error(`Failed to fetch trained models: ${res.status}`)
+  return res.json()
+}
+
+export async function getTrainedModelReport(modelName: string): Promise<Record<string, unknown>> {
+  const res = await fetch(`${API_BASE}/api/trained-models/${encodeURIComponent(modelName)}/report`)
+  if (!res.ok) throw new Error(`Failed to fetch trained model report: ${res.status}`)
   return res.json()
 }
 

@@ -3,6 +3,8 @@ import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import type { TrainingAgentState, StepInfo, KeyStats, FeatureCorrelation } from "@/types/agent"
 import { X, CheckCircle2, AlertTriangle } from "lucide-react"
+import { formatCleaningTransformationParts } from "@/lib/cleaningTransformDisplay"
+import { TRACE_EXCLUDE_IDS } from "@/lib/trainingSteps"
 import { formatNumber, formatPercent } from "@/lib/utils"
 
 interface StepDetailModalProps {
@@ -35,7 +37,6 @@ export function StepDetailModal({ stepId, agentState, steps, onClose }: StepDeta
 
   const getStepTitle = () => {
     switch (stepId) {
-      case "select_model": return "Model Selection"
       case "data_collection": return "Data Collection"
       case "cleaning": return "Data Cleaning & Standardization"
       case "label_split_definition": return "Label & Split Definition"
@@ -51,9 +52,12 @@ export function StepDetailModal({ stepId, agentState, steps, onClose }: StepDeta
   }
 
   const renderContent = () => {
+    if (TRACE_EXCLUDE_IDS.has(stepId)) {
+      return (
+        <p className="text-sm text-muted-foreground">No details available for this step.</p>
+      )
+    }
     switch (stepId) {
-      case "select_model":
-        return <ModelSelectionDetail agentState={agentState} audit={audit} />
       case "data_collection":
         return <DataCollectionDetail agentState={agentState} audit={audit} />
       case "cleaning":
@@ -132,60 +136,6 @@ export function StepDetailModal({ stepId, agentState, steps, onClose }: StepDeta
             Review the details above to decide if you should proceed or request changes.
           </p>
         </div>
-      </div>
-    </div>
-  )
-}
-
-// Model Selection Detail
-function ModelSelectionDetail({ agentState, audit }: { agentState: TrainingAgentState; audit?: Record<string, unknown> }) {
-  return (
-    <div className="space-y-6">
-      {/* Selected Model */}
-      <div className="bg-foreground/5 rounded-xl p-4">
-        <div className="text-xs text-muted-foreground mb-1">Selected Model</div>
-        <div className="text-2xl font-semibold">{agentState.selected_model || "N/A"}</div>
-      </div>
-
-      {/* Explanation */}
-      {agentState.model_explanation && (
-        <div>
-          <div className="text-sm font-medium mb-2">Why this model?</div>
-          <p className="text-sm leading-relaxed text-muted-foreground bg-muted/30 rounded-lg p-4">
-            {agentState.model_explanation}
-          </p>
-        </div>
-      )}
-
-      {/* Alternatives if available */}
-      {Array.isArray(audit?.alternatives) && (audit.alternatives as string[]).length > 0 && (
-        <div>
-          <div className="text-sm font-medium mb-2">Alternative Models Considered</div>
-          <div className="flex flex-wrap gap-2">
-            {(audit.alternatives as string[]).map((alt, i) => (
-              <Badge key={i} variant="outline" className="text-sm">{alt}</Badge>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Key Decision Factors */}
-      <div>
-        <div className="text-sm font-medium mb-2">Key Decision Factors</div>
-        <ul className="space-y-2 text-sm text-muted-foreground">
-          <li className="flex gap-2">
-            <span className="text-success">✓</span>
-            Matches the task type (classification/regression)
-          </li>
-          <li className="flex gap-2">
-            <span className="text-success">✓</span>
-            Interpretability requirements considered
-          </li>
-          <li className="flex gap-2">
-            <span className="text-success">✓</span>
-            Dataset size and feature characteristics evaluated
-          </li>
-        </ul>
       </div>
     </div>
   )
@@ -274,28 +224,16 @@ function CleaningDetail({ agentState }: { agentState: TrainingAgentState; audit?
             {transformations.map((t, i) => {
               const transform = t as Record<string, unknown>
               const toolName = transform.tool || transform.op || "transform"
-              const args = transform.args as Record<string, unknown> | undefined
-              
-              let columns = ""
-              let extraInfo = ""
-              if (args) {
-                if (args.columns) {
-                  columns = Array.isArray(args.columns) ? (args.columns as string[]).join(", ") : String(args.columns)
-                } else if (args.column) {
-                  columns = String(args.column)
-                }
-                if (args.value !== undefined) extraInfo = `= ${args.value}`
-                if (args.strategy) extraInfo = `(${args.strategy})`
-              }
-              
+              const { primary, secondary } = formatCleaningTransformationParts(transform)
+
               return (
                 <div key={i} className="flex items-start gap-3 py-2 px-3 bg-muted/30 rounded-lg">
                   <span className="text-xs font-mono bg-foreground/10 px-2 py-0.5 rounded font-medium shrink-0">
                     {String(toolName).replace(/_tool$/, "")}
                   </span>
                   <div className="flex-1 text-sm min-w-0">
-                    {columns && <span className="font-medium">{columns}</span>}
-                    {extraInfo && <span className="text-muted-foreground ml-2">{extraInfo}</span>}
+                    {primary && <span className="font-medium break-words">{primary}</span>}
+                    {secondary && <span className="text-muted-foreground ml-2">{secondary}</span>}
                   </div>
                 </div>
               )
@@ -658,6 +596,39 @@ function FeatureSelectionDetail({ agentState }: { agentState: TrainingAgentState
 
 // Feature Engineering Detail
 function FeatureEngineeringDetail({ agentState, audit }: { agentState: TrainingAgentState; audit?: Record<string, unknown> }) {
+  const hadExperiments = Number(agentState.experiment_result?.total_scouts ?? 0) > 0
+  const passthrough = agentState.feature_pipeline_mode === "passthrough"
+
+  if (passthrough) {
+    return (
+      <div className="space-y-6">
+        <div className="rounded-xl p-4 bg-success/8 dark:bg-success/12">
+          <div className="flex items-center gap-2">
+            <CheckCircle2 className="h-5 w-5 text-success" />
+            <span className="font-medium text-foreground dark:text-success">Cleaned features ready</span>
+          </div>
+        </div>
+
+        <div className="rounded-lg border border-border/60 bg-muted/20 px-3 py-2.5 text-xs text-muted-foreground leading-relaxed">
+          <span className="font-medium text-foreground/90">Unsupervised / passthrough.</span>{" "}
+          Training uses the cleaned training table directly. There is no separate “encoded matrix” step for this run.
+        </div>
+
+        <div>
+          <div className="text-sm font-medium mb-2">Training feature table</div>
+          <div className="space-y-2">
+            {agentState.transformed_train_ref && (
+              <div className="flex items-center gap-3 bg-muted/30 rounded-lg p-2">
+                <Badge variant="outline" className="text-xs">Train</Badge>
+                <code className="text-xs font-mono truncate flex-1">{agentState.transformed_train_ref}</code>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="space-y-6">
       {/* Validation Status */}
@@ -670,10 +641,26 @@ function FeatureEngineeringDetail({ agentState, audit }: { agentState: TrainingA
         </div>
       </div>
 
-      {/* Features Created */}
+      <div className="rounded-lg border border-border/60 bg-muted/20 px-3 py-2.5 text-xs text-muted-foreground leading-relaxed">
+        <span className="font-medium text-foreground/90">First build pass.</span>{" "}
+        Your spec was turned into the encoded columns below (one-hot and similar transforms expand one logical feature into several columns).
+        {hadExperiments ? (
+          <>
+            {" "}
+            Feature experiments may then change which definitions or columns are used for final training — see{" "}
+            <span className="text-foreground/80 font-medium">Feature experiments</span> and{" "}
+            <span className="text-foreground/80 font-medium">Training approval</span> (data summary) for the final column count.
+          </>
+        ) : null}
+      </div>
+
+      {/* Initial encoded columns (pre–feature-experiments if those run later) */}
       {audit?.features_created != null && Array.isArray(audit.features_created) && (
         <div>
-          <div className="text-sm font-medium mb-2">Features Created ({(audit.features_created as string[]).length})</div>
+          <div className="text-sm font-medium mb-1">Initial encoded columns ({(audit.features_created as string[]).length})</div>
+          <p className="text-xs text-muted-foreground mb-2">
+            Physical columns after this build. Categorical encodings are expanded; counts here are not the same as “logical features” in the report.
+          </p>
           <div className="flex flex-wrap gap-1.5">
             {(audit.features_created as string[]).map((f, i) => (
               <Badge key={i} variant="secondary" className="text-xs font-mono font-normal">{f}</Badge>
@@ -757,8 +744,14 @@ function formatTrainingModelLabel(raw: string | null | undefined): string {
     .join(" ")
 }
 
-// Feature experiment grid — explanatory only (scout scores are intentionally omitted in UI)
-function FeatureExperimentDetail({ agentState, audit }: { agentState: TrainingAgentState; audit?: Record<string, unknown> }) {
+/** Feature-variant sweep summary — shared by step modal and final-report trace. */
+export function FeatureExperimentDetail({
+  agentState,
+  audit,
+}: {
+  agentState: TrainingAgentState
+  audit?: Record<string, unknown>
+}) {
   const exp = agentState.experiment_result as Record<string, unknown> | null | undefined
   const variant =
     (audit?.best_variant as string | undefined) ?? (exp?.best_variant_name as string | undefined)
@@ -792,12 +785,15 @@ function FeatureExperimentDetail({ agentState, audit }: { agentState: TrainingAg
           feature-set variants in parallel. The goal is to see which columns add real signal before committing
           to the expensive full training step — not to pick a final production score.
         </p>
+        <p className="text-foreground/80 text-xs leading-relaxed pt-1">
+          The winning variant can remove or keep whole groups of features. Scout rankings below describe signal strength, not a guarantee that a column was dropped from the final matrix.
+        </p>
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         {variant ? (
           <div className="bg-muted/30 rounded-lg p-3">
-            <div className="text-[11px] text-muted-foreground">Variant kept for next steps</div>
+            <div className="text-[11px] text-muted-foreground">Variant used for final training</div>
             <div className="text-base font-semibold mt-0.5">{variant}</div>
           </div>
         ) : null}
@@ -836,7 +832,10 @@ function FeatureExperimentDetail({ agentState, audit }: { agentState: TrainingAg
 
       {dropped && dropped.length > 0 ? (
         <div>
-          <div className="text-sm font-medium mb-2">Columns deprioritized in the chosen variant</div>
+          <div className="text-sm font-medium mb-1">Low-signal columns in scout rankings</div>
+          <p className="text-xs text-muted-foreground mb-2">
+            These ranked weakly across scouts; they may still appear in final training if the winning variant did not remove them.
+          </p>
           <div className="flex flex-wrap gap-1.5">
             {dropped.map((f) => (
               <Badge key={f} variant="outline" className="text-xs font-mono font-normal">
@@ -1338,13 +1337,6 @@ function TrainingDetail({ agentState }: { agentState: TrainingAgentState }) {
         </div>
       )}
 
-      {/* Recommendations */}
-      {metrics?.recommendations && (
-        <div className="bg-primary/6 dark:bg-primary/12 rounded-lg p-4 border border-border/50">
-          <div className="text-sm font-medium text-foreground mb-2">Recommendations</div>
-          <p className="text-sm text-primary">{metrics.recommendations}</p>
-        </div>
-      )}
     </div>
   )
 }

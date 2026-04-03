@@ -1,11 +1,10 @@
-import { useEffect, useState } from "react"
+import { useState, useEffect } from "react"
 import {
   Box, Download, Activity, Hash, Calendar, Layers, Target,
-  Search, ChevronDown, ChevronRight,
+  Search, ChevronDown, ChevronRight, FileText, FlaskConical,
 } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import type { TrainedModelEntry } from "@/lib/api"
-import { getTrainedModels } from "@/lib/api"
 
 function MetricPill({ label, value }: { label: string; value: number }) {
   const display = value < 1 && value > 0 ? (value * 100).toFixed(1) + "%" : value.toFixed(4)
@@ -77,31 +76,84 @@ function formatDate(iso: string): string {
   }
 }
 
-export function ModelsPage() {
-  const [trainedModels, setTrainedModels] = useState<TrainedModelEntry[]>([])
-  const [loading, setLoading] = useState(true)
+interface ModelsPageProps {
+  trainedModels: TrainedModelEntry[]
+  loading: boolean
+  onOpenExperiment?: (experimentId: string) => void
+  /** Opens the shared app training report dialog (same as Experiment chat). */
+  onViewReport?: (modelName: string) => void
+  /** When set (e.g. from Experiment lab), scroll to this model row and briefly highlight it. */
+  scrollToModelName?: string | null
+  onScrollToModelConsumed?: () => void
+}
+
+export function ModelsPage({
+  trainedModels,
+  loading,
+  onOpenExperiment,
+  onViewReport,
+  scrollToModelName,
+  onScrollToModelConsumed,
+}: ModelsPageProps) {
   const [search, setSearch] = useState("")
 
   useEffect(() => {
+    if (!scrollToModelName?.trim()) return
+    const name = scrollToModelName.trim()
     let cancelled = false
-    setLoading(true)
-    getTrainedModels()
-      .then((data) => {
-        if (!cancelled) setTrainedModels(Object.values(data))
-      })
-      .catch(() => {
-        if (!cancelled) setTrainedModels([])
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false)
-      })
-    return () => { cancelled = true }
-  }, [])
+    let pollTimer: ReturnType<typeof setTimeout> | undefined
+    let highlightTimer: ReturnType<typeof setTimeout> | undefined
+    const t0 = Date.now()
+    /** Poll until the row exists (handles loading / async refresh without clearing scroll intent). */
+    const POLL_MS = 120
+    const MAX_WAIT_MS = 12_000
 
-  const filteredTrained = trainedModels.filter((m) =>
-    !search || m.model_name.toLowerCase().includes(search.toLowerCase()) ||
-    m.model_type.toLowerCase().includes(search.toLowerCase())
-  )
+    const HIGHLIGHT_CLASS = ["ring-2", "ring-primary/45", "shadow-[0_0_0_1px_hsl(var(--primary)/0.2)]"] as const
+
+    const tryScroll = (): boolean => {
+      const escaped =
+        typeof CSS !== "undefined" && typeof CSS.escape === "function"
+          ? CSS.escape(name)
+          : name.replace(/\\/g, "\\\\").replace(/"/g, '\\"')
+      const el = document.querySelector(`[data-trained-model="${escaped}"]`)
+      if (!(el instanceof HTMLElement) || cancelled) return false
+      el.scrollIntoView({ block: "center", behavior: "smooth" })
+      for (const c of HIGHLIGHT_CLASS) el.classList.add(c)
+      highlightTimer = window.setTimeout(() => {
+        if (cancelled) return
+        for (const c of HIGHLIGHT_CLASS) el.classList.remove(c)
+        onScrollToModelConsumed?.()
+      }, 2400)
+      return true
+    }
+
+    const poll = () => {
+      if (cancelled) return
+      if (tryScroll()) return
+      if (Date.now() - t0 > MAX_WAIT_MS) {
+        onScrollToModelConsumed?.()
+        return
+      }
+      pollTimer = window.setTimeout(poll, POLL_MS)
+    }
+
+    poll()
+
+    return () => {
+      cancelled = true
+      if (pollTimer !== undefined) window.clearTimeout(pollTimer)
+      if (highlightTimer !== undefined) window.clearTimeout(highlightTimer)
+    }
+  }, [scrollToModelName, trainedModels, onScrollToModelConsumed])
+
+  const filteredTrained = trainedModels.filter((m) => {
+    if (scrollToModelName && m.model_name === scrollToModelName) return true
+    return (
+      !search ||
+      m.model_name.toLowerCase().includes(search.toLowerCase()) ||
+      m.model_type.toLowerCase().includes(search.toLowerCase())
+    )
+  })
 
   return (
     <div className="flex-1 overflow-auto">
@@ -120,7 +172,7 @@ export function ModelsPage() {
           Monitor deployments, track performance metrics, and manage your model lifecycle.
         </p>
 
-        {/* ── Trained Models ─────────────────────────────────── */}
+        {/* Trained Models */}
         <section className="mt-10">
           <div className="flex items-end justify-between">
             <h2 className="text-xs font-bold text-muted-foreground tracking-widest uppercase">
@@ -146,7 +198,7 @@ export function ModelsPage() {
             </div>
           )}
 
-          {loading ? (
+          {loading && trainedModels.length === 0 ? (
             <div className="mt-6 rounded-xl bg-card p-8 text-center text-muted-foreground text-sm animate-pulse">
               Loading trained models...
             </div>
@@ -157,6 +209,7 @@ export function ModelsPage() {
                 return (
                   <div
                     key={m.model_name}
+                    data-trained-model={m.model_name}
                     className="rounded-xl border border-border bg-card p-4 transition-colors hover:bg-accent/30"
                   >
                     <div className="flex items-start justify-between gap-4">
@@ -171,6 +224,14 @@ export function ModelsPage() {
                             <Hash className="h-3 w-3" />v{m.version}
                           </span>
                         </div>
+                        {m.experiment_name && (
+                          <p className="mt-1 pl-6 text-xs text-muted-foreground flex items-center gap-1">
+                            <FlaskConical className="h-3 w-3 shrink-0" />
+                            <span className="truncate" title={m.experiment_name}>
+                              {m.experiment_name}
+                            </span>
+                          </p>
+                        )}
                         {m.target_column && (
                           <p className="mt-1 pl-6 text-xs text-muted-foreground flex items-center gap-1">
                             <Target className="h-3 w-3 shrink-0" />
@@ -179,16 +240,37 @@ export function ModelsPage() {
                         )}
                       </div>
 
-                      <a
-                        href={`/api/trained-models/${encodeURIComponent(m.model_name)}/download`}
-                        className="shrink-0 inline-flex items-center gap-1 rounded-md border border-border px-2.5 py-1.5 text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
-                      >
-                        <Download className="h-3 w-3" />
-                        Download
-                      </a>
+                      <div className="shrink-0 flex flex-wrap items-center justify-end gap-1.5">
+                        {m.experiment_id && onOpenExperiment && (
+                          <button
+                            type="button"
+                            onClick={() => onOpenExperiment(m.experiment_id!)}
+                            className="inline-flex items-center gap-1 rounded-md border border-border px-2.5 py-1.5 text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+                          >
+                            <FlaskConical className="h-3 w-3" />
+                            Open experiment
+                          </button>
+                        )}
+                        {m.report_available && onViewReport && (
+                          <button
+                            type="button"
+                            onClick={() => onViewReport(m.model_name)}
+                            className="inline-flex items-center gap-1 rounded-md border border-border px-2.5 py-1.5 text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+                          >
+                            <FileText className="h-3 w-3" />
+                            View report
+                          </button>
+                        )}
+                        <a
+                          href={`/api/trained-models/${encodeURIComponent(m.model_name)}/download`}
+                          className="inline-flex items-center gap-1 rounded-md border border-border px-2.5 py-1.5 text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+                        >
+                          <Download className="h-3 w-3" />
+                          Download
+                        </a>
+                      </div>
                     </div>
 
-                    {/* Metrics */}
                     {metrics.length > 0 && (
                       <div className="mt-3 pl-6 flex items-center gap-2 flex-wrap">
                         <Activity className="h-3 w-3 text-muted-foreground shrink-0" />
@@ -198,7 +280,6 @@ export function ModelsPage() {
                       </div>
                     )}
 
-                    {/* Features + meta */}
                     <div className="mt-2 pl-6 flex items-center gap-6 text-xs text-muted-foreground">
                       <FeatureList features={m.feature_names} />
                       {m.training_samples > 0 && (

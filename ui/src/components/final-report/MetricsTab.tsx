@@ -73,8 +73,8 @@ export function MetricsTab({ agentState }: MetricsTabProps) {
       {/* Iteration History */}
       <Section title="Training Iterations">
         <p className="text-xs text-muted-foreground -mt-2 mb-3">
-          “Best” uses validation ranking: ROC-AUC first, then accuracy (classification); R²
-          (regression); unsupervised objectives as reported.
+          Best (val) picks the strongest validation score: ROC-AUC, then accuracy for classification;
+          R² for regression; unsupervised metrics as logged.
         </p>
         <div className="space-y-2">
           {metrics?.iterations && metrics.iterations.length > 0 ? (
@@ -153,20 +153,12 @@ export function MetricsTab({ agentState }: MetricsTabProps) {
                     </div>
                   </div>
 
-                  {/* Show model name and tool used */}
-                  <div className="mt-2 flex flex-col gap-1.5 text-xs text-muted-foreground min-w-0 sm:flex-row sm:flex-wrap sm:gap-x-4 sm:gap-y-1">
-                    {iterMetrics.model_name && (
-                      <span className="min-w-0 break-words [overflow-wrap:anywhere]">
-                        Model:{" "}
-                        <code className="text-foreground break-all align-baseline">{iterMetrics.model_name}</code>
-                      </span>
-                    )}
-                    {iterMetrics.tool && (
-                      <span className="min-w-0 break-words [overflow-wrap:anywhere]">
-                        Tool: <code className="text-foreground break-all align-baseline">{iterMetrics.tool}</code>
-                      </span>
-                    )}
-                  </div>
+                  {iterMetrics.model_name && (
+                    <div className="mt-2 text-xs text-muted-foreground min-w-0 [overflow-wrap:anywhere]">
+                      Model:{" "}
+                      <code className="text-foreground break-all align-baseline">{iterMetrics.model_name}</code>
+                    </div>
+                  )}
 
                   {/* Show error if present */}
                   {iterMetrics.error && (

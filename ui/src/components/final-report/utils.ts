@@ -92,7 +92,7 @@ Report Path: ${state.report_path}
 
 METRICS
 -------
-(Headline scores below are hold-out / validation metrics for the saved model "${metrics?.model_name || "N/A"}". The training summary may mention experiments that were not selected.)
+(Test metrics below are for the saved model "${metrics?.model_name || "N/A"}". The training summary may mention other runs that were not kept.)
 Test Accuracy: ${formatPercent(metrics?.test_accuracy)}
 Test ROC-AUC: ${formatNumber(metrics?.test_roc_auc, 3)}
 Validation Accuracy: ${formatPercent(metrics?.val_accuracy)}
@@ -108,7 +108,8 @@ Dataset: ${state.collected_dataset_ref}
 Target Column: ${state.label_definition?.target_column}
 Split Strategy: ${state.label_definition?.split_strategy}
 
-FEATURES (${state.feature_spec?.features.length || 0})
+FEATURE DEFINITIONS (logical, ${state.feature_spec?.features.length || 0})
+One-hot and similar encodings expand to more model input columns than this list. Prefer training approval / data summary n_features when present.
 ${state.feature_spec?.features.map((f) => `- ${f.name}: ${f.formula}`).join("\n") || "None"}
 
 TRAINING ITERATIONS
@@ -150,7 +151,6 @@ export function generateJsonReport(state: TrainingAgentState, steps: StepInfo[])
       iterations: state.training_metrics?.iterations,
       best_iteration: state.training_metrics?.best_iteration,
       summary: state.training_metrics?.summary,
-      recommendations: state.training_metrics?.recommendations,
     },
     data: {
       collected_dataset: state.collected_dataset_ref,

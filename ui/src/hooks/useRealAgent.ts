@@ -1,13 +1,15 @@
 /**
  * Training/chat agent hook (FastAPI backend).
  *
- * Shipped shape: one active experiment in React state; loadExperiment swaps that slice.
+ * Shipped shape: one active experiment in React state; applyExperimentDetail swaps that slice.
  * Target doc ui/architecture-reference.html describes an ideal per-experiment map +
  * ExperimentSessionContext in the reducer — stronger isolation for concurrent sessions, not required
  * for a single active experiment.
  */
 
 import { useState, useCallback, useRef, useEffect } from "react"
+import { useQueryClient } from "@tanstack/react-query"
+import { experimentKeys } from "@/lib/queries"
 import type {
   TrainingAgentState,
   StepInfo,
@@ -21,6 +23,7 @@ import {
   checkHealth,
   getDatasets,
   getModelTypes,
+  getTrainedModels,
   streamChat,
   getExperiment,
   saveExperimentMessages,
@@ -28,9 +31,9 @@ import {
   startExperimentAsyncTrain,
   type Dataset,
   type ModelType,
+  type TrainedModelEntry,
   type AgentStreamEvent,
   type ExperimentDetail,
-  type ExperimentSummary,
   updateExperiment,
 } from "@/lib/api"
 import {
@@ -46,6 +49,15 @@ import {
   toastBackgroundRunStarted,
   toastStepAccepted,
 } from "@/lib/trainingToasts"
+
+function agentDebug(event: string, payload?: Record<string, unknown>) {
+  const ts = new Date().toISOString()
+  if (payload) {
+    console.log(`[hook:useRealAgent][${ts}] ${event}`, payload)
+    return
+  }
+  console.log(`[hook:useRealAgent][${ts}] ${event}`)
+}
 
 /** Ephemeral merged "thinking" lines from graph custom stream (cleared on each new `started`). */
 const GRAPH_THINKING_MSG_ID = "__graph_thinking__"
@@ -79,7 +91,7 @@ const STEP_ORDER_IDS = STEP_DEFINITIONS.map((s) => s.id)
 /** Shown next to the loading indicator while a checklist step is active */
 const STEP_LOADING_HINTS: Record<string, string> = {
   data_collection: "Loading your dataset…",
-  select_model: "Choosing the model family…",
+  select_model: "Continuing setup…",
   cleaning: "Cleaning and standardizing columns…",
   label_split_definition: "Defining the target and train/validation/test splits…",
   feature_specification_and_engineering: "Specifying and building features…",
@@ -168,32 +180,46 @@ function mergeTaskProgressIntoSteps(
   prev: StepInfo[],
   ts: Record<string, unknown>,
 ): StepInfo[] {
-  if (ts.lab_mode !== "task") return prev
   const st = ts.task_status as string | undefined
-  const events = (ts.task_step_events as Array<{ node: string }>) || []
-  const done = new Set(events.map((e) => e.node))
+  const events = Array.isArray(ts.task_step_events)
+    ? (ts.task_step_events as Array<{ node: string; type?: string }>)
+    : []
+  const done = new Set(events.filter((e) => e?.type !== "skipped").map((e) => e.node))
+  const skipped = new Set(events.filter((e) => e?.type === "skipped").map((e) => e.node))
   const cur = (ts.task_current_node as string | null) || null
+  const hasTerminalResults =
+    (ts.training_metrics != null && typeof ts.training_metrics === "object") ||
+    typeof ts.model_weights_path === "string" ||
+    typeof ts.report_path === "string"
 
-  if (st === "completed") {
-    return prev.map((s) => ({ ...s, status: "completed" as const }))
+  if (ts.lab_mode !== "task" && events.length === 0 && !hasTerminalResults) return prev
+
+  if (st === "completed" || (!st && hasTerminalResults)) {
+    return prev.map((s) => {
+      if (skipped.has(s.id)) return { ...s, status: "skipped" as const, endTime: s.endTime ?? Date.now() }
+      return { ...s, status: "completed" as const, endTime: s.endTime ?? Date.now() }
+    })
   }
   if (st === "failed") {
     return prev.map((s) => {
+      if (skipped.has(s.id)) return { ...s, status: "skipped" as const }
       if (done.has(s.id)) return { ...s, status: "completed" as const }
       if (s.id === cur) return { ...s, status: "error" as const }
-      if (s.status === "skipped") return s
       return { ...s, status: "pending" as const }
     })
   }
   // task_current_node is last-completed (see backend merge on step.complete), not the active step.
   let runningId: string | null = null
   for (const id of STEP_ORDER_IDS) {
-    if (!done.has(id)) {
+    if (!done.has(id) && !skipped.has(id)) {
       runningId = id
       break
     }
   }
   return prev.map((s) => {
+    if (skipped.has(s.id)) {
+      return { ...s, status: "skipped" as const, endTime: s.endTime ?? Date.now() }
+    }
     if (done.has(s.id)) {
       return { ...s, status: "completed" as const, endTime: s.endTime ?? Date.now() }
     }
@@ -272,6 +298,7 @@ function createInitialState(): TrainingAgentState {
     transformed_val_ref: null,
     transformed_test_ref: null,
     feature_validation_passed: false,
+    feature_pipeline_mode: null,
     human_confirmed: false,
     training_params: null,
     model_weights_path: null,
@@ -310,6 +337,8 @@ export interface UseRealAgentReturn {
   // Data
   datasets: Dataset[]
   modelTypes: ModelType[]
+  trainedModels: TrainedModelEntry[]
+  trainedModelsLoading: boolean
   
   // Actions
   startAgent: (goal: string, datasets?: string[], modelPreference?: string, hitl?: boolean) => Promise<void>
@@ -340,10 +369,11 @@ export interface UseRealAgentReturn {
   refreshDatasets: () => Promise<void>
   /** Refetch model types (e.g. when opening the Models tab). */
   refreshModelTypes: () => Promise<void>
+  /** Refetch trained model registry. */
+  refreshTrainedModels: () => Promise<void>
   setExperimentId: (id: string | null) => void
-  loadExperiment: (id: string) => Promise<void>
-  /** Apply a row just returned from POST /experiments without a follow-up GET (avoids flaky open after create). */
-  loadExperimentFromSummary: (summary: ExperimentSummary) => Promise<void>
+  /** Replace local lab state from a full experiment row (from GET /experiments/:id or TanStack Query). */
+  applyExperimentDetail: (exp: ExperimentDetail) => void
   saveCurrentMessages: () => Promise<void>
   /** Clear local session and deselect experiment (experiment row remains in the list). */
   leaveLabSession: () => void
@@ -357,6 +387,7 @@ export interface UseRealAgentReturn {
 }
 
 export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn {
+  const queryClient = useQueryClient()
   const onExperimentEnsuredRef = useRef(options?.onExperimentEnsured)
   onExperimentEnsuredRef.current = options?.onExperimentEnsured
   const [agentState, setAgentState] = useState<TrainingAgentState>(createInitialState())
@@ -368,7 +399,12 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
   const [progress, setProgress] = useState(0)
   const [datasets, setDatasets] = useState<Dataset[]>([])
   const [modelTypes, setModelTypes] = useState<ModelType[]>([])
+  const [trainedModels, setTrainedModels] = useState<TrainedModelEntry[]>([])
+  const [trainedModelsLoading, setTrainedModelsLoading] = useState(false)
 
+  const datasetsLoadedRef = useRef(false)
+  const modelTypesLoadedRef = useRef(false)
+  const trainedModelsLoadedRef = useRef(false)
 
   const [confirmationRequest, setConfirmationRequest] = useState<ConfirmationRequest | null>(null)
   const [acceptAllMode, setAcceptAllMode] = useState(false)
@@ -396,6 +432,7 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
   const linkedDatasetsRef = useRef<string[]>(linkedDatasets)
   linkedDatasetsRef.current = linkedDatasets
 
+  const loadGenerationRef = useRef(0)
   const streamControllerRef = useRef<AbortController | null>(null)
   const linkedDatasetsPatchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const emittedStepsRef = useRef<Set<string>>(new Set())
@@ -433,44 +470,118 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
     [],
   )
 
+  const mergeChatIntoExperimentCache = useCallback(
+    (eid: string, serialized: Array<Record<string, unknown>>) => {
+      agentDebug("merge-chat-into-query-cache", {
+        experimentId: eid,
+        serializedCount: serialized.length,
+      })
+      queryClient.setQueryData<ExperimentDetail>(experimentKeys.detail(eid), (prev) => {
+        if (prev) {
+          agentDebug("merge-chat-hit-existing-detail", {
+            experimentId: eid,
+            prevChatCount: Array.isArray(prev.chat_history) ? prev.chat_history.length : null,
+          })
+          return { ...prev, chat_history: serialized }
+        }
+        // Do not synthesize partial experiment detail rows in cache.
+        // Selection should rely on real GET /experiments/:id responses.
+        agentDebug("merge-chat-skip-no-detail", { experimentId: eid })
+        return prev
+      })
+    },
+    [queryClient],
+  )
+
   const saveCurrentMessages = useCallback(async () => {
     const eid = experimentIdRef.current
     const msgs = messagesRef.current
-    if (!eid || msgs.length === 0) return
-    try {
-      await saveExperimentMessages(
-        eid,
-        msgs.map((m) => ({
-          id: m.id,
-          role: m.role,
-          content: m.content,
-          timestamp: m.timestamp,
-          ...(m.stepId ? { stepId: m.stepId } : {}),
-          ...(m.detailMarkdown ? { detailMarkdown: m.detailMarkdown } : {}),
-          ...(m.showReportButton ? { showReportButton: m.showReportButton } : {}),
-          ...(m.taskPlan ? { task_plan: m.taskPlan } : {}),
-          ...(m.taskPlanResolved ? { task_plan_resolved: true } : {}),
-          ...(m.apiPayload ? { api_payload: m.apiPayload } : {}),
-        })),
-      )
-    } catch {
-      // best-effort save
+    if (!eid || msgs.length === 0) {
+      agentDebug("save-current-messages-skip", {
+        experimentId: eid,
+        messagesCount: msgs.length,
+      })
+      return
     }
-  }, [])
+    agentDebug("save-current-messages-start", {
+      experimentId: eid,
+      messagesCount: msgs.length,
+    })
+
+    const serialized = msgs.map((m) => ({
+      id: m.id,
+      role: m.role,
+      content: m.content,
+      timestamp: m.timestamp,
+      ...(m.stepId ? { stepId: m.stepId } : {}),
+      ...(m.detailMarkdown ? { detailMarkdown: m.detailMarkdown } : {}),
+      ...(m.showReportButton ? { showReportButton: m.showReportButton } : {}),
+      ...(m.taskPlan ? { task_plan: m.taskPlan } : {}),
+      ...(m.taskPlanResolved ? { task_plan_resolved: true } : {}),
+      ...(m.apiPayload ? { api_payload: m.apiPayload } : {}),
+    }))
+
+    mergeChatIntoExperimentCache(eid, serialized)
+
+    try {
+      await saveExperimentMessages(eid, serialized)
+      agentDebug("save-current-messages-success", {
+        experimentId: eid,
+        savedCount: serialized.length,
+      })
+    } catch {
+      agentDebug("save-current-messages-error", {
+        experimentId: eid,
+        savedCount: serialized.length,
+      })
+      // best-effort
+    }
+  }, [mergeChatIntoExperimentCache])
 
   const refreshDatasets = useCallback(async () => {
+    if (datasetsLoadedRef.current) {
+      getDatasets().then(setDatasets).catch(() => {})
+      return
+    }
     try {
-      setDatasets(await getDatasets())
+      const data = await getDatasets()
+      setDatasets(data)
+      datasetsLoadedRef.current = true
     } catch {
       setDatasets([])
     }
   }, [])
 
   const refreshModelTypes = useCallback(async () => {
+    if (modelTypesLoadedRef.current) {
+      getModelTypes().then(setModelTypes).catch(() => {})
+      return
+    }
     try {
-      setModelTypes(await getModelTypes())
+      const data = await getModelTypes()
+      setModelTypes(data)
+      modelTypesLoadedRef.current = true
     } catch {
       setModelTypes([])
+    }
+  }, [])
+
+  const refreshTrainedModels = useCallback(async () => {
+    if (trainedModelsLoadedRef.current) {
+      getTrainedModels()
+        .then((data) => setTrainedModels(Object.values(data)))
+        .catch(() => {})
+      return
+    }
+    setTrainedModelsLoading(true)
+    try {
+      const data = await getTrainedModels()
+      setTrainedModels(Object.values(data))
+      trainedModelsLoadedRef.current = true
+    } catch {
+      setTrainedModels([])
+    } finally {
+      setTrainedModelsLoading(false)
     }
   }, [])
 
@@ -486,7 +597,6 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
     }
   }, [])
 
-  // One-time: health + catalog when the app loads (not on every periodic ping).
   useEffect(() => {
     let cancelled = false
     ;(async () => {
@@ -494,13 +604,18 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
       if (cancelled) return
       setIsBackendConnected(connected)
       if (connected) {
-        const [datasetsData, modelsData] = await Promise.all([
-          getDatasets().catch(() => []),
-          getModelTypes().catch(() => []),
+        const [datasetsData, modelsData, trainedData] = await Promise.all([
+          getDatasets().catch(() => [] as Dataset[]),
+          getModelTypes().catch(() => [] as ModelType[]),
+          getTrainedModels().catch(() => ({} as Record<string, TrainedModelEntry>)),
         ])
         if (!cancelled) {
           setDatasets(datasetsData)
+          datasetsLoadedRef.current = true
           setModelTypes(modelsData)
+          modelTypesLoadedRef.current = true
+          setTrainedModels(Object.values(trainedData))
+          trainedModelsLoadedRef.current = true
         }
       }
     })()
@@ -554,7 +669,7 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
     if (!summary) return ""
     switch (nodeName) {
       case "select_model":
-        return summary.selected_model ? String(summary.selected_model) : ""
+        return ""
       case "data_collection": {
         const rows = summary.rows
         const colList = summary.columns
@@ -583,8 +698,8 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
       case "feature_engineering_executor": {
         const spec = summary.num_spec_features
         const created = Array.isArray(summary.features_created) ? summary.features_created.length : 0
-        if (spec && created) return `${spec} → ${created} columns`
-        if (created) return `${created} columns`
+        if (spec && created) return `Initial: ${spec} defs → ${created} encoded cols`
+        if (created) return `${created} encoded cols`
         return ""
       }
       case "feature_specification_and_engineering": {
@@ -1021,6 +1136,11 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
         return
       }
 
+      // Model-family setup is internal; no user-facing chat line (headline/details are generic on the wire).
+      if (nodeName === "select_model") {
+        return
+      }
+
       const headline =
         typeof event.headline === "string" && event.headline.trim()
           ? event.headline.trim()
@@ -1112,6 +1232,7 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
         `**Pipeline finished.** ${recap}\n\nOpen the report for feature importance, comparisons, and next steps.`,
         { showReportButton: true },
       )
+      setTimeout(() => saveCurrentMessages(), 100)
     } else if (event.type === "error") {
       setProgressPhaseHint(null)
       setIsRunning(false)
@@ -1133,13 +1254,14 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
         const exp = await createExperiment(name)
         setExperimentId(exp.id)
         experimentIdRef.current = exp.id
+        void queryClient.invalidateQueries({ queryKey: experimentKeys.list() })
         onExperimentEnsuredRef.current?.(exp.id)
         return exp.id
       } catch {
         return null
       }
     },
-    [],
+    [queryClient],
   )
 
   const scheduleLinkedDatasetsPatch = useCallback((ids: string[]) => {
@@ -1162,6 +1284,7 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
             const exp = await createExperiment(title, ids)
             setExperimentId(exp.id)
             experimentIdRef.current = exp.id
+            void queryClient.invalidateQueries({ queryKey: experimentKeys.list() })
             onExperimentEnsuredRef.current?.(exp.id)
           } catch {
             // keep local selection; persist can retry when user has an experiment
@@ -1412,17 +1535,27 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
   }, [setBackgroundIntake])
 
   const leaveLabSession = useCallback(() => {
+    agentDebug("leave-lab-session", {
+      previousExperimentId: experimentIdRef.current,
+      previousMessagesCount: messagesRef.current.length,
+    })
+    ++loadGenerationRef.current
     reset()
     setExperimentId(null)
     experimentIdRef.current = null
   }, [reset])
 
   const applyExperimentDetail = useCallback((exp: ExperimentDetail) => {
+    agentDebug("apply-experiment-detail-start", {
+      experimentId: exp.id,
+      chatHistoryCount: Array.isArray(exp.chat_history) ? exp.chat_history.length : null,
+      hasTrainingState: !!exp.training_state,
+      linkedDatasetsCount: Array.isArray(exp.linked_datasets) ? exp.linked_datasets.length : 0,
+    })
     streamControllerRef.current?.abort()
 
     setExperimentId(exp.id)
 
-    // Restore chat history
     if (exp.chat_history && Array.isArray(exp.chat_history)) {
       setMessages(
         exp.chat_history
@@ -1450,12 +1583,12 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
       setMessages([])
     }
 
-    // Restore training state if available
     const ts = exp.training_state && typeof exp.training_state === "object"
       ? (exp.training_state as Record<string, unknown>)
       : null
     if (ts) {
-      setAgentState((prev) => ({ ...prev, ...(ts as Partial<TrainingAgentState>) }))
+      // Replace state per experiment to avoid stale fields leaking across switches.
+      setAgentState({ ...createInitialState(), ...(ts as Partial<TrainingAgentState>) })
     } else {
       setAgentState(createInitialState())
     }
@@ -1463,6 +1596,9 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
     const initialSteps = createInitialSteps()
     setSteps(ts ? mergeTaskProgressIntoSteps(initialSteps, ts) : initialSteps)
     setIsRunning(false)
+    setStartingHandsOffTask(false)
+    setCurrentJobId(null)
+    setProgress(0)
     setConfirmationRequest(null)
     setAcceptAllMode(false)
     emittedStepsRef.current = new Set()
@@ -1471,38 +1607,11 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
     backgroundIntakeActiveRef.current = false
     setBackgroundIntakeActive(false)
     suppressPostPlanTokensRef.current = false
+    agentDebug("apply-experiment-detail-finish", {
+      experimentId: exp.id,
+      appliedMessagesCount: Array.isArray(exp.chat_history) ? exp.chat_history.length : 0,
+    })
   }, [])
-
-  const loadExperiment = useCallback(
-    async (id: string) => {
-      try {
-        await saveCurrentMessages()
-        const exp = await getExperiment(id)
-        applyExperimentDetail(exp)
-      } catch (err) {
-        console.error("Failed to load experiment:", err)
-      }
-    },
-    [applyExperimentDetail, saveCurrentMessages],
-  )
-
-  const loadExperimentFromSummary = useCallback(
-    async (summary: ExperimentSummary) => {
-      try {
-        await saveCurrentMessages()
-        const exp: ExperimentDetail = {
-          ...summary,
-          chat_history: [],
-          training_state: null,
-          training_context: null,
-        }
-        applyExperimentDetail(exp)
-      } catch (err) {
-        console.error("Failed to open experiment from summary:", err)
-      }
-    },
-    [applyExperimentDetail, saveCurrentMessages],
-  )
 
   const refreshExperimentTraining = useCallback(async () => {
     const id = experimentIdRef.current
@@ -1557,6 +1666,7 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
           setExperimentId(eid)
           experimentIdRef.current = eid
           onExperimentEnsuredRef.current?.(eid)
+          void queryClient.invalidateQueries({ queryKey: experimentKeys.list() })
         } else {
           await updateExperiment(eid, { goal: plan.goal, linked_datasets: refs })
         }
@@ -1572,7 +1682,11 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
           user_model_preference: plan.preferences ?? null,
           conversation: conv.map((c) => ({ role: c.role, content: c.content })),
         })
-        await loadExperiment(eid)
+        const exp = await queryClient.fetchQuery({
+          queryKey: experimentKeys.detail(eid),
+          queryFn: () => getExperiment(eid),
+        })
+        applyExperimentDetail(exp)
         toastBackgroundRunStarted()
       } catch (e) {
         addMessage(
@@ -1583,7 +1697,7 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
         setStartingHandsOffTask(false)
       }
     },
-    [addMessage, checkConnection, loadExperiment, setBackgroundIntake],
+    [addMessage, checkConnection, applyExperimentDetail, queryClient, setBackgroundIntake],
   )
 
   // Cleanup on unmount
@@ -1611,6 +1725,8 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
     updateLinkedDatasets,
     datasets,
     modelTypes,
+    trainedModels,
+    trainedModelsLoading,
     startAgent,
     sendMessage,
     handleConfirmation,
@@ -1618,9 +1734,9 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
     checkConnection,
     refreshDatasets,
     refreshModelTypes,
+    refreshTrainedModels,
     setExperimentId,
-    loadExperiment,
-    loadExperimentFromSummary,
+    applyExperimentDetail,
     saveCurrentMessages,
     leaveLabSession,
     runningStepHint,

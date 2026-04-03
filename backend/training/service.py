@@ -633,7 +633,14 @@ def generate_graph_sse_events(
         if exp:
             ts = dict(exp.get("training_state") or {})
             ts["graph_thread_id"] = thread_id
-            repository.update_experiment(experiment_id, {"training_state": ts})
+            repository.update_experiment(
+                experiment_id,
+                {
+                    "goal": goal,
+                    "status": "running",
+                    "training_state": ts,
+                },
+            )
 
     registered_refs = []
     failed_datasets = []
@@ -690,7 +697,30 @@ def generate_graph_sse_events(
     yield format_sse(stream_start(experiment_id, training_graph=True), experiment_id)
 
     try:
+        step_events: list[dict[str, object]] = []
         for line in _iter_graph_sse_lines(agent, config, thread_id, initial_state, experiment_id):
+            if experiment_id:
+                evt = _parse_sse_data_line(line)
+                if evt:
+                    et = evt.get("type")
+                    node = evt.get("node")
+                    if isinstance(node, str) and node in ALL_STEP_NAMES:
+                        if et == "step.complete":
+                            step_events.append(
+                                {
+                                    "node": node,
+                                    "type": "complete",
+                                    "at": datetime.now(timezone.utc).isoformat(),
+                                }
+                            )
+                        elif et == "step.skipped":
+                            step_events.append(
+                                {
+                                    "node": node,
+                                    "type": "skipped",
+                                    "at": datetime.now(timezone.utc).isoformat(),
+                                }
+                            )
             yield line
 
         st = repository.get_simple_agent_store(thread_id)
@@ -701,17 +731,48 @@ def generate_graph_sse_events(
         final_values = _graph_state_snapshot_values(agent, config)
         if final_values:
             try:
-                repository.save_training_context(final_values)
+                repository.save_training_context(final_values, experiment_id=experiment_id)
+                repository.link_model_to_experiment(
+                    repository.extract_model_name_from_training_state(final_values),
+                    experiment_id,
+                )
                 repository.save_run_dataset_links(thread_id, final_values)
             except Exception:
                 traceback.print_exc()
 
         pipeline_error = final_values.get("error") if final_values else None
+        if experiment_id:
+            serialized = serialize_state(final_values) if final_values else {}
+            persisted_state = {
+                **serialized,
+                "graph_thread_id": thread_id,
+                "task_step_events": step_events,
+                "task_current_node": step_events[-1]["node"] if step_events else None,
+                "task_status": None,
+                "task_error": str(pipeline_error) if pipeline_error else None,
+                "task_started_at": None,
+                "task_completed_at": None,
+            }
+            repository.merge_experiment_training_state(experiment_id, persisted_state)
+            repository.update_experiment(
+                experiment_id,
+                {"goal": goal, "status": "failed" if pipeline_error else "completed"},
+            )
         if pipeline_error:
             yield format_sse(error_event(pipeline_error), experiment_id)
         yield format_sse(stream_end(experiment_id, pipeline_completed=not pipeline_error), experiment_id)
     except Exception as e:
         traceback.print_exc()
+        if experiment_id:
+            repository.merge_experiment_training_state(
+                experiment_id,
+                {
+                    "graph_thread_id": thread_id,
+                    "error": str(e),
+                    "task_error": str(e),
+                },
+            )
+            repository.update_experiment(experiment_id, {"goal": goal, "status": "failed"})
         yield format_sse(error_event(str(e)), experiment_id)
 
 
@@ -756,7 +817,38 @@ def generate_graph_resume_sse_events(
         store["emitted_skipped_steps"] = set()
 
     try:
+        step_events: list[dict[str, object]] = []
+        goal = "Training run"
+        if experiment_id:
+            exp = repository.get_experiment(experiment_id)
+            if exp:
+                goal = str(exp.get("goal") or goal)
+                existing_events = exp.get("training_state", {}).get("task_step_events")
+                if isinstance(existing_events, list):
+                    step_events = [e for e in existing_events if isinstance(e, dict)]
         for line in _iter_graph_sse_lines(agent, config, thread_id, Command(resume=resume_value), experiment_id):
+            if experiment_id:
+                evt = _parse_sse_data_line(line)
+                if evt:
+                    et = evt.get("type")
+                    node = evt.get("node")
+                    if isinstance(node, str) and node in ALL_STEP_NAMES:
+                        if et == "step.complete":
+                            step_events.append(
+                                {
+                                    "node": node,
+                                    "type": "complete",
+                                    "at": datetime.now(timezone.utc).isoformat(),
+                                }
+                            )
+                        elif et == "step.skipped":
+                            step_events.append(
+                                {
+                                    "node": node,
+                                    "type": "skipped",
+                                    "at": datetime.now(timezone.utc).isoformat(),
+                                }
+                            )
             yield line
 
         st = repository.get_simple_agent_store(thread_id)
@@ -767,17 +859,49 @@ def generate_graph_resume_sse_events(
         final_values = _graph_state_snapshot_values(agent, config)
         if final_values:
             try:
-                repository.save_training_context(final_values)
+                repository.save_training_context(final_values, experiment_id=experiment_id)
+                repository.link_model_to_experiment(
+                    repository.extract_model_name_from_training_state(final_values),
+                    experiment_id,
+                )
                 repository.save_run_dataset_links(thread_id, final_values)
             except Exception:
                 traceback.print_exc()
 
         pipeline_error = final_values.get("error") if final_values else None
+        if experiment_id:
+            goal = str((final_values or {}).get("goal") or goal)
+            serialized = serialize_state(final_values) if final_values else {}
+            persisted_state = {
+                **serialized,
+                "graph_thread_id": thread_id,
+                "task_step_events": step_events,
+                "task_current_node": step_events[-1]["node"] if step_events else None,
+                "task_status": None,
+                "task_error": str(pipeline_error) if pipeline_error else None,
+                "task_started_at": None,
+                "task_completed_at": None,
+            }
+            repository.merge_experiment_training_state(experiment_id, persisted_state)
+            repository.update_experiment(
+                experiment_id,
+                {"goal": goal, "status": "failed" if pipeline_error else "completed"},
+            )
         if pipeline_error:
             yield format_sse(error_event(pipeline_error), experiment_id)
         yield format_sse(stream_end(experiment_id, pipeline_completed=not pipeline_error), experiment_id)
     except Exception as e:
         traceback.print_exc()
+        if experiment_id:
+            repository.merge_experiment_training_state(
+                experiment_id,
+                {
+                    "graph_thread_id": thread_id,
+                    "error": str(e),
+                    "task_error": str(e),
+                },
+            )
+            repository.update_experiment(experiment_id, {"goal": goal, "status": "failed"})
         yield format_sse(error_event(str(e)), experiment_id)
 
 
@@ -1026,6 +1150,10 @@ def _run_experiment_graph_task_worker(
         if final_values:
             try:
                 repository.save_training_context(final_values, experiment_id=experiment_id)
+                repository.link_model_to_experiment(
+                    repository.extract_model_name_from_training_state(final_values),
+                    experiment_id,
+                )
                 repository.save_run_dataset_links(thread_id, final_values)
             except Exception:
                 traceback.print_exc()

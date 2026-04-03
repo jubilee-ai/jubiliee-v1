@@ -67,6 +67,17 @@ def _format_shape(shapes: dict, key: str) -> str:
     return f"{shape[0]} rows × {shape[1]} cols" if shape else "unknown"
 
 
+def _resolve_feature_pipeline_mode(node_output: dict[str, Any]) -> str:
+    """How features were prepared: engineered (spec executed) vs passthrough (e.g. unsupervised)."""
+    explicit = node_output.get("feature_pipeline_mode")
+    if explicit in ("passthrough", "engineered"):
+        return explicit
+    audit = _get_audit_entry(node_output, "feature_engineering_executor")
+    if audit.get("mode") == "unsupervised_passthrough":
+        return "passthrough"
+    return "engineered"
+
+
 def _parse_summary_field(summary: str, field: str) -> str:
     """Extract a field value from cleaning summary text."""
     for line in summary.split("\n"):
@@ -123,14 +134,15 @@ def build_node_update(node_name: str, node_output: dict[str, Any]) -> dict[str, 
     update = {"type": "node_complete", "node": node_name, "progress": calculate_progress(node_name), "state": node_output}
 
     if node_name == "select_model":
-        update["summary"] = {"selected_model": node_output.get("selected_model"), "explanation": node_output.get("model_explanation")}
+        # Internal fields remain in `state` (merged into event.state for the client);
+        # user-visible SSE fields stay generic — no model-family messaging in the stream.
+        update["summary"] = {}
         update["details"] = {
-            "title": "Model Family Selection Complete",
-            "description": f"Selected **{node_output.get('selected_model', 'unknown')}** as the model family for this task.",
-            "reasoning": node_output.get("model_explanation", "No explanation provided."),
+            "title": "Setup",
+            "description": "Continuing with your experiment.",
+            "reasoning": "",
         }
-        _sel = node_output.get("selected_model") or "unknown"
-        update["headline"] = f"Selected **{_sel}** — best fit for this task."
+        update["headline"] = "Continuing setup."
 
     elif node_name == "data_collection":
         audit = _get_audit_entry(node_output, "data_collection")
@@ -172,7 +184,13 @@ def build_node_update(node_name: str, node_output: dict[str, Any]) -> dict[str, 
         }
         if row_label is not None and ncols is not None:
             _rows_fmt = f"{row_label:,}" if isinstance(row_label, int) else str(row_label)
-            update["headline"] = f"Loaded **{_rows_fmt} rows** across **{ncols} columns**"
+            if ref:
+                short = str(ref).rsplit("/", 1)[-1] or str(ref)
+                update["headline"] = (
+                    f"Loaded **{short}** — **{_rows_fmt} rows** across **{ncols} columns**"
+                )
+            else:
+                update["headline"] = f"Loaded **{_rows_fmt} rows** across **{ncols} columns**"
         elif ref:
             short = str(ref).rsplit("/", 1)[-1] or str(ref)
             update["headline"] = f"Loaded dataset **{short}**"
@@ -254,29 +272,48 @@ def build_node_update(node_name: str, node_output: dict[str, Any]) -> dict[str, 
         created = audit.get("features_created", [])
         fs = _get_or_empty(node_output, "feature_spec")
         spec_features = fs.get("features", [])
+        _fpm = _resolve_feature_pipeline_mode(node_output)
         update["summary"] = {
             "train_ref": node_output.get("transformed_train_ref"), "val_ref": node_output.get("transformed_val_ref"),
             "test_ref": node_output.get("transformed_test_ref"), "validation_passed": node_output.get("feature_validation_passed"),
             "features_created": created, "shapes": shapes,
             "num_spec_features": len(spec_features),
+            "feature_pipeline_mode": _fpm,
         }
-        description = f"Created {len(created)} features"
-        if len(created) != len(spec_features):
-            description += f" from {len(spec_features)} specifications (one-hot encoding expands categorical features)"
-        description += "."
-        update["details"] = {
-            "title": "Feature Engineering Complete", "description": description,
-            "features_created": created, "num_spec_features": len(spec_features),
-            "dataset_shapes": {"train": _format_shape(shapes, "train"), "validation": _format_shape(shapes, "val"), "test": _format_shape(shapes, "test")},
-            "errors": audit.get("errors", []),
-        }
-        _passed = node_output.get("feature_validation_passed")
-        _spec_n = len(spec_features)
-        _created_n = len(created)
-        update["headline"] = (
-            f"Features for training: **{_spec_n}** inputs → **{_created_n}** columns "
-            f"({'validation passed' if _passed else 'validation issues'})"
-        )
+        if _fpm == "passthrough":
+            short_ref = str(node_output.get("transformed_train_ref") or "").rsplit("/", 1)[-1] or "train"
+            update["details"] = {
+                "title": "Feature matrix ready (unsupervised)",
+                "description": (
+                    "Training uses the **cleaned training table** directly. "
+                    "No separate encoded feature matrix was built for this run."
+                ),
+                "features_created": created,
+                "num_spec_features": len(spec_features),
+                "dataset_shapes": {"train": _format_shape(shapes, "train"), "validation": _format_shape(shapes, "val"), "test": _format_shape(shapes, "test")},
+                "errors": audit.get("errors", []),
+            }
+            update["headline"] = (
+                f"**Unsupervised:** using cleaned features (`{short_ref}`) — no encoded matrix step"
+            )
+        else:
+            description = f"Initial encoded matrix: {len(created)} columns"
+            if len(created) != len(spec_features):
+                description += f" from {len(spec_features)} feature definitions (one-hot expands categoricals)"
+            description += "."
+            update["details"] = {
+                "title": "Feature Engineering Complete", "description": description,
+                "features_created": created, "num_spec_features": len(spec_features),
+                "dataset_shapes": {"train": _format_shape(shapes, "train"), "validation": _format_shape(shapes, "val"), "test": _format_shape(shapes, "test")},
+                "errors": audit.get("errors", []),
+            }
+            _passed = node_output.get("feature_validation_passed")
+            _spec_n = len(spec_features)
+            _created_n = len(created)
+            update["headline"] = (
+                f"Initial build: **{_spec_n}** definitions → **{_created_n}** encoded columns "
+                f"({'validation passed' if _passed else 'validation issues'})"
+            )
 
     elif node_name == "feature_specification_and_engineering":
         fs = _get_or_empty(node_output, "feature_spec")
@@ -289,6 +326,7 @@ def build_node_update(node_name: str, node_output: dict[str, Any]) -> dict[str, 
         spec_features = fs.get("features", [])
         exp = _get_or_empty(node_output, "experiment_result")
         rankings = node_output.get("feature_rankings") or {}
+        _fpm = _resolve_feature_pipeline_mode(node_output)
         update["summary"] = {
             "num_features": len(features),
             "feature_names": [f.get("name") for f in features[:10]],
@@ -299,6 +337,7 @@ def build_node_update(node_name: str, node_output: dict[str, Any]) -> dict[str, 
             "features_created": created,
             "shapes": shapes,
             "num_spec_features": len(spec_features),
+            "feature_pipeline_mode": _fpm,
             "experiment_result": exp if exp else None,
             "feature_rankings": dict(list(rankings.items())[:10]) if rankings else None,
             **{k: ks.get(k, [] if k != "dataset_overview" and k != "target_analysis" and k != "correlation_matrix" else {})
@@ -318,21 +357,40 @@ def build_node_update(node_name: str, node_output: dict[str, Any]) -> dict[str, 
                 "wall_time_seconds": exp.get("wall_time_seconds"),
                 "feature_rankings": dict(list(rankings.items())[:10]) if rankings else {},
             }
-        update["details"] = {
-            "title": "Features Specified & Engineered",
-            "description": f"Specified {len(features)} features; created {len(created)} columns after transforms.",
-            "features": [{"name": f.get("name"), "encoding": f.get("encoding"), "formula": str(f.get("formula")) if f.get("formula") else None} for f in features],
-            "key_stats": ks, "analysis_trace": trace,
-            "features_created": created, "num_spec_features": len(spec_features),
-            "dataset_shapes": {"train": _format_shape(shapes, "train"), "validation": _format_shape(shapes, "val"), "test": _format_shape(shapes, "test")},
-            "errors": audit.get("errors", []),
-            "experiment_grid": exp_details if exp_details else None,
-        }
-        _passed = node_output.get("feature_validation_passed")
-        update["headline"] = (
-            f"Selected **{len(features)} features**, built **{len(created)} columns** "
-            f"— validation {'passed' if _passed else 'failed'}"
-        )
+        if _fpm == "passthrough":
+            short_ref = str(node_output.get("transformed_train_ref") or "").rsplit("/", 1)[-1] or "train"
+            update["details"] = {
+                "title": "Feature preparation complete (unsupervised)",
+                "description": (
+                    f"Using the cleaned training table (`{short_ref}`) for modeling — "
+                    "no separate encoded feature matrix was produced."
+                ),
+                "features": [],
+                "key_stats": ks, "analysis_trace": trace,
+                "features_created": created, "num_spec_features": len(spec_features),
+                "dataset_shapes": {"train": _format_shape(shapes, "train"), "validation": _format_shape(shapes, "val"), "test": _format_shape(shapes, "test")},
+                "errors": audit.get("errors", []),
+                "experiment_grid": exp_details if exp_details else None,
+            }
+            update["headline"] = (
+                "**Unsupervised:** cleaned features ready — skipped encoded matrix build"
+            )
+        else:
+            update["details"] = {
+                "title": "Features Specified & Engineered",
+                "description": f"Specified {len(features)} features; created {len(created)} columns after transforms.",
+                "features": [{"name": f.get("name"), "encoding": f.get("encoding"), "formula": str(f.get("formula")) if f.get("formula") else None} for f in features],
+                "key_stats": ks, "analysis_trace": trace,
+                "features_created": created, "num_spec_features": len(spec_features),
+                "dataset_shapes": {"train": _format_shape(shapes, "train"), "validation": _format_shape(shapes, "val"), "test": _format_shape(shapes, "test")},
+                "errors": audit.get("errors", []),
+                "experiment_grid": exp_details if exp_details else None,
+            }
+            _passed = node_output.get("feature_validation_passed")
+            update["headline"] = (
+                f"Selected **{len(features)} features**, built **{len(created)} columns** "
+                f"— validation {'passed' if _passed else 'failed'}"
+            )
 
     elif node_name == "evaluate_models":
         comparison = node_output.get("model_comparison", [])
@@ -383,7 +441,7 @@ def build_node_update(node_name: str, node_output: dict[str, Any]) -> dict[str, 
                 "title": "Feature experiments",
                 "description": (
                     f"Compared **{tv}** feature-set variants using **{ts}** lightweight scout training runs. "
-                    f"The pipeline continues with the **{bv}** variant."
+                    f"Final training uses the **{bv}** variant."
                 ),
                 "experiment_result": exp,
                 "experiment_grid_preview": grid[:8] if isinstance(grid, list) else [],
@@ -437,7 +495,6 @@ def build_node_update(node_name: str, node_output: dict[str, Any]) -> dict[str, 
             "iterations": [
                 {
                     "model_name": it.get("model_name"),
-                    "tool": it.get("tool"),
                     "success": it.get("success"),
                     "val_accuracy": it.get("val_accuracy"),
                     "val_roc_auc": it.get("val_roc_auc"),
@@ -446,7 +503,7 @@ def build_node_update(node_name: str, node_output: dict[str, Any]) -> dict[str, 
                 }
                 for it in iters
             ],
-            "summary": m.get("summary"), "recommendations": m.get("recommendations"),
+            "summary": m.get("summary"),
         }
         _mname = m.get("model_name") or "unknown"
         _t_acc = m.get("test_accuracy")
@@ -474,10 +531,10 @@ def build_node_update(node_name: str, node_output: dict[str, Any]) -> dict[str, 
         update["summary"] = {"report_path": node_output.get("report_path"), "model_path": node_output.get("model_weights_path")}
         update["details"] = {
             "title": "Report Generated",
-            "description": "Final report generated with detailed metrics, feature importance, and recommendations.",
+            "description": "Final report with metrics, iterations, and feature importance.",
             "report_path": node_output.get("report_path"), "model_weights_path": node_output.get("model_weights_path"),
             "audit_trace_length": len(node_output.get("audit_trace", [])),
         }
-        update["headline"] = "Report saved — view for detailed metrics and recommendations"
+        update["headline"] = "Report saved — open the report for metrics and training summary"
 
     return update

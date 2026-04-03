@@ -259,3 +259,73 @@ def test_aggregate_transformed_importances_merges_ohe_columns():
     assert out["Age"] == 0.5
     assert out["Education"] == pytest.approx(0.5)
 
+
+def test_select_scoring_prefers_binary_ranking_metrics():
+    from agents.training.skills.supervised.train import _select_scoring
+
+    y_balanced = pd.Series([0, 1] * 20)
+    y_rare = pd.Series([0] * 95 + [1] * 5)
+
+    assert _select_scoring(True, y_balanced) == "roc_auc"
+    assert _select_scoring(True, y_rare) == "average_precision"
+
+
+def test_supervised_skill_reports_validation_metrics():
+    from agents.training.skills.supervised.train import run
+    from utils import clear_registry, register_dataset
+
+    clear_registry()
+    train_df = pd.DataFrame({
+        "x1": [0, 0, 1, 1, 0, 1, 0, 1],
+        "x2": [0, 1, 0, 1, 0, 1, 1, 0],
+        "target": [0, 0, 0, 1, 0, 1, 1, 1],
+    })
+    val_df = pd.DataFrame({
+        "x1": [0, 1, 0, 1],
+        "x2": [1, 0, 0, 1],
+        "target": [0, 1, 0, 1],
+    })
+    register_dataset("skill_train", train_df, persist=False, register_sql=False)
+    register_dataset("skill_val", val_df, persist=False, register_sql=False)
+
+    out = run({
+        "estimator": "LogisticRegression",
+        "train_dataset_ref": "skill_train",
+        "val_dataset_ref": "skill_val",
+        "target_column": "target",
+        "model_name": "skill_val_metrics_model",
+        "auto_tune": False,
+    })
+
+    assert "VALIDATION METRICS" in out
+    assert "Val Accuracy:" in out
+
+
+def test_generate_feature_variants_mi_uses_source_columns():
+    from agents.training.steps.feature_experiment_runner import generate_feature_variants
+
+    train = pd.DataFrame({
+        "raw_a": [0, 1, 0, 1, 0, 1],
+        "raw_b": [1, 0, 1, 0, 1, 0],
+        "raw_c": [0, 0, 1, 1, 0, 1],
+        "raw_d": [1, 1, 0, 0, 1, 0],
+        "target": [0, 1, 0, 1, 0, 1],
+    })
+    spec = {
+        "features": [
+            {"name": "expr_ratio", "formula": {"op": "expression", "source_columns": ["raw_a", "raw_b"]}},
+            {"name": "raw_c_feat", "formula": {"op": "passthrough", "column": "raw_c"}},
+            {"name": "raw_d_feat", "formula": {"op": "passthrough", "column": "raw_d"}},
+            {"name": "raw_a_feat", "formula": {"op": "passthrough", "column": "raw_a"}},
+            {"name": "raw_b_feat", "formula": {"op": "passthrough", "column": "raw_b"}},
+        ]
+    }
+
+    fake_scores = {"raw_a": 0.9, "raw_b": 0.8, "raw_c": 0.7, "raw_d": 0.1}
+    with patch("agents.training.steps.feature_experiment_runner._compute_mutual_info", return_value=fake_scores):
+        variants = generate_feature_variants(spec, train, "target", "classification")
+
+    mi_variant = next(v for v in variants if v.name == "mi_top_k")
+    kept_names = {f["name"] for f in mi_variant.feature_spec["features"]}
+    assert "expr_ratio" in kept_names
+

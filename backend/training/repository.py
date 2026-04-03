@@ -1,12 +1,14 @@
 import json
+import re
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
 
 from sqlalchemy import select
 
 from backend.shared.database import get_db_session
 from backend.shared.models import (
-    AgentCheckpoint, ChatThread, Experiment, TrainingSummary, TrainingJob,
+    AgentCheckpoint, ChatThread, Experiment, Model, TrainingSummary, TrainingJob,
 )
 from backend.shared.state import (
     chat_threads_with_context,
@@ -19,6 +21,113 @@ from backend.shared.state import (
 
 # LangGraph compiled graphs / savers are not JSON-serializable; never persist repr strings.
 _STORE_NON_PERSISTED_KEYS = frozenset({"agent", "checkpointer"})
+
+
+def _extract_model_name_from_chat_history(chat_history: object) -> Optional[str]:
+    if not isinstance(chat_history, list):
+        return None
+    for msg in reversed(chat_history):
+        if not isinstance(msg, dict):
+            continue
+        step_id = msg.get("stepId") or msg.get("step_id")
+        content = msg.get("content")
+        if step_id != "training" or not isinstance(content, str):
+            continue
+        match = re.search(r"Trained \*\*(.+?)\*\*", content)
+        if match:
+            model_name = match.group(1).strip()
+            if model_name:
+                return model_name
+    return None
+
+
+def _build_training_state_from_report(
+    report: dict[str, object],
+    report_path: Path,
+    existing_state: dict[str, object],
+    fallback_goal: Optional[str],
+) -> dict[str, object]:
+    model = report.get("model") if isinstance(report.get("model"), dict) else {}
+    data = report.get("data") if isinstance(report.get("data"), dict) else {}
+    label_definition = (
+        report.get("label_definition")
+        if isinstance(report.get("label_definition"), dict)
+        else {}
+    )
+    training_results = (
+        report.get("training_results")
+        if isinstance(report.get("training_results"), dict)
+        else {}
+    )
+    validation_metrics = (
+        training_results.get("validation_metrics")
+        if isinstance(training_results.get("validation_metrics"), dict)
+        else {}
+    )
+    test_metrics = (
+        training_results.get("test_metrics")
+        if isinstance(training_results.get("test_metrics"), dict)
+        else {}
+    )
+    audit_trace = report.get("audit_trace")
+    training_metrics = {
+        "success": training_results.get("success"),
+        "model_name": model.get("name"),
+        "model_type": model.get("type"),
+        "val_accuracy": validation_metrics.get("accuracy"),
+        "val_roc_auc": validation_metrics.get("roc_auc"),
+        "test_accuracy": test_metrics.get("accuracy"),
+        "test_roc_auc": test_metrics.get("roc_auc"),
+        "iterations": training_results.get("iterations", []),
+        "num_iterations": training_results.get("num_iterations"),
+        "best_iteration": training_results.get("best_iteration"),
+        "summary": training_results.get("summary"),
+    }
+    next_state = {
+        **existing_state,
+        "goal": report.get("goal") or fallback_goal or existing_state.get("goal") or "",
+        "selected_model": model.get("type") or existing_state.get("selected_model"),
+        "model_explanation": model.get("explanation") or existing_state.get("model_explanation"),
+        "collected_dataset_ref": data.get("collected_dataset") or existing_state.get("collected_dataset_ref"),
+        "cleaned_dataset_ref": data.get("cleaned_dataset") or existing_state.get("cleaned_dataset_ref"),
+        "transformed_train_ref": data.get("train_dataset") or existing_state.get("transformed_train_ref"),
+        "transformed_val_ref": data.get("val_dataset") or existing_state.get("transformed_val_ref"),
+        "transformed_test_ref": data.get("test_dataset") or existing_state.get("transformed_test_ref"),
+        "label_definition": label_definition or existing_state.get("label_definition"),
+        "training_metrics": training_metrics,
+        "report_path": str(report_path),
+        "audit_trace": audit_trace if isinstance(audit_trace, list) else existing_state.get("audit_trace", []),
+        "current_step": "generate_report",
+        "error": None,
+    }
+    return next_state
+
+
+def _maybe_backfill_experiment(exp: Experiment) -> None:
+    state = dict(exp.training_state or {})
+    if state.get("training_metrics") or state.get("report_path"):
+        return
+    model_name = _extract_model_name_from_chat_history(exp.chat_history or [])
+    if not model_name:
+        return
+    report_path = Path(__file__).parent.parent.parent / "trained_models" / f"{model_name}_report.json"
+    if not report_path.exists():
+        return
+    try:
+        report = json.loads(report_path.read_text())
+    except Exception:
+        return
+    next_state = _build_training_state_from_report(
+        report=report,
+        report_path=report_path,
+        existing_state=state,
+        fallback_goal=exp.goal,
+    )
+    exp.training_state = next_state
+    if not exp.goal and next_state.get("goal"):
+        exp.goal = str(next_state["goal"])
+    if next_state.get("training_metrics", {}).get("success") is True:
+        exp.status = "completed"
 
 
 def _store_agent_is_runnable(agent: object) -> bool:
@@ -154,6 +263,52 @@ def save_interrupt_ids(thread_id: str, interrupt_ids: list[str]) -> None:
 
 
 # --- Training summaries (for chat) ---
+
+def extract_model_name_from_training_state(
+    final_values: Optional[dict[str, object]],
+) -> Optional[str]:
+    """Match `_build_context_dict` model_name resolution: training_metrics.model_name, else model_weights_path."""
+    if not final_values:
+        return None
+    raw_metrics = final_values.get("training_metrics")
+    metrics = raw_metrics if isinstance(raw_metrics, dict) else {}
+    mn = metrics.get("model_name")
+    if isinstance(mn, str):
+        s = mn.strip()
+        if s:
+            return s
+    mwp = final_values.get("model_weights_path")
+    if not isinstance(mwp, str):
+        return None
+    s = mwp.strip()
+    if not s:
+        return None
+    # State often stores the logical model name here; if it looks like a filesystem path, use basename/stem.
+    if "/" in s or "\\" in s or s.startswith((".", "~")):
+        base = Path(s).name
+        if not base:
+            return None
+        stem = Path(base).stem
+        return stem if stem else base
+    return s
+
+
+def link_model_to_experiment(model_name: Optional[str], experiment_id: Optional[str]) -> None:
+    """Persist experiment link on the model row (JSONB `properties`) — no extra DDL required."""
+    if not model_name or not experiment_id:
+        return
+    with get_db_session() as session:
+        row = session.query(Model).filter(Model.name == model_name).first()
+        if row is None:
+            return
+        exp = session.get(Experiment, experiment_id)
+        exp_name = exp.name if exp else None
+        props = dict(row.properties or {})
+        props["experiment_id"] = experiment_id
+        if exp_name:
+            props["experiment_name"] = exp_name
+        row.properties = props
+
 
 def _build_context_dict(shared_state: dict[str, object]) -> dict[str, object]:
     raw_metrics = shared_state.get("training_metrics")
@@ -365,6 +520,8 @@ def list_experiments() -> list[dict[str, object]]:
         rows = session.execute(
             select(Experiment).order_by(Experiment.updated_at.desc())
         ).scalars().all()
+        for row in rows:
+            _maybe_backfill_experiment(row)
         return [
             {
                 "id": r.id,
@@ -400,6 +557,7 @@ def get_experiment(experiment_id: str) -> Optional[dict[str, object]]:
         exp = session.get(Experiment, experiment_id)
         if exp is None:
             return None
+        _maybe_backfill_experiment(exp)
         return {
             "id": exp.id,
             "name": exp.name,

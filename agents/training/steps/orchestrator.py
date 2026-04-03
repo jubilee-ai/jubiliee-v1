@@ -73,6 +73,32 @@ def _infer_task_type(goal: str, selected_model: str) -> str:
     return "classification"
 
 
+def _compact_experiment_feedback(state: TrainingAgentState) -> Optional[str]:
+    """Compact scout results into a short recommendation string for feature redesign."""
+    exp = state.get("experiment_result") or {}
+    rankings = state.get("feature_rankings") or {}
+    if not exp and not rankings:
+        return None
+
+    lines: list[str] = ["Scout experiment feedback:"]
+    best_variant = exp.get("best_variant_name")
+    best_metric = exp.get("best_metric")
+    if best_variant:
+        metric_text = f" ({best_metric:.4f})" if isinstance(best_metric, (int, float)) else ""
+        lines.append(f"- Best variant: {best_variant}{metric_text}")
+    signal = list(exp.get("signal_features") or [])[:8]
+    if signal:
+        lines.append(f"- Strong signals: {', '.join(signal)}")
+    dropped = list(exp.get("dropped_features") or [])[:8]
+    if dropped:
+        lines.append(f"- Weak features to reconsider: {', '.join(dropped)}")
+    top_ranked = list(rankings.items())[:8]
+    if top_ranked:
+        ranked_text = ", ".join(f"{name} ({score:.3f})" for name, score in top_ranked)
+        lines.append(f"- Top ranked: {ranked_text}")
+    return "\n".join(lines)
+
+
 def _infer_target_column(goal: str, dataset_ref: str) -> Optional[str]:
     """Best-effort inference of the target column from the goal text and dataset columns.
 
@@ -143,7 +169,7 @@ def select_model(state: TrainingAgentState) -> TrainingAgentState:
         return _select_model_impl(s)
 
     def get_summary(r: TrainingAgentState) -> str:
-        return f"Selected model family: {r.get('selected_model', 'unknown')}\n\nReason: {r.get('model_explanation', 'No explanation provided')}"
+        return "Setup is ready. Approve to continue, or share feedback to adjust."
 
     return run_with_hitl("select_model", state, do_work, get_summary)
 
@@ -375,6 +401,9 @@ def feature_selection_specification(state: TrainingAgentState) -> TrainingAgentS
         recommendation = feature_redo_recommendation if feature_redo_requested else None
         if feedback:
             recommendation = f"{recommendation}\n{feedback}" if recommendation else feedback
+        experiment_feedback = _compact_experiment_feedback(s)
+        if experiment_feedback:
+            recommendation = f"{recommendation}\n{experiment_feedback}" if recommendation else experiment_feedback
 
         if feature_redo_requested:
             print(f"[feature_selection_specification] REDO iteration {feature_redo_iteration + 1}")
@@ -466,6 +495,7 @@ def feature_engineering_executor(state: TrainingAgentState) -> TrainingAgentStat
                 "transformed_test_ref": None,
                 "transformed_dataset_ref": train_ref,
                 "feature_validation_passed": True,
+                "feature_pipeline_mode": "passthrough",
                 "feature_redo_recommendation": None,
                 "audit_trace": s.get("audit_trace", []) + [{
                     "step": "feature_engineering_executor",
@@ -515,6 +545,7 @@ def feature_engineering_executor(state: TrainingAgentState) -> TrainingAgentStat
             "transformed_test_ref": result.get("test_ref"),
             "transformed_dataset_ref": result.get("train_ref"),
             "feature_validation_passed": len(features_created) > 0 and len(errors) < len(features_created),
+            "feature_pipeline_mode": "engineered",
             "feature_redo_recommendation": feedback if feedback else s.get("feature_redo_recommendation"),
             "audit_trace": s.get("audit_trace", []) + [{
                 "step": "feature_engineering_executor",
@@ -887,7 +918,7 @@ def training(state: TrainingAgentState) -> TrainingAgentState:
                 "test_r2": result.get("test_r2"), "test_rmse": result.get("test_rmse"), "test_mae": result.get("test_mae"),
                 "iterations": result.get("iterations", []), "num_iterations": result.get("num_iterations", 0),
                 "best_iteration": result.get("best_iteration"), "summary": result.get("summary"),
-                "recommendations": result.get("recommendations"), "feature_redo_requested": feature_redo_requested,
+                "feature_redo_requested": feature_redo_requested,
             },
             "training_iteration": s.get("training_iteration", 0) + 1,
             "feature_redo_requested": feature_redo_requested,
@@ -937,7 +968,7 @@ def generate_report(state: TrainingAgentState) -> TrainingAgentState:
                 "validation_metrics": {"accuracy": training_metrics.get("val_accuracy"), "roc_auc": training_metrics.get("val_roc_auc")},
                 "test_metrics": {"accuracy": training_metrics.get("test_accuracy"), "roc_auc": training_metrics.get("test_roc_auc")},
                 "iterations": training_metrics.get("iterations", []), "best_iteration": training_metrics.get("best_iteration"),
-                "summary": training_metrics.get("summary"), "recommendations": training_metrics.get("recommendations"),
+                "summary": training_metrics.get("summary"),
             },
             "audit_trace": s.get("audit_trace", []),
             "user_feedback": feedback,

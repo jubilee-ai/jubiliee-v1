@@ -3,7 +3,7 @@ import type { Ref, MutableRefObject } from "react"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import { cn } from "@/lib/utils"
-import { FileText, ChevronRight, Check, RotateCcw, Info } from "lucide-react"
+import { Box, FileText, ChevronRight, Check, RotateCcw, Info } from "lucide-react"
 import type { Dataset as ApiDataset } from "@/lib/api"
 import type { ChatMessage, ChatTaskPlanPayload, TaskPlanSummary } from "@/types/agent"
 import { looksLikeLeakedPlanJson, stripLeakedPlanJson } from "@/lib/planDisplay"
@@ -65,6 +65,8 @@ interface MessageBubbleProps {
   message: ChatMessage
   isHighlighted?: boolean
   onViewReport?: () => void
+  /** Shown beside View Report when a trained model can be opened on the Models page. */
+  onViewModelInRegistry?: () => void
   stepId?: string | null
   isClickable?: boolean
   onStepClick?: () => void
@@ -86,6 +88,7 @@ export const MessageBubble = forwardRef<HTMLDivElement, MessageBubbleProps>(
       message,
       isHighlighted,
       onViewReport,
+      onViewModelInRegistry,
       stepId,
       isClickable,
       onStepClick,
@@ -249,16 +252,32 @@ export const MessageBubble = forwardRef<HTMLDivElement, MessageBubbleProps>(
           )}
           
           {showReportCta && (
-            <button
-              onClick={(e) => {
-                e.stopPropagation()
-                onViewReport?.()
-              }}
-              className="mt-4 w-full sm:w-auto inline-flex items-center justify-center gap-1.5 px-4 py-2 rounded-lg bg-primary-subtle text-primary-subtle-foreground text-sm font-medium hover:bg-primary-subtle/88 transition-colors"
-            >
-              <FileText className="h-3.5 w-3.5" />
-              View Report
-            </button>
+            <div className="mt-4 flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  onViewReport?.()
+                }}
+                className="w-full sm:w-auto inline-flex items-center justify-center gap-1.5 px-4 py-2 rounded-lg bg-primary-subtle text-primary-subtle-foreground text-sm font-medium hover:bg-primary-subtle/88 transition-colors"
+              >
+                <FileText className="h-3.5 w-3.5" />
+                View Report
+              </button>
+              {onViewModelInRegistry ? (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    onViewModelInRegistry()
+                  }}
+                  className="w-full sm:w-auto inline-flex items-center justify-center gap-1.5 px-4 py-2 rounded-lg border border-border bg-card text-foreground text-sm font-medium hover:bg-accent transition-colors"
+                >
+                  <Box className="h-3.5 w-3.5" />
+                  View model
+                </button>
+              ) : null}
+            </div>
           )}
         </div>
       </div>

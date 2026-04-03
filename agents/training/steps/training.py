@@ -21,7 +21,7 @@ from langchain.agents import create_agent
 from langchain.agents.structured_output import ToolStrategy
 from langchain.chat_models import init_chat_model
 from langchain_core.tools import tool
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from ..utils.graph_stream_hooks import emit_graph_stream
 from ..utils.prompts import TRAINING_SYSTEM_PROMPT
@@ -247,7 +247,9 @@ TRAINING_TOOLS = [
 
 class TrainingIteration(BaseModel):
     model_name: str = Field(description="Name of the model for this iteration")
-    tool_used: str = Field(description="Skill and estimator used")
+    tool_used: str = Field(
+        description="Estimator class name only (e.g. HistGradientBoostingClassifier), not skill or import paths.",
+    )
     hyperparams: dict = Field(default_factory=dict)
     train_accuracy: Optional[float] = None
     val_accuracy: Optional[float] = None
@@ -268,6 +270,8 @@ class TrainingIteration(BaseModel):
 
 
 class TrainingResult(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
     success: bool
     best_model_name: str
     model_type: str = Field(description="Estimator class name")
@@ -290,10 +294,6 @@ class TrainingResult(BaseModel):
     num_iterations: int
     summary: str = Field(
         description="Concise narrative: experiment arc, why best_model_name won, key metrics stated once (no duplicate numbers).",
-    )
-    recommendations: Optional[str] = Field(
-        default=None,
-        description="Brief actionable bullets for best_model_name (deploy, thresholds, monitoring); other models only for short comparison.",
     )
     feature_redo_requested: bool = False
 
@@ -623,7 +623,8 @@ def _format_best_iteration_continuation_block(
         return ""
 
     name = best.get("model_name", "")
-    tool = best.get("tool") or best.get("tool_used") or ""
+    raw_tool = best.get("tool") or best.get("tool_used") or ""
+    tool_short = str(raw_tool).rsplit(".", 1)[-1].split("/")[-1] if raw_tool else ""
     hp = best.get("hyperparams") or {}
     hp_s = _truncate_jsonish(hp) if hp else "(defaults or see model registry)"
 
@@ -648,7 +649,7 @@ def _format_best_iteration_continuation_block(
         f"## Current validation best — refine THIS\n\n"
         f"Leader by **{metric_name}**:\n"
         f"- **model_name**: `{name}`\n"
-        f"- **tool**: `{tool}`\n"
+        f"- **estimator**: `{tool_short}`\n"
         f"- **hyperparams**: {hp_s}\n"
         f"{metrics_line}\n\n"
         f"**Next experiment:** Improve this configuration (same estimator family) unless the last "
@@ -705,8 +706,8 @@ def _build_continuation_message(
         "in the SKILL.md. Prefer **refining the validation leader** above; change exactly ONE "
         "focused thing per attempt. Run the experiment, evaluate, and report results.\n"
         "In the structured `iterations` array, append only **new** attempts from this round "
-        "(prior attempts are already stored). Your **`summary`** and **`recommendations`** "
-        "must still cover the **entire run** and the model you set as **`best_model_name`** "
+        "(prior attempts are already stored). Your **`summary`** must still cover the **entire run** "
+        "and the model you set as **`best_model_name`** "
         "(the artifact headline metrics will follow), not only the iterations added here."
     )
 
@@ -800,15 +801,15 @@ def _maybe_clarify_summary_vs_saved_model(training_result: TrainingResult) -> Tr
     if not body:
         return training_result
     prefix = (
-        f"The headline test metrics and saved artifact refer to **{saved}**, chosen by validation scores. "
-        f"The text below discusses a later experiment (**{last_name}**) that was not selected as the best model.\n\n"
+        f"The saved model is **{saved}** (picked by validation). The narrative below still mentions a later run "
+        f"(**{last_name}**) that was not kept.\n\n"
     )
     return training_result.model_copy(update={"summary": prefix + body})
 
 
 def _iteration_to_dict(it: TrainingIteration) -> dict:
     d = it.model_dump()
-    d["tool"] = d.pop("tool_used")
+    d.pop("tool_used", None)
     d["metrics"] = {
         "train_accuracy": it.train_accuracy,
         "val_accuracy": it.val_accuracy,
@@ -1015,8 +1016,6 @@ def _log_training_results(training_result: TrainingResult, task_type: str):
         print(f"  Test Accuracy: {training_result.test_accuracy}")
         print(f"  Test ROC-AUC: {training_result.test_roc_auc}")
     print(f"\n  Summary: {training_result.summary}")
-    if training_result.recommendations:
-        print(f"  Recommendations: {training_result.recommendations}")
 
 
 # =============================================================================
@@ -1206,6 +1205,8 @@ Follow the skill documentation below — it covers model selection and training.
         start_instruction = (
             "Begin training now. Maximize unsupervised objective quality by exploring "
             "estimators and hyperparameters. Use the dataset refs above. "
+            "When sample size allows, pass eval_holdout_fraction around 0.15 in train_with_skill "
+            "params so metrics include less optimistic val_* scores. "
             "Do not call evaluate_model because no target labels are required."
         )
     elif skill_name == "neural_networks":

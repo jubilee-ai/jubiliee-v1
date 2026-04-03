@@ -1,15 +1,24 @@
-import { useState, useEffect, useCallback, useRef } from "react"
+import { useState, useEffect, useCallback } from "react"
 import { Plus, MessageSquare, Loader2, CheckCircle2, AlertCircle, Trash2, FlaskConical, Database, Box, Settings, Moon } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { ScrollArea } from "@/components/ui/scroll-area"
+import type { ExperimentSummary } from "@/lib/api"
 import {
-  listExperiments,
-  deleteExperiment,
-  updateExperiment,
-  type ExperimentSummary,
-} from "@/lib/api"
+  useExperimentsList,
+  useDeleteExperimentMutation,
+  useUpdateExperimentMutation,
+} from "@/lib/queries"
 import { cn } from "@/lib/utils"
+
+function sidebarDebug(event: string, payload?: Record<string, unknown>) {
+  const ts = new Date().toISOString()
+  if (payload) {
+    console.log(`[sidebar:experiment-switch][${ts}] ${event}`, payload)
+    return
+  }
+  console.log(`[sidebar:experiment-switch][${ts}] ${event}`)
+}
 
 export type AppTab = "experiment_lab" | "datasets" | "models" | "settings"
 
@@ -17,13 +26,11 @@ interface AppSidebarProps {
   activeTab: AppTab
   onTabChange: (tab: AppTab) => void
   activeExperimentId: string | null
-  onSelectExperiment: (id: string, opts?: { freshSummary?: ExperimentSummary }) => void | Promise<void>
+  onSelectExperiment: (id: string) => void | Promise<void>
   /** Clear to a blank draft locally; experiment row is created on first message send. */
   onStartBlankChat: () => void | Promise<void>
   isBackendConnected: boolean
   switchingTo?: string | null
-  /** Increment from parent after any experiment list mutation outside this component. */
-  experimentsListNonce?: number
   /** When the user deletes the currently open experiment, return to lab home instead of creating a new one. */
   onActiveExperimentDeleted?: () => void
 }
@@ -83,16 +90,15 @@ function EditableExperimentTitle({
   name,
   isActive,
   disabled,
-  onRenamed,
 }: {
   experimentId: string
   name: string
   isActive: boolean
   disabled?: boolean
-  onRenamed: (id: string, nextName: string) => void
 }) {
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(name)
+  const updateMutation = useUpdateExperimentMutation()
 
   useEffect(() => {
     setDraft(name)
@@ -106,12 +112,11 @@ function EditableExperimentTitle({
       return
     }
     try {
-      await updateExperiment(experimentId, { name: t })
-      onRenamed(experimentId, t)
+      await updateMutation.mutateAsync({ id: experimentId, updates: { name: t } })
     } catch {
       setDraft(name)
     }
-  }, [draft, name, experimentId, onRenamed])
+  }, [draft, name, experimentId, updateMutation])
 
   if (editing) {
     return (
@@ -172,39 +177,23 @@ export function AppSidebar({
   onStartBlankChat,
   isBackendConnected,
   switchingTo,
-  experimentsListNonce = 0,
   onActiveExperimentDeleted,
 }: AppSidebarProps) {
-  const [experiments, setExperiments] = useState<ExperimentSummary[]>([])
-  const [isLoading, setIsLoading] = useState(false)
-  const cacheRef = useRef<ExperimentSummary[]>([])
-
-  const refresh = useCallback(async () => {
-    if (!isBackendConnected) return
-    if (cacheRef.current.length === 0) setIsLoading(true)
-    try {
-      const data = await listExperiments()
-      cacheRef.current = data
-      setExperiments(data)
-    } catch {
-      // ignore
-    } finally {
-      setIsLoading(false)
-    }
-  }, [isBackendConnected])
+  /** Always fetch the list — do not gate on health ping; that left queries disabled with no network activity when /api/health lagged or failed first. */
+  const { data: experiments = [], isLoading, isFetching, isError, error } = useExperimentsList()
+  const deleteMutation = useDeleteExperimentMutation()
 
   useEffect(() => {
-    refresh()
-  }, [refresh])
-
-  useEffect(() => {
-    if (experimentsListNonce <= 0) return
-    void refresh()
-  }, [experimentsListNonce, refresh])
-
-  const handleRename = useCallback((id: string, nextName: string) => {
-    setExperiments((prev) => prev.map((ex) => (ex.id === id ? { ...ex, name: nextName } : ex)))
-  }, [])
+    sidebarDebug("list-query-state", {
+      isLoading,
+      isFetching,
+      isError,
+      count: experiments.length,
+      error: error ? String(error) : null,
+      activeExperimentId,
+      switchingTo: switchingTo ?? null,
+    })
+  }, [isLoading, isFetching, isError, error, experiments.length, activeExperimentId, switchingTo])
 
   const handleNew = () => {
     onTabChange("experiment_lab")
@@ -213,20 +202,31 @@ export function AppSidebar({
 
   const handleDelete = async (e: React.MouseEvent, id: string) => {
     e.stopPropagation()
-    setExperiments((prev) => prev.filter((ex) => ex.id !== id))
+    sidebarDebug("delete-click", { id, activeExperimentId })
     try {
-      await deleteExperiment(id)
+      await deleteMutation.mutateAsync(id)
+      sidebarDebug("delete-success", { id })
       if (activeExperimentId === id) {
         onActiveExperimentDeleted?.()
       }
     } catch {
-      refresh()
+      sidebarDebug("delete-failed", { id })
+      // list refetches on success; errors are rare
     }
   }
 
   const handleSelect = (id: string) => {
+    sidebarDebug("select-click", {
+      clickedId: id,
+      activeExperimentId,
+      switchingTo: switchingTo ?? null,
+    })
     onTabChange("experiment_lab")
-    if (id === activeExperimentId) return
+    if (id === activeExperimentId) {
+      sidebarDebug("select-skip-already-active", { clickedId: id })
+      return
+    }
+    sidebarDebug("select-forward-to-parent", { clickedId: id })
     onSelectExperiment(id)
   }
 
@@ -319,7 +319,6 @@ export function AppSidebar({
                         name={exp.name}
                         isActive={isActive}
                         disabled={isSwitching || !isBackendConnected}
-                        onRenamed={handleRename}
                       />
                       <span className="text-[10px] text-muted-foreground/50 shrink-0 tabular-nums pt-0.5">
                         {relativeTime(exp.updated_at || exp.created_at)}
