@@ -1,10 +1,20 @@
 import { useState, useEffect, useCallback } from "react"
+import { useQueryClient } from "@tanstack/react-query"
 import { Plus, MessageSquare, Loader2, CheckCircle2, AlertCircle, Trash2, FlaskConical, Database, Box, Settings, Moon } from "lucide-react"
 import { Button } from "@/components/ui/button"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import type { ExperimentSummary } from "@/lib/api"
 import {
+  experimentKeys,
   useExperimentsList,
   useDeleteExperimentMutation,
   useUpdateExperimentMutation,
@@ -180,8 +190,12 @@ export function AppSidebar({
   onActiveExperimentDeleted,
 }: AppSidebarProps) {
   /** Always fetch the list — do not gate on health ping; that left queries disabled with no network activity when /api/health lagged or failed first. */
+  const queryClient = useQueryClient()
   const { data: experiments = [], isLoading, isFetching, isError, error } = useExperimentsList()
   const deleteMutation = useDeleteExperimentMutation()
+  const [pendingDelete, setPendingDelete] = useState<{ id: string; name: string } | null>(null)
+  /** Covers DELETE + list refetch so the spinner does not stop until the row is actually gone. */
+  const [isDeleting, setIsDeleting] = useState(false)
 
   useEffect(() => {
     sidebarDebug("list-query-state", {
@@ -200,18 +214,29 @@ export function AppSidebar({
     void onStartBlankChat()
   }
 
-  const handleDelete = async (e: React.MouseEvent, id: string) => {
+  const openDeleteConfirm = (e: React.MouseEvent, id: string, name: string) => {
     e.stopPropagation()
+    sidebarDebug("delete-confirm-open", { id, activeExperimentId })
+    setPendingDelete({ id, name })
+  }
+
+  const confirmDeleteExperiment = async () => {
+    if (!pendingDelete) return
+    const { id } = pendingDelete
     sidebarDebug("delete-click", { id, activeExperimentId })
+    setIsDeleting(true)
     try {
       await deleteMutation.mutateAsync(id)
+      await queryClient.refetchQueries({ queryKey: experimentKeys.list() })
       sidebarDebug("delete-success", { id })
+      setPendingDelete(null)
       if (activeExperimentId === id) {
         onActiveExperimentDeleted?.()
       }
     } catch {
       sidebarDebug("delete-failed", { id })
-      // list refetches on success; errors are rare
+    } finally {
+      setIsDeleting(false)
     }
   }
 
@@ -336,8 +361,8 @@ export function AppSidebar({
                     size="sm"
                     aria-label={`Delete ${exp.name}`}
                     className="h-7 w-7 shrink-0 p-0 text-muted-foreground/35 hover:text-destructive hover:bg-destructive/10"
-                    onClick={(e) => handleDelete(e, exp.id)}
-                    disabled={isSwitching}
+                    onClick={(e) => openDeleteConfirm(e, exp.id, exp.name)}
+                    disabled={isSwitching || isDeleting}
                   >
                     <Trash2 className="h-3.5 w-3.5" />
                   </Button>
@@ -347,6 +372,50 @@ export function AppSidebar({
           })}
         </div>
       </ScrollArea>
+
+      <Dialog
+        open={pendingDelete !== null}
+        onOpenChange={(open) => {
+          if (!open && isDeleting) return
+          if (!open) setPendingDelete(null)
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Delete experiment?</DialogTitle>
+            <DialogDescription>
+              Are you sure you want to delete{" "}
+              <span className="font-medium text-foreground">{pendingDelete?.name}</span>? This
+              conversation and its data will be permanently removed.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setPendingDelete(null)}
+              disabled={isDeleting}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              onClick={() => void confirmDeleteExperiment()}
+              disabled={isDeleting}
+            >
+              {isDeleting ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Deleting…
+                </>
+              ) : (
+                "Delete"
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }
