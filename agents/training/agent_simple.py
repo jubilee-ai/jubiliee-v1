@@ -40,7 +40,6 @@ from .steps.select_model import MODEL_FAMILIES
 from .steps.select_model import select_model as _select_model_impl
 from .steps.training import run_training_agent as _run_training
 
-
 # =============================================================================
 # STRUCTURED OUTPUT SCHEMAS
 # =============================================================================
@@ -159,7 +158,7 @@ def create_simple_training_agent(
     goal: str,
     linked_datasets: Optional[list[str]] = None,
     user_model_preference: Optional[str] = None,
-    model: str = "openai:gpt-5.1",
+    model: str = "openai:gpt-5.4",
     hitl: bool = True,
     checkpointer=None,
     use_external_sources: bool = False,
@@ -792,12 +791,8 @@ def create_simple_training_agent(
         from concurrent.futures import ThreadPoolExecutor, as_completed
 
         import numpy as np
-        from sklearn.metrics import (
-            accuracy_score,
-            mean_squared_error,
-            r2_score,
-            roc_auc_score,
-        )
+        from sklearn.metrics import (accuracy_score, mean_squared_error,
+                                     r2_score, roc_auc_score)
         from sklearn.preprocessing import LabelEncoder, OrdinalEncoder
 
         names = [n.strip() for n in model_names.split(",")][:3]
@@ -1045,7 +1040,7 @@ def create_simple_training_agent(
             f"{redo_section}"
         )
 
-        structured_llm = init_chat_model("openai:gpt-5.1").with_structured_output(
+        structured_llm = init_chat_model("openai:gpt-5.4").with_structured_output(
             TrainingPlan, method="function_calling"
         )
         training_plan = structured_llm.invoke(prompt).model_dump()
@@ -1376,7 +1371,7 @@ def invoke_simple_training_agent(
     goal: str,
     linked_datasets: Optional[list[str]] = None,
     user_model_preference: Optional[str] = None,
-    model: str = "openai:gpt-5.1",
+    model: str = "openai:gpt-5.4",
     use_external_sources: bool = False,
 ):
     """Convenience function: create and invoke the simple training agent (no HITL)."""

@@ -16,12 +16,13 @@ Training is handled by the intent router + training graph (not the orchestrator)
 import asyncio
 import json
 import sys
+from pathlib import Path
 from typing import Optional
 
 from dotenv import load_dotenv
-from pathlib import Path
 from langchain.agents import create_agent
-from langchain.agents.factory import AgentMiddleware, ModelRequest, ModelResponse
+from langchain.agents.factory import (AgentMiddleware, ModelRequest,
+                                      ModelResponse)
 from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.memory import MemorySaver
@@ -39,17 +40,13 @@ EXTERNAL_DATASET_CATALOG_ENABLED = False
 _MODEL_TOOLS_DIR = _ROOT / "tools" / "models-tools" / "training"
 if str(_MODEL_TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(_MODEL_TOOLS_DIR))
-from model_storage import (
-    predict_with_model_tool,
-    evaluate_model_tool,
-    list_trained_models_tool,
-    get_model_info_tool,
-)
+from model_storage import (evaluate_model_tool, get_model_info_tool,
+                           list_trained_models_tool, predict_with_model_tool)
 
 # ---------------------------------------------------------------------------
 # LLM
 # ---------------------------------------------------------------------------
-llm = ChatOpenAI(model="gpt-5.1", temperature=0)
+llm = ChatOpenAI(model="gpt-5.4", temperature=0)
 
 
 # ============================================================================
@@ -392,7 +389,8 @@ def curate_dataset(goal: str, source: str, identifier: str) -> str:
         )
 
     if source.lower() == "kaggle":
-        from agents.dataset_curator.tools import download_kaggle_dataset, profile_dataset
+        from agents.dataset_curator.tools import (download_kaggle_dataset,
+                                                  profile_dataset)
 
         parts = identifier.split("/", 1)
         if len(parts) != 2:
@@ -428,7 +426,8 @@ def curate_dataset(goal: str, source: str, identifier: str) -> str:
         )
 
     elif source.lower() == "huggingface":
-        from agents.dataset_curator.tools import download_hf_dataset, profile_dataset
+        from agents.dataset_curator.tools import (download_hf_dataset,
+                                                  profile_dataset)
 
         dl_result = download_hf_dataset.invoke({"dataset_id": identifier})
 

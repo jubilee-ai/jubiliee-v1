@@ -68,7 +68,7 @@ const STEP_DEFINITIONS = [
   { id: "feature_selection_specification", name: "Feature Selection", description: "Analyze data and specify features" },
   { id: "feature_engineering_executor", name: "Feature Engineering", description: "Execute feature transformations" },
   { id: "feature_experiment_runner", name: "Feature experiments", description: "Compare feature-set variants with scout models" },
-  { id: "training_approval", name: "Training Config", description: "Propose hyperparameters and strategy" },
+  { id: "training_approval", name: "Training plan", description: "Estimator, hyperparameters, and validation setup" },
   { id: "training", name: "Training", description: "Train model and evaluate metrics" },
   { id: "generate_report", name: "Report", description: "Save the final training report" },
 ]

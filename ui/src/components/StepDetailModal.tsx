@@ -44,7 +44,7 @@ export function StepDetailModal({ stepId, agentState, steps, onClose }: StepDeta
       case "feature_specification_and_engineering": return "Features (spec + build)"
       case "feature_engineering_executor": return "Feature Engineering"
       case "feature_experiment_runner": return "Feature experiments"
-      case "training_approval": return "Training Configuration"
+      case "training_approval": return "Training plan"
       case "training": return "Model Training"
       case "generate_report": return "Report Generation"
       default: return step?.name || stepId
@@ -700,6 +700,80 @@ function formatTrainingModelLabel(raw: string | null | undefined): string {
     .join(" ")
 }
 
+/** Human-readable labels for hyperparameter keys (snake_case → Title Case). */
+function humanizeConfigKey(key: string): string {
+  return key
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (c) => c.toUpperCase())
+}
+
+function renderValue(value: unknown): string {
+  if (value === null || value === undefined) return "N/A"
+  if (typeof value === "string") return value
+  if (typeof value === "number" || typeof value === "boolean") return String(value)
+  if (typeof value === "object") {
+    try {
+      return JSON.stringify(value)
+    } catch {
+      return String(value)
+    }
+  }
+  return String(value)
+}
+
+const NESTED_HP_SECTION_LABELS: Record<string, string> = {
+  feature_selection: "Feature selection",
+  preprocessing: "Preprocessing",
+  validation: "Validation & splits",
+  early_stopping_like_strategy: "Early stopping",
+}
+
+function partitionHyperparameters(hp: Record<string, unknown>): {
+  scalars: [string, unknown][]
+  nested: [string, unknown][]
+} {
+  const scalars: [string, unknown][] = []
+  const nested: [string, unknown][] = []
+  for (const [k, v] of Object.entries(hp)) {
+    if (v !== null && typeof v === "object") nested.push([k, v])
+    else scalars.push([k, v])
+  }
+  return { scalars, nested }
+}
+
+function NestedHyperparameterSection({ name, value }: { name: string; value: unknown }) {
+  const title = NESTED_HP_SECTION_LABELS[name] ?? humanizeConfigKey(name)
+  const plain =
+    value !== null &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    Object.keys(value as object).length > 0
+
+  return (
+    <div className="rounded-xl border border-border/50 bg-muted/10 overflow-hidden">
+      <div className="px-3 py-2.5 border-b border-border/40 bg-muted/25">
+        <h3 className="text-sm font-semibold text-foreground">{title}</h3>
+      </div>
+      <div className="p-3">
+        {plain ? (
+          <dl className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            {Object.entries(value as Record<string, unknown>).map(([k, v]) => (
+              <div key={k} className="rounded-lg border border-border/35 bg-background/60 px-3 py-2.5">
+                <dt className="text-[11px] text-muted-foreground mb-1">{humanizeConfigKey(k)}</dt>
+                <dd className="text-sm font-mono text-foreground/95 break-words">{renderValue(v)}</dd>
+              </div>
+            ))}
+          </dl>
+        ) : (
+          <pre className="text-xs font-mono leading-relaxed whitespace-pre-wrap break-all rounded-lg bg-muted/30 p-3 text-foreground/90">
+            {renderValue(value)}
+          </pre>
+        )}
+      </div>
+    </div>
+  )
+}
+
 /** Feature-variant sweep summary — shared by step modal and final-report trace. */
 export function FeatureExperimentDetail({
   agentState,
@@ -805,7 +879,7 @@ export function FeatureExperimentDetail({
   )
 }
 
-// Training Config Detail (training_approval step)
+// Training plan detail (training_approval step)
 function TrainingConfigDetail({ agentState, audit }: { agentState: TrainingAgentState; audit?: Record<string, unknown> }) {
   const [expandedSection, setExpandedSection] = useState<number | null>(null)
 
@@ -830,6 +904,7 @@ function TrainingConfigDetail({ agentState, audit }: { agentState: TrainingAgent
   const maxIter = tp.max_iterations || plan.max_iterations
 
   const strategyNotes = Array.isArray(strategy) ? strategy : strategy ? [String(strategy)] : []
+  const { scalars, nested } = partitionHyperparameters(hp)
 
   const sectionTitles = [
     "Objective & Data",
@@ -854,32 +929,54 @@ function TrainingConfigDetail({ agentState, audit }: { agentState: TrainingAgent
 
   return (
     <div className="space-y-6">
+      <p className="text-sm text-muted-foreground leading-relaxed -mt-1">
+        Estimator, objective, and parameters approved for the final training run.
+      </p>
+
       {/* Model & Task header */}
-      <div className="flex gap-4">
-        <div className="flex-1 bg-foreground/5 rounded-xl p-4">
-          <div className="text-xs text-muted-foreground mb-1">Model</div>
-          <div className="text-xl font-semibold">{modelType}</div>
-        </div>
-        {taskType && (
-          <div className="flex-1 bg-foreground/5 rounded-xl p-4">
-            <div className="text-xs text-muted-foreground mb-1">Task</div>
-            <div className="text-xl font-semibold">{taskType}</div>
+      <div className="flex flex-col sm:flex-row gap-3">
+        <div className="flex-1 rounded-xl border border-border/50 bg-gradient-to-br from-muted/50 to-muted/15 p-4">
+          <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground mb-1">
+            Estimator
           </div>
-        )}
+          <div className="text-lg font-semibold tracking-tight">{modelType}</div>
+        </div>
+        {taskType ? (
+          <div className="flex-1 rounded-xl border border-border/50 bg-gradient-to-br from-muted/50 to-muted/15 p-4">
+            <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground mb-1">
+              Problem type
+            </div>
+            <div className="text-lg font-semibold tracking-tight capitalize">{taskType}</div>
+          </div>
+        ) : null}
       </div>
 
-      {/* Hyperparameters grid */}
+      {/* Hyperparameters: scalars + nested objects */}
       {Object.keys(hp).length > 0 ? (
-        <div>
-          <div className="text-sm font-medium mb-3">Hyperparameters</div>
-          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-            {Object.entries(hp).map(([key, value]) => (
-              <div key={key} className="bg-muted/30 rounded-lg px-3 py-2">
-                <div className="text-[11px] text-muted-foreground font-mono truncate">{key}</div>
-                <div className="text-sm font-semibold font-mono mt-0.5">{String(value)}</div>
+        <div className="space-y-5">
+          {scalars.length > 0 ? (
+            <div>
+              <h3 className="text-sm font-semibold text-foreground mb-3">Model parameters</h3>
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                {scalars.map(([key, value]) => (
+                  <div key={key} className="rounded-lg border border-border/40 bg-muted/20 px-3 py-2.5">
+                    <div className="text-[11px] text-muted-foreground">{humanizeConfigKey(key)}</div>
+                    <div className="text-sm font-semibold font-mono mt-0.5 break-all">{renderValue(value)}</div>
+                  </div>
+                ))}
               </div>
-            ))}
-          </div>
+            </div>
+          ) : null}
+          {nested.length > 0 ? (
+            <div>
+              <h3 className="text-sm font-semibold text-foreground mb-3">Pipeline &amp; validation</h3>
+              <div className="space-y-3">
+                {nested.map(([key, value]) => (
+                  <NestedHyperparameterSection key={key} name={key} value={value} />
+                ))}
+              </div>
+            </div>
+          ) : null}
         </div>
       ) : null}
 
@@ -904,12 +1001,14 @@ function TrainingConfigDetail({ agentState, audit }: { agentState: TrainingAgent
       {/* Data Summary */}
       {Object.keys(dataSummary).length > 0 && (
         <div>
-          <div className="text-sm font-medium mb-2">Data Summary</div>
+          <h3 className="text-sm font-semibold text-foreground mb-2">Data summary</h3>
           <div className="grid grid-cols-2 gap-2 text-sm">
             {Object.entries(dataSummary).map(([key, value]) => (
-              <div key={key} className="flex justify-between bg-muted/20 rounded-lg px-3 py-2">
-                <span className="text-muted-foreground">{key.replace(/_/g, " ")}</span>
-                <span className="font-medium">{typeof value === "number" ? value.toLocaleString() : String(value)}</span>
+              <div key={key} className="flex justify-between gap-2 bg-muted/20 rounded-lg px-3 py-2">
+                <span className="text-muted-foreground shrink-0">{humanizeConfigKey(key)}</span>
+                <span className="font-medium text-right break-all min-w-0">
+                  {typeof value === "number" ? value.toLocaleString() : renderValue(value)}
+                </span>
               </div>
             ))}
           </div>
@@ -919,7 +1018,7 @@ function TrainingConfigDetail({ agentState, audit }: { agentState: TrainingAgent
       {/* Strategy sections */}
       {strategyNotes.length > 0 && (
         <div>
-          <div className="text-sm font-medium mb-3">Training Strategy</div>
+          <h3 className="text-sm font-semibold text-foreground mb-3">Training strategy</h3>
           <div className="space-y-2">
             {strategyNotes.map((note, i) => {
               const title = guessSectionTitle(note, i)
@@ -1208,7 +1307,8 @@ function TrainingDetail({ agentState }: { agentState: TrainingAgentState }) {
                       <div className="flex flex-wrap gap-1.5">
                         {Object.entries(iter.hyperparams).slice(0, 6).map(([key, value]) => (
                           <span key={key} className="text-xs bg-muted/50 px-2 py-0.5 rounded font-mono">
-                            {key}: {typeof value === 'number' ? value.toFixed(4) : String(value)}
+                            {humanizeConfigKey(key)}:{" "}
+                            {typeof value === "number" ? value.toFixed(4) : renderValue(value)}
                           </span>
                         ))}
                         {Object.keys(iter.hyperparams).length > 6 && (
@@ -1352,14 +1452,4 @@ function ReportDetail({ agentState }: { agentState: TrainingAgentState }) {
       </div>
     </div>
   )
-}
-
-function renderValue(value: unknown): string {
-  if (value === null || value === undefined) return "N/A"
-  if (typeof value === "string") return value
-  if (typeof value === "number" || typeof value === "boolean") return String(value)
-  if (typeof value === "object") {
-    try { return JSON.stringify(value) } catch { return String(value) }
-  }
-  return String(value)
 }

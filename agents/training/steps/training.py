@@ -1116,7 +1116,7 @@ def run_training_agent(
     goal: str,
     model_name: Optional[str] = None,
     max_iterations: int = 10,
-    llm_model: str = "openai:gpt-5.1",
+    llm_model: str = "openai:gpt-5.4",
     estimator_hint: Optional[str] = None,
     experiment_result: Optional[dict[str, Any]] = None,
     feature_rankings: Optional[dict[str, float]] = None,
