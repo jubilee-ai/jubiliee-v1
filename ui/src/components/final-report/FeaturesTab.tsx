@@ -9,11 +9,40 @@ interface FeaturesTabProps {
 
 export function FeaturesTab({ agentState }: FeaturesTabProps) {
   const features = agentState.feature_spec?.features || []
+  const dataSummary = agentState.training_plan?.data_summary as
+    | { n_features?: number; train_rows?: number }
+    | undefined
+  const nModelInputs =
+    typeof dataSummary?.n_features === "number" && Number.isFinite(dataSummary.n_features)
+      ? dataSummary.n_features
+      : null
 
   return (
     <div className="space-y-8">
-      {/* Features List */}
-      <Section title={`Engineered Features (${features.length})`}>
+      {/* Features List — logical definitions; encoding expands to more model columns */}
+      <Section
+        title={`Feature definitions (${features.length})`}
+        description={
+          nModelInputs != null ? (
+            <>
+              Logical features used for the final spec. After one-hot and similar transforms, the model typically sees{" "}
+              <span className="text-foreground font-medium tabular-nums">{nModelInputs}</span> input columns
+              {dataSummary?.train_rows != null ? (
+                <>
+                  {" "}
+                  (training rows: {Number(dataSummary.train_rows).toLocaleString()})
+                </>
+              ) : null}
+              .
+            </>
+          ) : (
+            <>
+              Logical feature definitions. One-hot and similar encodings expand to more columns than this list — see the
+              feature engineering and training steps for matrix shapes.
+            </>
+          )
+        }
+      >
         <div className="space-y-2">
           {features.length > 0 ? (
             features.map((feature, i) => (

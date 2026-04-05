@@ -18,7 +18,7 @@ from typing import Any, Literal, Optional
 import pandas as pd
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.exc import SQLAlchemyError
 
 try:
@@ -114,11 +114,21 @@ class SQLWarehouse:
         
         # Use file-based SQLite to persist across module loading issues
         if use_file_db:
-            self.engine = create_engine(f"sqlite:///{_SQLITE_DB_PATH}", echo=False)
+            self.engine = create_engine(
+                f"sqlite:///{_SQLITE_DB_PATH}",
+                echo=False,
+                connect_args={"timeout": 30},
+            )
             self._is_file_db = True
         else:
             self.engine = create_engine("sqlite:///:memory:", echo=False)
             self._is_file_db = False
+
+        @event.listens_for(self.engine, "connect")
+        def _set_sqlite_pragma(dbapi_conn, _connection_record):
+            cursor = dbapi_conn.cursor()
+            cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.close()
             
         self.tables: dict[str, TableInfo] = {}
         self._sql_file_mtimes: dict[str, float] = {}  # Track file modification times

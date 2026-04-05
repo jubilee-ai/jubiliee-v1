@@ -84,11 +84,6 @@ def print_agent_output(result):
         print(result['summary'])
         print("=" * 60)
     
-    if result.get('recommendations'):
-        print("\n[RECOMMENDATIONS]")
-        print(result['recommendations'])
-
-
 # =============================================================================
 # TEST 1: Basic Training Agent Flow
 # =============================================================================

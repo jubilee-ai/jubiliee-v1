@@ -4,27 +4,11 @@
  */
 
 import type { AgentStreamEvent } from "@/lib/api"
+import { formatCleaningTransformationMarkdownLine } from "@/lib/cleaningTransformDisplay"
 
 function fmtNum(n: unknown): string {
   if (typeof n === "number" && Number.isFinite(n)) return n.toLocaleString()
   return String(n ?? "")
-}
-
-function formatTransformLine(t: unknown): string {
-  if (!t || typeof t !== "object") return `- ${String(t)}`
-  const r = t as Record<string, unknown>
-  const tool = String(r.tool ?? r.op ?? "transform").replace(/_tool$/, "")
-  const args = r.args as Record<string, unknown> | undefined
-  let extra = ""
-  if (args) {
-    if (Array.isArray(args.columns)) extra = ` **${args.columns.join(", ")}**`
-    else if (args.column) extra = ` **${args.column}**`
-    if (args.dataset_ref) extra += ` (${String(args.dataset_ref).slice(0, 40)}…)`
-    if (args.value !== undefined) extra += ` → ${String(args.value)}`
-    if (args.strategy) extra += ` (${String(args.strategy)})`
-  }
-  const res = r.result != null ? ` → ${String(r.result)}` : ""
-  return `- \`${tool}\`${extra}${res}`
 }
 
 /** Top correlations for display */
@@ -51,7 +35,7 @@ export function buildStepDetailMarkdown(nodeName: string, event: AgentStreamEven
     const transforms = summary?.transformations as unknown[] | undefined
     if (transforms && transforms.length > 0) {
       blocks.push("### What we changed")
-      transforms.slice(0, 25).forEach((t) => blocks.push(formatTransformLine(t)))
+      transforms.slice(0, 25).forEach((t) => blocks.push(formatCleaningTransformationMarkdownLine(t)))
       if (transforms.length > 25) {
         blocks.push(`\n*…and ${transforms.length - 25} more*`)
       }
@@ -145,10 +129,6 @@ export function buildStepDetailMarkdown(nodeName: string, event: AgentStreamEven
         if (it.val_r2 != null) bits.push(`val R² ${Number(it.val_r2).toFixed(4)}`)
         blocks.push(`${i + 1}. ${ok} **${String(name)}**${bits.length ? ` — ${bits.join(", ")}` : ""}`)
       })
-    }
-    const rec = dm?.recommendations
-    if (typeof rec === "string" && rec.trim()) {
-      blocks.push(`\n### Notes\n${rec.trim().slice(0, 800)}`)
     }
   }
 

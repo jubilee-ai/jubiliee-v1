@@ -42,17 +42,12 @@ import numpy as np
 import pandas as pd
 from scipy.stats import loguniform, randint, uniform
 from sklearn import set_config
-from sklearn.base import is_classifier
+from sklearn.base import is_classifier, is_regressor
 from sklearn.compose import ColumnTransformer
 from sklearn.impute import SimpleImputer
-from sklearn.metrics import (
-    accuracy_score,
-    classification_report,
-    confusion_matrix,
-    mean_absolute_error,
-    mean_squared_error,
-    r2_score,
-)
+from sklearn.metrics import (accuracy_score, classification_report,
+                             confusion_matrix, mean_absolute_error,
+                             mean_squared_error, r2_score)
 from sklearn.model_selection import KFold, RandomizedSearchCV
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
@@ -68,9 +63,9 @@ for _p in [
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-from model_storage import classification_roc_auc, generate_model_path, register_model
+from model_storage import (classification_roc_auc, generate_model_path,
+                           register_model)
 from utils import get_registered_dataset
-
 
 # ── Auto-discover estimators ─────────────────────────────────────────────
 # Dynamically finds every classifier and regressor in sklearn.
@@ -328,13 +323,29 @@ def _build_preprocessor(X: pd.DataFrame, categorical_cols: list[str]) -> ColumnT
     return ColumnTransformer(transformers=transformers, remainder="passthrough")
 
 
+def _prepare_split_frame(
+    df: pd.DataFrame,
+    feature_columns: list[str],
+    categorical_cols: list[str],
+) -> pd.DataFrame:
+    """Coerce numeric columns to ndarray-backed floats for sklearn compatibility."""
+    X = df[feature_columns].copy()
+    for col in X.columns:
+        if col in categorical_cols or X[col].dtype == object or not pd.api.types.is_numeric_dtype(X[col]):
+            continue
+        X[col] = np.asarray(X[col], dtype=np.float64)
+    return X
+
+
 def _select_scoring(is_clf: bool, y: pd.Series) -> str:
     """Pick the best CV scoring metric based on data characteristics."""
     if not is_clf:
         return "r2"
     n_classes = y.nunique()
     minority_ratio = y.value_counts().min() / len(y)
-    if n_classes == 2 and minority_ratio < 0.3:
+    if n_classes == 2 and minority_ratio < 0.1:
+        return "average_precision"
+    if n_classes == 2:
         return "roc_auc"
     if n_classes > 2 and minority_ratio < 0.15:
         return "f1_weighted"
@@ -370,7 +381,7 @@ def _resolve_cv(
 # ── Main entry point ─────────────────────────────────────────────────────
 
 _SUBSAMPLE_SEARCH = 30_000
-_MAX_TOTAL_FITS = 40
+_MAX_TOTAL_FITS = 100
 
 _SLOW_ESTIMATORS = {
     "GradientBoostingClassifier", "GradientBoostingRegressor",
@@ -440,20 +451,29 @@ def run(params: dict) -> str:
     else:
         feature_columns = [c for c in df.columns if c != target_column]
 
-    X, y = df[feature_columns], df[target_column]
-    n_rows = len(X)
-
-    categorical_cols = params.get("categorical_columns") or X.select_dtypes(include=["object", "category"]).columns.tolist()
+    categorical_cols = params.get("categorical_columns") or df[feature_columns].select_dtypes(include=["object", "category"]).columns.tolist()
     categorical_cols = [c for c in categorical_cols if c in feature_columns]
 
     # Materialize pandas/Arrow/extension dtypes as ndarray-backed columns so sklearn
     # does not treat inputs as foreign array namespaces.
-    y = pd.Series(np.asarray(y), index=y.index, name=y.name)
-    X = X.copy()
-    for _c in X.columns:
-        if _c in categorical_cols or X[_c].dtype == object or not pd.api.types.is_numeric_dtype(X[_c]):
-            continue
-        X[_c] = np.asarray(X[_c], dtype=np.float64)
+    X = _prepare_split_frame(df, feature_columns, categorical_cols)
+    y = pd.Series(np.asarray(df[target_column]), index=df.index, name=target_column)
+    n_rows = len(X)
+
+    val_ref = params.get("val_dataset_ref")
+    X_val = None
+    y_val = None
+    if val_ref:
+        val_df = get_registered_dataset(val_ref)
+        if val_df is None:
+            return f"TRAINING FAILED\nError: Validation dataset '{val_ref}' not found."
+        missing = [c for c in feature_columns if c not in val_df.columns]
+        if missing:
+            return f"TRAINING FAILED\nError: Validation dataset missing feature columns: {missing}"
+        if target_column not in val_df.columns:
+            return f"TRAINING FAILED\nError: Validation target '{target_column}' not in columns: {list(val_df.columns)}"
+        X_val = _prepare_split_frame(val_df, feature_columns, categorical_cols)
+        y_val = pd.Series(np.asarray(val_df[target_column]), index=val_df.index, name=target_column)
 
     print(f"[sklearn_generic] {estimator_name} | {n_rows} rows × {len(feature_columns)} features")
 
@@ -471,6 +491,18 @@ def run(params: dict) -> str:
         estimator = _resolve_estimator(estimator_name, fixed_params)
     except Exception as e:
         return f"TRAINING FAILED\nError: {e}"
+
+    expected_task = params.get("expected_task_type")
+    if expected_task == "classification" and not is_classifier(estimator):
+        return (
+            f"TRAINING FAILED\nError: task_type is classification but '{estimator_name}' "
+            f"is not a classifier. Choose a classifier or fix the stated task type."
+        )
+    if expected_task == "regression" and not is_regressor(estimator):
+        return (
+            f"TRAINING FAILED\nError: task_type is regression but '{estimator_name}' "
+            f"is not a regressor. Choose a regressor or fix the stated task type."
+        )
 
     is_clf = is_classifier(estimator)
     task_type = "classification" if is_clf else "regression"
@@ -617,6 +649,32 @@ def run(params: dict) -> str:
         metrics.update({"train_r2": r2, "train_mae": mae, "train_rmse": rmse})
         classes_list = []
         lines.extend([f"Train R2: {r2:.4f}", f"Train MAE: {mae:.4f}", f"Train RMSE: {rmse:.4f}"])
+
+    if X_val is not None and y_val is not None:
+        y_val_pred = pipeline.predict(X_val)
+        lines.append("")
+        lines.append("VALIDATION METRICS")
+        if is_clf:
+            val_acc = float(accuracy_score(y_val, y_val_pred))
+            metrics["val_accuracy"] = val_acc
+            lines.append(f"Val Accuracy: {val_acc:.4f}")
+
+            val_roc = classification_roc_auc(pipeline, X_val, y_val)
+            if val_roc is not None:
+                metrics["val_roc_auc"] = val_roc
+                lines.append(f"Val ROC-AUC: {val_roc:.4f}")
+            else:
+                lines.append("Val ROC-AUC: N/A")
+        else:
+            val_r2 = float(r2_score(y_val, y_val_pred))
+            val_mae = float(mean_absolute_error(y_val, y_val_pred))
+            val_rmse = float(np.sqrt(mean_squared_error(y_val, y_val_pred)))
+            metrics.update({"val_r2": val_r2, "val_mae": val_mae, "val_rmse": val_rmse})
+            lines.extend([
+                f"Val R2: {val_r2:.4f}",
+                f"Val MAE: {val_mae:.4f}",
+                f"Val RMSE: {val_rmse:.4f}",
+            ])
 
     if cv_score is not None:
         cv_shown = tuning_cv_splits if tuning_cv_splits is not None else cv_folds

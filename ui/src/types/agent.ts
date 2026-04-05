@@ -73,8 +73,8 @@ export interface TrainingMetrics {
   num_iterations?: number
   best_iteration?: number
   
-  // Summary and recommendations
   summary?: string
+  /** @deprecated Legacy field; no longer produced */
   recommendations?: string
   feature_redo_requested?: boolean
 }
@@ -271,6 +271,8 @@ export interface TrainingAgentState {
   transformed_val_ref: string | null
   transformed_test_ref: string | null
   feature_validation_passed: boolean
+  /** engineered = spec executed; passthrough = e.g. unsupervised cleaned table as-is */
+  feature_pipeline_mode: "engineered" | "passthrough" | null
 
   // Step 6: Human Confirmation
   human_confirmed: boolean
@@ -376,6 +378,8 @@ export interface ChatMessage {
   taskPlanResolved?: boolean
   /** Full prompt sent to the API when `content` is a short topic label (e.g. background task) */
   apiPayload?: string
+  /** Dataset ref keys attached with this user message (shown in bubble; cleared from composer on send) */
+  linkedDatasetKeys?: string[]
   links?: Array<{
     type: "dataset" | "model" | "step"
     id: string

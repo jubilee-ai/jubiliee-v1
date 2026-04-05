@@ -1,5 +1,6 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import './index.css'
 import App from './App.tsx'
 import { isPublishableKey } from '@clerk/shared/keys'
@@ -16,6 +17,14 @@ if (!isPublishableKey(publishableKey)) {
       'A truncated or edited value cannot be decoded, so Clerk builds script URLs like https://npm/... and the browser fails DNS.',
   )
 }
+
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      retry: 1,
+    },
+  },
+})
 
 /** Matches Jubilee product palette (light shell + clinical blues). */
 const clerkAppearance = {
@@ -54,9 +63,11 @@ const clerkAppearance = {
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <ClerkProvider publishableKey={publishableKey} appearance={clerkAppearance}>
-      <App />
-      <Toaster position="bottom-right" closeButton richColors offset={20} />
-    </ClerkProvider>
+    <QueryClientProvider client={queryClient}>
+      <ClerkProvider publishableKey={publishableKey} appearance={clerkAppearance}>
+        <App />
+        <Toaster position="bottom-right" closeButton richColors offset={20} />
+      </ClerkProvider>
+    </QueryClientProvider>
   </StrictMode>,
 )

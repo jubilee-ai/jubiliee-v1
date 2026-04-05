@@ -1,21 +1,49 @@
-import { useState } from "react"
-import { Database, Download, Search, ChevronDown, ChevronRight, Rows3, Columns3, FileText } from "lucide-react"
+import { useState, useRef, type ChangeEvent } from "react"
+import {
+  Database,
+  Download,
+  Eye,
+  Search,
+  ChevronDown,
+  ChevronRight,
+  Rows3,
+  Columns3,
+  Upload,
+} from "lucide-react"
+import { toast } from "sonner"
 import { Badge } from "@/components/ui/badge"
-import type { Dataset } from "@/lib/api"
+import { Button } from "@/components/ui/button"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
+import { useDatasetsQuery, useDatasetPreviewQuery, useUploadDatasetMutation } from "@/lib/queries"
 
 interface DatasetsPageProps {
-  datasets: Dataset[]
+  enabled: boolean
+  onDatasetsChanged?: () => void
 }
 
-const sourceTypeBadge: Record<string, { label: string; className: string }> = {
-  catalog: { label: "Catalog", className: "bg-blue-500/15 text-blue-400 border-transparent" },
-  derived: { label: "Derived", className: "bg-purple-500/15 text-purple-400 border-transparent" },
-  uploaded: { label: "Uploaded", className: "bg-emerald-500/15 text-emerald-400 border-transparent" },
+function fileStem(filename: string): string {
+  const i = filename.lastIndexOf(".")
+  return i > 0 ? filename.slice(0, i) : filename
 }
+
+const PREVIEW_ROW_LIMIT = 25
 
 function formatRowCount(n?: number): string {
   if (n == null) return "--"
   return n.toLocaleString()
+}
+
+function formatPreviewCell(value: unknown): string {
+  if (value === null || value === undefined) return ""
+  if (typeof value === "object") return JSON.stringify(value)
+  return String(value)
 }
 
 function ColumnList({ columns }: { columns: string[] }) {
@@ -28,6 +56,7 @@ function ColumnList({ columns }: { columns: string[] }) {
   return (
     <div>
       <button
+        type="button"
         onClick={() => setOpen(!open)}
         className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
       >
@@ -57,21 +86,228 @@ function ColumnList({ columns }: { columns: string[] }) {
   )
 }
 
-export function DatasetsPage({ datasets }: DatasetsPageProps) {
+const ACCEPT = ".csv,.parquet"
+
+export function DatasetsPage({ enabled, onDatasetsChanged }: DatasetsPageProps) {
   const [search, setSearch] = useState("")
+  const fileInputRef = useRef<HTMLInputElement>(null)
+  const [uploadOpen, setUploadOpen] = useState(false)
+  const [pendingFile, setPendingFile] = useState<File | null>(null)
+  const [uploadName, setUploadName] = useState("")
+  const [uploadDescription, setUploadDescription] = useState("")
+  const [previewName, setPreviewName] = useState<string | null>(null)
+
+  const datasetsQuery = useDatasetsQuery({ enabled })
+  const previewQuery = useDatasetPreviewQuery(previewName, {
+    enabled: enabled && previewName !== null,
+    limit: PREVIEW_ROW_LIMIT,
+  })
+  const uploadMutation = useUploadDatasetMutation()
+
+  const datasets = datasetsQuery.data ?? []
+  const listLoading = enabled && datasetsQuery.isPending && datasetsQuery.data === undefined
 
   const filtered = datasets.filter((d) =>
     !search || d.name.toLowerCase().includes(search.toLowerCase()) ||
     d.description?.toLowerCase().includes(search.toLowerCase())
   )
 
+  const openFilePicker = () => fileInputRef.current?.click()
+
+  const onFileChange = (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    e.target.value = ""
+    if (!file) return
+    const lower = file.name.toLowerCase()
+    if (!lower.endsWith(".csv") && !lower.endsWith(".parquet")) {
+      toast.error("Choose a .csv or .parquet file.")
+      return
+    }
+    setPendingFile(file)
+    setUploadName(fileStem(file.name))
+    setUploadDescription("")
+    setUploadOpen(true)
+  }
+
+  const handleUpload = () => {
+    if (!pendingFile) return
+    uploadMutation.mutate(
+      {
+        file: pendingFile,
+        name: uploadName.trim() || undefined,
+        description: uploadDescription.trim() || undefined,
+      },
+      {
+        onSuccess: () => {
+          toast.success("Dataset uploaded")
+          setUploadOpen(false)
+          setPendingFile(null)
+          onDatasetsChanged?.()
+        },
+        onError: (err) => {
+          toast.error(err instanceof Error ? err.message : "Upload failed")
+        },
+      },
+    )
+  }
+
+  const uploadBusy = uploadMutation.isPending
+
   return (
     <div className="flex-1 overflow-auto">
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept={ACCEPT}
+        className="hidden"
+        onChange={onFileChange}
+      />
+
+      <Dialog
+        open={uploadOpen}
+        onOpenChange={(open) => {
+          if (!open && !uploadBusy) {
+            setUploadOpen(false)
+            setPendingFile(null)
+          }
+        }}
+      >
+        <DialogContent
+          className="sm:max-w-md"
+          onPointerDownOutside={(e) => {
+            if (uploadBusy) e.preventDefault()
+          }}
+          onEscapeKeyDown={(e) => {
+            if (uploadBusy) e.preventDefault()
+          }}
+        >
+          <DialogHeader>
+            <DialogTitle className="font-headline">Upload dataset</DialogTitle>
+            <DialogDescription>
+              {pendingFile && (
+                <span className="font-mono text-foreground">{pendingFile.name}</span>
+              )}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-3">
+            <div>
+              <label className="text-xs font-medium text-muted-foreground">Name</label>
+              <input
+                type="text"
+                value={uploadName}
+                onChange={(e) => setUploadName(e.target.value)}
+                disabled={uploadBusy}
+                className="mt-1 w-full rounded-lg border border-border bg-card px-3 py-2 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+              />
+            </div>
+            <div>
+              <label className="text-xs font-medium text-muted-foreground">Description (optional)</label>
+              <textarea
+                value={uploadDescription}
+                onChange={(e) => setUploadDescription(e.target.value)}
+                disabled={uploadBusy}
+                rows={3}
+                className="mt-1 w-full resize-none rounded-lg border border-border bg-card px-3 py-2 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+              />
+            </div>
+          </div>
+          <DialogFooter className="gap-2 sm:gap-0">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => {
+                if (uploadBusy) return
+                setUploadOpen(false)
+                setPendingFile(null)
+              }}
+              disabled={uploadBusy}
+            >
+              Cancel
+            </Button>
+            <Button type="button" onClick={handleUpload} disabled={uploadBusy || !pendingFile}>
+              {uploadBusy ? "Uploading…" : "Upload"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={previewName !== null}
+        onOpenChange={(open) => {
+          if (!open) setPreviewName(null)
+        }}
+      >
+        <DialogContent className="max-w-4xl max-h-[85vh] flex flex-col gap-0 p-0 overflow-hidden sm:max-w-4xl">
+          <DialogHeader className="px-6 pt-6 pb-3 shrink-0 border-b border-border">
+            <DialogTitle className="font-headline pr-8">
+              {previewName ? (
+                <span className="truncate block" title={previewName}>
+                  Preview: {previewName}
+                </span>
+              ) : (
+                "Dataset preview"
+              )}
+            </DialogTitle>
+            <DialogDescription>First {PREVIEW_ROW_LIMIT} rows</DialogDescription>
+          </DialogHeader>
+          <div className="min-h-0 flex-1 overflow-auto px-6 pb-6">
+            {previewQuery.isPending && (
+              <div className="py-12 text-center text-sm text-muted-foreground">Loading preview…</div>
+            )}
+            {previewQuery.isError && (
+              <div className="py-12 text-center text-sm text-destructive">
+                {previewQuery.error instanceof Error ? previewQuery.error.message : "Preview failed"}
+              </div>
+            )}
+            {previewQuery.data && !previewQuery.isPending && (
+              <div className="rounded-lg border border-border overflow-x-auto">
+                <table className="w-full text-xs border-collapse">
+                  <thead>
+                    <tr className="bg-muted/50 border-b border-border">
+                      {previewQuery.data.columns.map((col) => (
+                        <th
+                          key={col}
+                          className="text-left font-medium text-muted-foreground px-3 py-2 whitespace-nowrap max-w-[14rem]"
+                        >
+                          <span className="font-mono">{col}</span>
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {previewQuery.data.rows.map((row, ri) => (
+                      <tr
+                        key={ri}
+                        className="border-b border-border/60 last:border-0 hover:bg-muted/20"
+                      >
+                        {previewQuery.data!.columns.map((col) => {
+                          const raw = row[col]
+                          const text = formatPreviewCell(raw)
+                          return (
+                            <td
+                              key={col}
+                              className="px-3 py-1.5 max-w-[14rem] font-mono text-foreground/90 align-top"
+                              title={text.length > 80 ? text : undefined}
+                            >
+                              <span className="line-clamp-3 break-all">{text || "—"}</span>
+                            </td>
+                          )
+                        })}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
+
       <div className="max-w-5xl mx-auto px-8 py-10">
         <span className="text-[10px] font-bold text-muted-foreground tracking-widest uppercase">
           Data Management
         </span>
-        <div className="flex items-end justify-between mt-1">
+        <div className="flex items-end justify-between mt-1 gap-4">
           <div>
             <h1 className="font-headline text-3xl font-semibold text-foreground tracking-tight">
               Data Assets
@@ -80,99 +316,117 @@ export function DatasetsPage({ datasets }: DatasetsPageProps) {
               Manage and explore your datasets for training and evaluation.
             </p>
           </div>
-          {datasets.length > 0 && (
-            <Badge variant="secondary" className="mb-1 tabular-nums">
-              {datasets.length} dataset{datasets.length !== 1 ? "s" : ""}
-            </Badge>
-          )}
+          <div className="flex items-center gap-2 shrink-0 mb-1">
+            {datasets.length > 0 && (
+              <Badge variant="secondary" className="tabular-nums">
+                {datasets.length} dataset{datasets.length !== 1 ? "s" : ""}
+              </Badge>
+            )}
+            <Button
+              type="button"
+              size="sm"
+              variant="secondary"
+              className="gap-1.5"
+              onClick={openFilePicker}
+              disabled={!enabled || listLoading}
+            >
+              <Upload className="h-3.5 w-3.5" />
+              Upload
+            </Button>
+          </div>
         </div>
 
-        {/* Search */}
-        {datasets.length > 0 && (
-          <div className="relative mt-6">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
-            <input
-              type="text"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Filter datasets..."
-              className="w-full max-w-sm rounded-lg border border-border bg-card pl-9 pr-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
-            />
-          </div>
-        )}
-
-        {/* Table */}
-        {filtered.length > 0 ? (
-          <div className="mt-6 space-y-2">
-            {filtered.map((ds) => {
-              const badge = sourceTypeBadge[ds.source_type ?? ""] ?? {
-                label: ds.source_type ?? "unknown",
-                className: "bg-muted text-muted-foreground border-transparent",
-              }
-              return (
-                <div
-                  key={ds.id ?? ds.name}
-                  className="rounded-xl border border-border bg-card p-4 transition-colors hover:bg-accent/30"
-                >
-                  <div className="flex items-start justify-between gap-4">
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-2">
-                        <Database className="h-4 w-4 shrink-0 text-primary" />
-                        <span className="font-medium text-sm text-foreground truncate">
-                          {ds.name}
-                        </span>
-                        <Badge className={`text-[10px] px-1.5 py-0 ${badge.className}`}>
-                          {badge.label}
-                        </Badge>
-                        {ds.format && (
-                          <span className="flex items-center gap-0.5 text-[10px] text-muted-foreground font-mono uppercase">
-                            <FileText className="h-3 w-3" />
-                            {ds.format}
-                          </span>
-                        )}
-                      </div>
-                      {ds.description && (
-                        <p className="mt-1 text-xs text-muted-foreground line-clamp-2 pl-6">
-                          {ds.description}
-                        </p>
-                      )}
-                    </div>
-
-                    {ds.trainable && ds.name && (
-                      <a
-                        href={`/api/datasets/${encodeURIComponent(ds.name)}/download`}
-                        className="shrink-0 inline-flex items-center gap-1 rounded-md border border-border px-2.5 py-1.5 text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
-                      >
-                        <Download className="h-3 w-3" />
-                        Download
-                      </a>
-                    )}
-                  </div>
-
-                  <div className="mt-3 pl-6 flex items-center gap-6 text-xs text-muted-foreground">
-                    {ds.rows != null && (
-                      <span className="flex items-center gap-1">
-                        <Rows3 className="h-3 w-3" />
-                        <span className="font-medium tabular-nums">{formatRowCount(ds.rows)}</span> rows
-                      </span>
-                    )}
-                    <ColumnList columns={ds.columns ?? []} />
-                  </div>
-                </div>
-              )
-            })}
-          </div>
-        ) : datasets.length > 0 ? (
-          <div className="mt-10 rounded-xl bg-card p-8 text-center text-muted-foreground text-sm">
-            No datasets match "{search}".
+        {listLoading ? (
+          <div className="mt-10 rounded-xl border border-border bg-card p-10 text-center text-sm text-muted-foreground">
+            Loading datasets…
           </div>
         ) : (
-          <div className="mt-10 rounded-xl bg-card border border-border p-10 text-center">
-            <Database className="mx-auto h-8 w-8 text-muted-foreground/50" />
-            <p className="mt-3 text-sm text-muted-foreground">
-              No datasets yet. Train a model in the Experiment Lab to generate datasets.
-            </p>
-          </div>
+          <>
+            {datasets.length > 0 && (
+              <div className="relative mt-6">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+                <input
+                  type="text"
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  placeholder="Filter datasets..."
+                  className="w-full max-w-sm rounded-lg border border-border bg-card pl-9 pr-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+                />
+              </div>
+            )}
+
+            {filtered.length > 0 ? (
+              <div className="mt-6 space-y-2">
+                {filtered.map((ds) => {
+                  return (
+                    <div
+                      key={ds.id ?? ds.name}
+                      className="rounded-xl border border-border bg-card p-4 transition-colors hover:bg-accent/30"
+                    >
+                      <div className="flex items-start justify-between gap-4">
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-2">
+                            <Database className="h-4 w-4 shrink-0 text-primary" />
+                            <span className="font-medium text-sm text-foreground truncate">
+                              {ds.name}
+                            </span>
+                          </div>
+                          {ds.description && (
+                            <p className="mt-1 text-xs text-muted-foreground line-clamp-2 pl-6">
+                              {ds.description}
+                            </p>
+                          )}
+                        </div>
+
+                        {ds.trainable && ds.name && (
+                          <div className="shrink-0 flex items-center gap-2">
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              className="gap-1.5 h-8 text-xs font-medium"
+                              onClick={() => setPreviewName(ds.name)}
+                            >
+                              <Eye className="h-3 w-3" />
+                              Preview
+                            </Button>
+                            <a
+                              href={`/api/datasets/${encodeURIComponent(ds.name)}/download`}
+                              className="inline-flex items-center gap-1 rounded-md border border-border bg-background px-2.5 py-1.5 text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+                            >
+                              <Download className="h-3 w-3" />
+                              Download
+                            </a>
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="mt-3 pl-6 flex items-center gap-6 text-xs text-muted-foreground">
+                        {ds.rows != null && (
+                          <span className="flex items-center gap-1">
+                            <Rows3 className="h-3 w-3" />
+                            <span className="font-medium tabular-nums">{formatRowCount(ds.rows)}</span> rows
+                          </span>
+                        )}
+                        <ColumnList columns={ds.columns ?? []} />
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            ) : datasets.length > 0 ? (
+              <div className="mt-10 rounded-xl bg-card p-8 text-center text-muted-foreground text-sm">
+                No datasets match "{search}".
+              </div>
+            ) : (
+              <div className="mt-10 rounded-xl bg-card border border-border p-10 text-center">
+                <Database className="mx-auto h-8 w-8 text-muted-foreground/50" />
+                <p className="mt-3 text-sm text-muted-foreground">
+                  No datasets yet. Upload a CSV or Parquet file, or train a model in the Experiment Lab.
+                </p>
+              </div>
+            )}
+          </>
         )}
       </div>
     </div>

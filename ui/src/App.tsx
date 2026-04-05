@@ -1,9 +1,11 @@
-import { useState, useEffect, useRef, useCallback, type CSSProperties, type MouseEvent as ReactMouseEvent } from "react"
+import { useState, useEffect, useRef, useCallback, useMemo, type CSSProperties, type MouseEvent as ReactMouseEvent } from "react"
 import { useRealAgent } from "@/hooks/useRealAgent"
 import { ProgressPanel } from "@/components/ProgressPanel"
 import { ChatPanel, ChatPanelRef } from "@/components/ChatPanel"
 import { AppSidebar, type AppTab } from "@/components/AppSidebar"
+import { RegistryFinalReport } from "@/components/TrainingReportJsonDialog"
 import { FinalReport } from "@/components/FinalReport"
+import { trainingReportModelLabel } from "@/lib/trainingReport"
 import { Button } from "@/components/ui/button"
 import { TooltipProvider } from "@/components/ui/tooltip"
 import {
@@ -13,13 +15,23 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog"
-import { RotateCcw, FileText, Search, Bell, ArrowLeft } from "lucide-react"
+import { RotateCcw, Search, Bell, ArrowLeft } from "lucide-react"
 import type { StepInfo, TrainingAgentState, ConfirmationAction, TaskPlanSummary } from "@/types/agent"
-import type { ExperimentSummary } from "@/lib/api"
+import { CHECKLIST_EXCLUDE_IDS } from "@/lib/trainingSteps"
 import { cn } from "@/lib/utils"
+import { useExperimentDetailQuery } from "@/lib/queries"
 import { DatasetsPage } from "@/components/DatasetsPage"
 import { ModelsPage } from "@/components/ModelsPage"
 import { Show, SignIn, UserButton, useAuth } from "@clerk/react"
+
+function appDebug(event: string, payload?: Record<string, unknown>) {
+  const ts = new Date().toISOString()
+  if (payload) {
+    console.log(`[app:experiment-switch][${ts}] ${event}`, payload)
+    return
+  }
+  console.log(`[app:experiment-switch][${ts}] ${event}`)
+}
 
 export default function App() {
   const { isLoaded, isSignedIn } = useAuth()
@@ -139,19 +151,21 @@ function AuthenticatedApp() {
   const SIDEBAR_MAX_WIDTH = 420
   const [sidebarWidth, setSidebarWidth] = useState(240)
   const [isResizingSidebar, setIsResizingSidebar] = useState(false)
-  const [showReport, setShowReport] = useState(false)
+  /** Single report dialog for chat + model registry (same component, same behavior). */
+  const [reportView, setReportView] = useState<
+    null | { kind: "chat" } | { kind: "registry"; modelName: string }
+  >(null)
   const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null)
   const [activeTab, setActiveTab] = useState<AppTab>("experiment_lab")
-  const [experimentsListNonce, setExperimentsListNonce] = useState(0)
+  /** When set, TanStack Query loads this experiment from the API and applies it to the lab hook (sidebar selection). */
+  const [experimentDetailQueryId, setExperimentDetailQueryId] = useState<string | null>(null)
+  /** When set, Models tab scrolls to and briefly highlights this trained model row. */
+  const [modelsScrollToModelName, setModelsScrollToModelName] = useState<string | null>(null)
   const chatPanelRef = useRef<ChatPanelRef>(null)
 
-  const bumpExperimentsList = useCallback(() => {
-    setExperimentsListNonce((n) => n + 1)
-  }, [])
+  const realAgent = useRealAgent()
 
-  const realAgent = useRealAgent({
-    onExperimentEnsured: () => bumpExperimentsList(),
-  })
+  const experimentDetailQuery = useExperimentDetailQuery(experimentDetailQueryId)
 
   const agent = {
     agentState: realAgent.agentState,
@@ -166,7 +180,23 @@ function AuthenticatedApp() {
     reset: realAgent.reset,
   }
 
-  const isComplete = agent.agentState.training_metrics?.success
+  /** Registry link by experiment id, else model name from agent state (metrics / weights path). */
+  const trainedModelNameForCurrentExperiment = useMemo(() => {
+    if (!realAgent.experimentId) return null
+    const linked = realAgent.trainedModels.find(
+      (m) => m.experiment_id === realAgent.experimentId,
+    )
+    if (linked) return linked.model_name
+    return trainingReportModelLabel(agent.agentState)
+  }, [realAgent.experimentId, realAgent.trainedModels, agent.agentState])
+
+  const handleOpenTrainedModelForExperiment = useCallback(() => {
+    const name = trainedModelNameForCurrentExperiment
+    if (!name) return
+    void realAgent.refreshTrainedModels()
+    setModelsScrollToModelName(name)
+    setActiveTab("models")
+  }, [trainedModelNameForCurrentExperiment, realAgent.refreshTrainedModels])
 
   // Lightweight backend reachability only (catalog loads once in useRealAgent on mount;
   // refetch datasets/models when user opens those tabs).
@@ -187,8 +217,11 @@ function AuthenticatedApp() {
 
   useEffect(() => {
     if (activeTab === "datasets") void realAgent.refreshDatasets()
-    if (activeTab === "models") void realAgent.refreshModelTypes()
-  }, [activeTab, realAgent.refreshDatasets, realAgent.refreshModelTypes])
+    if (activeTab === "models") {
+      void realAgent.refreshModelTypes()
+      void realAgent.refreshTrainedModels()
+    }
+  }, [activeTab, realAgent.refreshDatasets, realAgent.refreshModelTypes, realAgent.refreshTrainedModels])
 
   const taskRunning =
     realAgent.agentState.lab_mode === "task" &&
@@ -202,6 +235,44 @@ function AuthenticatedApp() {
     }, 5000)
     return () => window.clearInterval(t)
   }, [taskRunning, realAgent.refreshExperimentTraining])
+
+  useEffect(() => {
+    const d = experimentDetailQuery.data
+    const qid = experimentDetailQueryId
+    appDebug("detail-query-effect", {
+      selectedQueryId: qid,
+      queryDataId: d?.id ?? null,
+      dataUpdatedAt: experimentDetailQuery.dataUpdatedAt,
+      isSuccess: experimentDetailQuery.isSuccess,
+      isPending: experimentDetailQuery.isPending,
+      isFetching: experimentDetailQuery.isFetching,
+      activeExperimentId: realAgent.experimentId,
+      isRunning: realAgent.isRunning,
+      queryError: experimentDetailQuery.error ? String(experimentDetailQuery.error) : null,
+    })
+    if (!d?.id || qid == null) return
+    if (d.id !== qid) return
+    if (!experimentDetailQuery.isSuccess) return
+    // While actively streaming in this same experiment, do not replace local state from query cache updates.
+    if (realAgent.experimentId === qid && realAgent.isRunning) {
+      appDebug("apply-skip-running-stream", { experimentId: qid })
+      return
+    }
+    appDebug("apply-experiment-detail", {
+      experimentId: d.id,
+      chatHistoryCount: Array.isArray(d.chat_history) ? d.chat_history.length : null,
+      hasTrainingState: !!d.training_state,
+    })
+    realAgent.applyExperimentDetail(d)
+  }, [
+    experimentDetailQuery.data,
+    experimentDetailQuery.dataUpdatedAt,
+    experimentDetailQuery.isSuccess,
+    experimentDetailQueryId,
+    realAgent.experimentId,
+    realAgent.isRunning,
+    realAgent.applyExperimentDetail,
+  ])
 
   const handleStepClick = useCallback((stepId: string) => {
     if (chatPanelRef.current) {
@@ -217,33 +288,91 @@ function AuthenticatedApp() {
     setHighlightedMessageId(null)
   }, [])
 
-  const [switchingTo, setSwitchingTo] = useState<string | null>(null)
+  /** Row spinner: only while the selected experiment is not yet applied to the lab hook.
+   * Do not key off `isFetching` — background refetches keep `isFetching` true and would leave the spinner stuck after load. */
+  const switchingTo =
+    experimentDetailQueryId &&
+    realAgent.experimentId !== experimentDetailQueryId &&
+    !experimentDetailQuery.isError
+      ? experimentDetailQueryId
+      : null
 
   const handleSelectExperiment = useCallback(
-    async (id: string, opts?: { freshSummary?: ExperimentSummary }) => {
-      setSwitchingTo(id)
-      try {
-        if (opts?.freshSummary && opts.freshSummary.id === id) {
-          await realAgent.loadExperimentFromSummary(opts.freshSummary)
-        } else {
-          await realAgent.loadExperiment(id)
-        }
-      } finally {
-        setSwitchingTo(null)
+    (id: string) => {
+      appDebug("sidebar-select-start", {
+        selectedId: id,
+        currentActiveExperimentId: realAgent.experimentId,
+        currentQuerySelectionId: experimentDetailQueryId,
+        currentMessagesCount: realAgent.messages.length,
+      })
+
+      // Deduplicate repeated clicks while already targeting this experiment.
+      if (experimentDetailQueryId === id) {
+        appDebug("sidebar-select-skip-already-targeted", { selectedId: id })
+        return
       }
+
+      // Switch immediately; persist previous conversation in background so a slow save
+      // cannot block experiment selection/UI updates.
+      setExperimentDetailQueryId(id)
+      appDebug("sidebar-select-set-query-id", { selectedId: id })
+      void realAgent.saveCurrentMessages()
+      appDebug("sidebar-select-triggered-background-save", { selectedId: id })
     },
-    [realAgent.loadExperiment, realAgent.loadExperimentFromSummary],
+    [experimentDetailQueryId, realAgent],
   )
 
-  /** Instant new chat: no POST /experiments until the first send (ensureExperimentId). Sidebar row appears after that. */
-  const handleStartBlankChat = useCallback(async () => {
-    await realAgent.saveCurrentMessages()
+  const handleOpenExperimentFromModels = useCallback(
+    (experimentId: string) => {
+      setActiveTab("experiment_lab")
+      handleSelectExperiment(experimentId)
+    },
+    [handleSelectExperiment],
+  )
+
+  const handleStartBlankChat = useCallback(() => {
+    appDebug("start-blank-chat", {
+      previousExperimentId: realAgent.experimentId,
+      previousMessagesCount: realAgent.messages.length,
+    })
+    void realAgent.saveCurrentMessages()
+    setExperimentDetailQueryId(null)
     realAgent.leaveLabSession()
   }, [realAgent])
 
   const handleLeaveLabSession = useCallback(() => {
+    appDebug("leave-lab-session", {
+      previousExperimentId: realAgent.experimentId,
+      previousMessagesCount: realAgent.messages.length,
+    })
+    setExperimentDetailQueryId(null)
     realAgent.leaveLabSession()
   }, [realAgent])
+
+  const handleResetWorkspace = useCallback(() => {
+    appDebug("reset-workspace", {
+      previousExperimentId: realAgent.experimentId,
+      previousMessagesCount: realAgent.messages.length,
+    })
+    setExperimentDetailQueryId(null)
+    realAgent.reset()
+  }, [realAgent])
+
+  useEffect(() => {
+    appDebug("selection-state-changed", {
+      querySelectedExperimentId: experimentDetailQueryId,
+      realAgentExperimentId: realAgent.experimentId,
+      messagesCount: realAgent.messages.length,
+      isRunning: realAgent.isRunning,
+      switchingTo,
+    })
+  }, [
+    experimentDetailQueryId,
+    realAgent.experimentId,
+    realAgent.messages.length,
+    realAgent.isRunning,
+    switchingTo,
+  ])
 
   const handleApproveTrainingPlan = useCallback(
     async (messageId: string, plan: TaskPlanSummary, refs: string[]) => {
@@ -313,15 +442,16 @@ function AuthenticatedApp() {
     }
   }, [isResizingSidebar, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH])
 
-  const CHECKLIST_EXCLUDE = new Set(["generate_report"])
-  const checklistSteps = agent.steps.filter((s) => !CHECKLIST_EXCLUDE.has(s.id))
+  const checklistSteps = agent.steps.filter((s) => !CHECKLIST_EXCLUDE_IDS.has(s.id))
   const completedSteps = checklistSteps.filter((s) => s.status === "completed").length
   const totalSteps = checklistSteps.length
   const currentStep = agent.steps.find(s => s.status === "running" || s.status === "awaiting_confirmation")
   const displayCurrentStep =
-    currentStep?.id === "generate_report"
-      ? { ...currentStep, name: "Finishing up" }
-      : currentStep
+    currentStep?.id === "select_model"
+      ? null
+      : currentStep?.id === "generate_report"
+        ? { ...currentStep, name: "Finishing up" }
+        : currentStep
   const trainingPhaseStepIds = ["training_approval", "training", "generate_report"] as const
   const isInTrainingPhase = agent.steps.some(
     (s) =>
@@ -345,17 +475,6 @@ function AuthenticatedApp() {
           </div>
 
           <div className="flex items-center gap-1.5">
-            {(isComplete || (agent.agentState.lab_mode === "task" && agent.agentState.task_status === "completed" && agent.agentState.training_metrics?.success)) && (
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setShowReport(true)}
-                className="h-8 text-xs"
-              >
-                <FileText className="h-3.5 w-3.5 mr-1.5" />
-                Report
-              </Button>
-            )}
             <Button variant="ghost" size="sm" className="h-8 w-8 p-0 text-muted-foreground hover:text-foreground">
               <Search className="h-4 w-4" />
             </Button>
@@ -365,7 +484,7 @@ function AuthenticatedApp() {
             <Button
               variant="ghost"
               size="sm"
-              onClick={agent.reset}
+              onClick={handleResetWorkspace}
               className="h-8 w-8 p-0 text-muted-foreground hover:text-foreground"
             >
               <RotateCcw className="h-4 w-4" />
@@ -386,13 +505,6 @@ function AuthenticatedApp() {
           </div>
         </nav>
 
-        {/* Backend offline banner */}
-        {!realAgent.isBackendConnected && (
-          <div className="fixed top-14 left-0 right-0 z-40 px-5 py-1.5 text-xs text-muted-foreground bg-muted text-center">
-            Run <code className="bg-card px-1.5 py-0.5 rounded text-[11px] font-mono">docker compose up --build</code> to start
-          </div>
-        )}
-
         {/* Main Layout — min-h-0 so inner chat can scroll instead of growing the page */}
         <div className="flex flex-1 min-h-0 overflow-hidden pt-14" style={layoutStyle}>
           {/* Fixed Sidebar */}
@@ -405,10 +517,9 @@ function AuthenticatedApp() {
               onStartBlankChat={handleStartBlankChat}
               isBackendConnected={realAgent.isBackendConnected}
               switchingTo={switchingTo}
-              experimentsListNonce={experimentsListNonce}
               onActiveExperimentDeleted={() => {
+                setExperimentDetailQueryId(null)
                 realAgent.leaveLabSession()
-                bumpExperimentsList()
               }}
             />
             <div className="absolute inset-y-0 -right-2 z-50 hidden md:flex w-4 items-center justify-center">
@@ -434,8 +545,8 @@ function AuthenticatedApp() {
 
           {/* Main Content */}
           <main className="flex-1 min-h-0 flex flex-col overflow-hidden md:ml-[var(--sidebar-width)]">
-            {activeTab === "experiment_lab" ? (
-              <div className="flex flex-1 min-h-0 flex-col overflow-hidden relative">
+            {/* All tabs stay mounted; inactive ones are hidden via CSS to preserve state and avoid refetches */}
+            <div className={cn("flex flex-1 min-h-0 flex-col overflow-hidden relative", activeTab !== "experiment_lab" && "hidden")}>
                 {realAgent.experimentId ? (
                   <div className="flex shrink-0 items-center border-b border-border/40 bg-background/95 px-2 py-1.5 z-20">
                     <Button
@@ -465,6 +576,7 @@ function AuthenticatedApp() {
                     </div>
                   )}
                   <ChatPanel
+                    key={realAgent.experimentId ?? experimentDetailQueryId ?? "draft"}
                     ref={chatPanelRef}
                     messages={agent.messages}
                     confirmationRequest={agent.confirmationRequest}
@@ -477,7 +589,12 @@ function AuthenticatedApp() {
                     datasets={realAgent.datasets}
                     highlightedMessageId={highlightedMessageId}
                     onClearHighlight={handleClearHighlight}
-                    onViewReport={() => setShowReport(true)}
+                    onViewReport={() => setReportView({ kind: "chat" })}
+                    onViewModelInRegistry={
+                      trainedModelNameForCurrentExperiment
+                        ? handleOpenTrainedModelForExperiment
+                        : undefined
+                    }
                     agentState={agent.agentState}
                     steps={agent.steps}
                     hasExperimentChecklist={hasExperimentChecklist}
@@ -489,33 +606,50 @@ function AuthenticatedApp() {
                     onSubmitBackgroundTask={handleSubmitBackgroundTask}
                   />
                 </div>
-              </div>
-            ) : activeTab === "datasets" ? (
-              <DatasetsPage datasets={realAgent.datasets} />
-            ) : activeTab === "models" ? (
-              <ModelsPage />
-            ) : activeTab === "settings" ? (
-              <div className="flex-1 overflow-auto">
-                <div className="max-w-5xl mx-auto px-8 py-10">
+            </div>
+            <div className={cn("flex-1 overflow-auto", activeTab !== "datasets" && "hidden")}>
+              <DatasetsPage
+                enabled={activeTab === "datasets" && realAgent.isBackendConnected}
+                onDatasetsChanged={() => {
+                  void realAgent.refreshDatasets()
+                }}
+              />
+            </div>
+            <div className={cn("flex-1 overflow-auto", activeTab !== "models" && "hidden")}>
+              <ModelsPage
+                trainedModels={realAgent.trainedModels}
+                loading={realAgent.trainedModelsLoading}
+                onOpenExperiment={handleOpenExperimentFromModels}
+                onViewReport={(modelName) => setReportView({ kind: "registry", modelName })}
+                scrollToModelName={modelsScrollToModelName}
+                onScrollToModelConsumed={() => setModelsScrollToModelName(null)}
+              />
+            </div>
+            <div className={cn("flex-1 overflow-auto", activeTab !== "settings" && "hidden")}>
+              <div className="max-w-5xl mx-auto px-8 py-10">
                   <span className="text-[10px] font-bold text-muted-foreground tracking-widest uppercase">Configuration</span>
                   <h1 className="font-headline text-3xl font-semibold text-foreground tracking-tight mt-1">Settings & API</h1>
                   <p className="mt-3 text-muted-foreground text-sm leading-relaxed max-w-lg">Account management, API keys, and MCP access configuration.</p>
                   <div className="mt-10 rounded-xl bg-card p-8 text-center text-muted-foreground text-sm">
                     Coming soon.
                   </div>
-                </div>
               </div>
-            ) : null}
+            </div>
           </main>
         </div>
 
-        {/* Final Report Modal */}
-        {showReport && (
+        {reportView?.kind === "chat" && (
           <FinalReport
             agentState={agent.agentState}
             steps={agent.steps}
-            onClose={() => setShowReport(false)}
+            onClose={() => setReportView(null)}
             datasets={realAgent.datasets}
+          />
+        )}
+        {reportView?.kind === "registry" && (
+          <RegistryFinalReport
+            modelName={reportView.modelName}
+            onClose={() => setReportView(null)}
           />
         )}
       </div>

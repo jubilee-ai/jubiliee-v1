@@ -95,6 +95,41 @@ def test_download_dataset_redirects_to_presigned_url(monkeypatch):
     assert response.headers["location"] == "https://files.example.test/datasets/predictions_latest/data.parquet"
 
 
-def test_download_model_raises_when_missing():
+def test_download_model_raises_when_missing(monkeypatch):
+    """Must mock DB — unpatched route opens a real session (flaky offline)."""
+    monkeypatch.setattr(
+        routes,
+        "get_db_session",
+        lambda: _SessionContext(_FakeSession(model=None)),
+    )
     with pytest.raises(HTTPException, match="Model not found"):
         asyncio.run(routes.download_model("missing-model"))
+
+
+def test_get_trained_model_report_returns_json(monkeypatch, tmp_path):
+    tm = tmp_path / "trained_models"
+    tm.mkdir(parents=True)
+    (tm / "hgb_v3_report.json").write_text('{"goal": "test-goal", "model": {"name": "hgb_v3"}}')
+    monkeypatch.setattr(
+        routes,
+        "_trained_model_report_path",
+        lambda name: tmp_path / "trained_models" / f"{name}_report.json",
+    )
+
+    out = asyncio.run(routes.get_trained_model_report("hgb_v3"))
+
+    assert out == {"goal": "test-goal", "model": {"name": "hgb_v3"}}
+
+
+def test_get_trained_model_report_404_when_missing(monkeypatch, tmp_path):
+    (tmp_path / "trained_models").mkdir(parents=True)
+    monkeypatch.setattr(
+        routes,
+        "_trained_model_report_path",
+        lambda name: tmp_path / "trained_models" / f"{name}_report.json",
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(routes.get_trained_model_report("nonexistent_model_xyz"))
+
+    assert exc_info.value.status_code == 404

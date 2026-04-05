@@ -130,16 +130,15 @@ Use descriptive unique names: `hgb_v1`, `lr_v1`, `rf_v1`, `ridge_v2`, `nn_baseli
 Report all iterations, final metrics, and your chosen best model. Include:
 - `success`, `best_model_name`, `model_type` (the estimator class name)
 - Validation and test metrics (accuracy, roc_auc for classification; r2, rmse, mae for regression)
-- `iterations`: every attempt with model_name, tool_used, hyperparams, metrics
+- `iterations`: every attempt with model_name, tool_used (estimator class name only, e.g. `HistGradientBoostingClassifier`), hyperparams, metrics
   - **Always fill `hyperparams`** with the best hyperparameters from the training output (look for the "BEST HYPERPARAMETERS" section in each training result)
-- `num_iterations`, `summary`, `recommendations`
+- `num_iterations`, `summary`
 - `feature_redo_requested`: true only if you called request_feature_engineering_redo
 
-### `summary` and `recommendations` (critical)
+### `summary` (critical)
 The pipeline may re-select the winning run by validation metrics after you respond. User-facing test scores always refer to **`best_model_name`**.
 
-- **`summary`**: Experiment arc (what you tried, outcomes), why **`best_model_name`** won, and headline metrics once each. **Be concise** — no repeated metrics, no filler. If the last iteration is not the best, say so; do not frame the last run as the deliverable when an earlier run won.
-- **`recommendations`**: Short, actionable items for **`best_model_name`** (deploy, thresholds, monitoring, tuning). Other models only for brief comparison.
+- **`summary`**: Experiment arc (what you tried, outcomes), why **`best_model_name`** won, and headline metrics once each. **Be concise** — no repeated metrics, no filler. If the last iteration is not the best, say so; do not frame the last run as the deliverable when an earlier run won. Do not add generic deployment or ops advice.
 """
 
 FEATURE_ENGINEERING_SIMPLE_SYSTEM_PROMPT = """You are a senior data scientist selecting and engineering features for a machine learning model.

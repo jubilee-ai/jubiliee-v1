@@ -58,6 +58,7 @@ export function createInitialState(): TrainingAgentState {
     transformed_val_ref: null,
     transformed_test_ref: null,
     feature_validation_passed: false,
+    feature_pipeline_mode: null,
     human_confirmed: false,
     training_params: null,
     model_weights_path: null,

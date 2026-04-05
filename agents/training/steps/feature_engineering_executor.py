@@ -52,19 +52,22 @@ def _execute_expression(df: pd.DataFrame, formula: dict, feature_name: str) -> p
         if col not in df.columns:
             raise ValueError(f"Source column '{col}' not found for expression")
     
+    import numpy as np
+
+    def _safe_log(x):
+        x = np.asarray(x, dtype=float)
+        return np.where(x > 0, np.log(x), np.nan)
+
     df = df.copy()
+    local_vars = {col: df[col] for col in df.columns}
+    local_vars["log"] = _safe_log
+    local_vars["sqrt"] = np.sqrt
+    local_vars["abs"] = np.abs
     try:
-        # Use pandas eval with local column references
-        df[feature_name] = df.eval(expression)
-    except Exception:
-        # Fallback: try with explicit column references
-        import numpy as np
-        local_vars = {col: df[col] for col in df.columns}
-        local_vars["log"] = np.log
-        local_vars["sqrt"] = np.sqrt
-        local_vars["abs"] = np.abs
         df[feature_name] = eval(expression, {"__builtins__": {}}, local_vars)
-    
+    except Exception:
+        df[feature_name] = df.eval(expression)
+
     return df
 
 

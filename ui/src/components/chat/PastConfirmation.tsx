@@ -2,6 +2,7 @@ import ReactMarkdown from "react-markdown"
 import { cn } from "@/lib/utils"
 import { Check, ChevronRight } from "lucide-react"
 import type { ConfirmationRequest, TrainingAgentState, StepInfo } from "@/types/agent"
+import { TRACE_EXCLUDE_IDS } from "@/lib/trainingSteps"
 
 export interface ResolvedConfirmation extends ConfirmationRequest {
   resolvedAction?: string
@@ -59,7 +60,10 @@ export function PastConfirmation({
           )}
           
           {/* View details link — planner HITL has no checklist row / step modal */}
-          {agentState && steps && confirmation.step !== "planner" && (
+          {agentState &&
+            steps &&
+            confirmation.step !== "planner" &&
+            !TRACE_EXCLUDE_IDS.has(confirmation.step) && (
             <button
               onClick={() => onViewDetails(confirmation.step)}
               className="mt-2 flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"

@@ -225,6 +225,7 @@ def create_simple_training_agent(
             "transformed_train_ref", "transformed_val_ref",
             "transformed_test_ref", "transformed_dataset_ref",
             "feature_validation_passed",
+            "feature_pipeline_mode",
         ],
         "feature_specification_and_engineering": [
             "feature_spec", "analysis_trace",
@@ -233,6 +234,7 @@ def create_simple_training_agent(
             "transformed_train_ref", "transformed_val_ref",
             "transformed_test_ref", "transformed_dataset_ref",
             "feature_validation_passed",
+            "feature_pipeline_mode",
             "experiment_result", "feature_rankings", "experiment_grid_summary",
         ],
         "feature_experiment_runner": [
@@ -270,7 +272,7 @@ def create_simple_training_agent(
         """Select the best ML model family for the training goal. Can be re-called to switch families."""
         nonlocal state
         if "select_model" in _completed_steps and not state.get("_redo_feedback_select_model"):
-            return f"SKIP: Model family already selected: {state.get('selected_model')}. Proceed to the next step."
+            return "SKIP: Setup step already completed. Proceed to the next step."
         if state.get("selected_model") is not None:
             _invalidate_downstream("select_model")
 
@@ -288,22 +290,16 @@ def create_simple_training_agent(
         state.update(result)
         state.pop("_select_model_redo_hint", None)
 
-        summary = (
-            f"Selected model family **{state.get('selected_model', 'unknown')}** for this task.\n"
-            f"Reason: {state.get('model_explanation', 'N/A')}"
-        )
+        summary = "Setup step complete. Approve to continue, or provide feedback to redo this step."
         decision = _hitl_gate("select_model", summary)
         if not decision.get("approved", True):
-            fb = decision.get("feedback", "Please reconsider the model family choice.")
+            fb = decision.get("feedback", "Please share what to change.")
             state["_redo_feedback_select_model"] = fb
             state.pop("user_model_preference", None)
-            return f"REJECTED by user: {fb}. Please redo model family selection."
+            return f"REJECTED by user: {fb}. Please redo the setup step."
 
         _completed_steps.add("select_model")
-        return (
-            f"Selected model family: {state.get('selected_model', 'unknown')}\n"
-            f"Reason: {state.get('model_explanation', 'N/A')}"
-        )
+        return "Setup step complete. Proceed to the next step."
 
     def tool_data_collection() -> str:
         """Collect or load the dataset. Can be re-called to reload or change data sources."""
@@ -638,6 +634,15 @@ def create_simple_training_agent(
                 "transformed_test_ref": None,
                 "transformed_dataset_ref": train_ref_u,
                 "feature_validation_passed": True,
+                "feature_pipeline_mode": "passthrough",
+                "audit_trace": state.get("audit_trace", []) + [{
+                    "step": "feature_engineering_executor",
+                    "features_created": [],
+                    "errors": [],
+                    "shapes": {"train": None, "val": None, "test": None},
+                    "temporal_constraints_applied": 0,
+                    "mode": "unsupervised_passthrough",
+                }],
             })
             _completed_steps.add("feature_engineering_executor")
             state["current_step"] = "feature_specification_and_engineering"
@@ -671,6 +676,7 @@ def create_simple_training_agent(
             "transformed_test_ref": result_ex.get("test_ref"),
             "transformed_dataset_ref": result_ex.get("train_ref"),
             "feature_validation_passed": passed,
+            "feature_pipeline_mode": "engineered",
             "audit_trace": state.get("audit_trace", []) + [{
                 "step": "feature_engineering_executor",
                 "features_created": features_created,
@@ -1095,6 +1101,7 @@ def create_simple_training_agent(
         training_plan = state.get("training_plan") or {}
         plan_max_iters = training_plan.get("max_iterations", 9 if selected_model == "neural_networks" else 7)
         plan_for_agent = training_plan if isinstance(training_plan, dict) and training_plan else None
+        tt = state.get("task_type")
         result = _run_training(
             train_ref=train_ref,
             val_ref=state.get("transformed_val_ref"),
@@ -1107,6 +1114,7 @@ def create_simple_training_agent(
             experiment_result=state.get("experiment_result"),
             feature_rankings=state.get("feature_rankings"),
             training_plan=plan_for_agent,
+            explicit_task_type=tt if isinstance(tt, str) else None,
         )
 
         feature_redo_requested = result.get("feature_redo_requested", False)
@@ -1171,7 +1179,6 @@ def create_simple_training_agent(
                 "num_iterations": result.get("num_iterations", 0),
                 "best_iteration": result.get("best_iteration"),
                 "summary": result.get("summary"),
-                "recommendations": result.get("recommendations"),
                 "feature_redo_requested": feature_redo_requested,
                 "feature_importances": result.get("feature_importances", {}),
             },
@@ -1289,7 +1296,6 @@ def create_simple_training_agent(
                 "iterations": metrics.get("iterations", []),
                 "best_iteration": metrics.get("best_iteration"),
                 "summary": metrics.get("summary"),
-                "recommendations": metrics.get("recommendations"),
                 "feature_importances": metrics.get("feature_importances", {}),
             },
             "audit_trace": state.get("audit_trace", []),

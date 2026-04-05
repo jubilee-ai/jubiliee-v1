@@ -6,6 +6,7 @@ context) to choose an estimator, calls train_with_skill to train, evaluates,
 and iterates.  No hardcoded model lists — the skill drives everything.
 """
 
+import contextvars
 import importlib.util
 import json
 import re
@@ -21,7 +22,7 @@ from langchain.agents import create_agent
 from langchain.agents.structured_output import ToolStrategy
 from langchain.chat_models import init_chat_model
 from langchain_core.tools import tool
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from ..utils.graph_stream_hooks import emit_graph_stream
 from ..utils.prompts import TRAINING_SYSTEM_PROMPT
@@ -43,6 +44,11 @@ from model_storage import (classification_roc_auc, delete_model,
 from utils import get_registered_dataset
 
 SKILLS_DIR = Path(__file__).parent.parent / "skills"
+
+# Injected into train_with_skill / batch_train params for supervised sklearn alignment.
+_training_expected_task_type: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
+    "training_expected_task_type", default=None
+)
 
 
 # =============================================================================
@@ -105,6 +111,9 @@ def train_with_skill_tool(skill_name: str, params: Optional[dict] = None, **kwar
         params = {}
     if kwargs:
         params = {**kwargs, **params}
+    et = _training_expected_task_type.get()
+    if et and "expected_task_type" not in params:
+        params = {**params, "expected_task_type": et}
     try:
         return _run_skill(skill_name, params)
     except Exception as e:
@@ -192,6 +201,7 @@ def batch_train_with_skill_tool(
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
     configs = configs[:4]
+    expected_tt = _training_expected_task_type.get()
 
     def _run_one(cfg: BatchTrainConfig) -> dict:
         params = {
@@ -201,6 +211,8 @@ def batch_train_with_skill_tool(
             "target_column": target_column,
             **cfg.hyperparams,
         }
+        if expected_tt:
+            params["expected_task_type"] = expected_tt
         if val_dataset_ref:
             params["val_dataset_ref"] = val_dataset_ref
         try:
@@ -247,7 +259,9 @@ TRAINING_TOOLS = [
 
 class TrainingIteration(BaseModel):
     model_name: str = Field(description="Name of the model for this iteration")
-    tool_used: str = Field(description="Skill and estimator used")
+    tool_used: str = Field(
+        description="Estimator class name only (e.g. HistGradientBoostingClassifier), not skill or import paths.",
+    )
     hyperparams: dict = Field(default_factory=dict)
     train_accuracy: Optional[float] = None
     val_accuracy: Optional[float] = None
@@ -268,6 +282,8 @@ class TrainingIteration(BaseModel):
 
 
 class TrainingResult(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
     success: bool
     best_model_name: str
     model_type: str = Field(description="Estimator class name")
@@ -290,10 +306,6 @@ class TrainingResult(BaseModel):
     num_iterations: int
     summary: str = Field(
         description="Concise narrative: experiment arc, why best_model_name won, key metrics stated once (no duplicate numbers).",
-    )
-    recommendations: Optional[str] = Field(
-        default=None,
-        description="Brief actionable bullets for best_model_name (deploy, thresholds, monitoring); other models only for short comparison.",
     )
     feature_redo_requested: bool = False
 
@@ -327,6 +339,63 @@ def _infer_task_type(goal: str, estimator_hint: Optional[str] = None, selected_m
     ):
         return "regression"
     return "classification"
+
+
+def _final_estimator_from_fitted(model: Any) -> Any:
+    """Last step of a Pipeline / RandomizedSearchCV, for sklearn is_classifier checks."""
+    outer = model
+    if outer is None:
+        return None
+    if hasattr(outer, "best_estimator_"):
+        outer = outer.best_estimator_
+    if hasattr(outer, "named_steps"):
+        ns = outer.named_steps
+        if "model" in ns:
+            return ns["model"]
+        if ns:
+            return list(ns.values())[-1]
+    steps = getattr(outer, "steps", None)
+    if steps:
+        return steps[-1][1]
+    return outer
+
+
+def _validate_estimator_matches_task(
+    model_name: str, task_type: str, skill_name: str
+) -> tuple[bool, str]:
+    """Ensure the saved sklearn model matches classification vs regression intent."""
+    if task_type == "unsupervised" or skill_name in ("neural_networks",):
+        return True, ""
+    if task_type not in ("classification", "regression"):
+        return True, ""
+    try:
+        from sklearn.base import is_classifier, is_regressor
+
+        model = load_model(model_name)
+        if model is None:
+            return True, ""
+        est = _final_estimator_from_fitted(model)
+        if est is None:
+            return True, ""
+        if task_type == "classification":
+            if not is_classifier(est):
+                return (
+                    False,
+                    f"Task type is classification but the trained estimator "
+                    f"({type(est).__name__}) is not a classifier. Adjust the goal, "
+                    f"training plan, or estimator choice so they align.",
+                )
+        elif task_type == "regression":
+            if not is_regressor(est):
+                return (
+                    False,
+                    f"Task type is regression but the trained estimator "
+                    f"({type(est).__name__}) is not a regressor. Adjust the goal, "
+                    f"training plan, or estimator choice so they align.",
+                )
+    except Exception as exc:
+        return False, f"Estimator vs task_type validation failed: {exc}"
+    return True, ""
 
 
 def _run_quick_baseline(
@@ -623,7 +692,8 @@ def _format_best_iteration_continuation_block(
         return ""
 
     name = best.get("model_name", "")
-    tool = best.get("tool") or best.get("tool_used") or ""
+    raw_tool = best.get("tool") or best.get("tool_used") or ""
+    tool_short = str(raw_tool).rsplit(".", 1)[-1].split("/")[-1] if raw_tool else ""
     hp = best.get("hyperparams") or {}
     hp_s = _truncate_jsonish(hp) if hp else "(defaults or see model registry)"
 
@@ -648,7 +718,7 @@ def _format_best_iteration_continuation_block(
         f"## Current validation best — refine THIS\n\n"
         f"Leader by **{metric_name}**:\n"
         f"- **model_name**: `{name}`\n"
-        f"- **tool**: `{tool}`\n"
+        f"- **estimator**: `{tool_short}`\n"
         f"- **hyperparams**: {hp_s}\n"
         f"{metrics_line}\n\n"
         f"**Next experiment:** Improve this configuration (same estimator family) unless the last "
@@ -705,8 +775,8 @@ def _build_continuation_message(
         "in the SKILL.md. Prefer **refining the validation leader** above; change exactly ONE "
         "focused thing per attempt. Run the experiment, evaluate, and report results.\n"
         "In the structured `iterations` array, append only **new** attempts from this round "
-        "(prior attempts are already stored). Your **`summary`** and **`recommendations`** "
-        "must still cover the **entire run** and the model you set as **`best_model_name`** "
+        "(prior attempts are already stored). Your **`summary`** must still cover the **entire run** "
+        "and the model you set as **`best_model_name`** "
         "(the artifact headline metrics will follow), not only the iterations added here."
     )
 
@@ -800,15 +870,15 @@ def _maybe_clarify_summary_vs_saved_model(training_result: TrainingResult) -> Tr
     if not body:
         return training_result
     prefix = (
-        f"The headline test metrics and saved artifact refer to **{saved}**, chosen by validation scores. "
-        f"The text below discusses a later experiment (**{last_name}**) that was not selected as the best model.\n\n"
+        f"The saved model is **{saved}** (picked by validation). The narrative below still mentions a later run "
+        f"(**{last_name}**) that was not kept.\n\n"
     )
     return training_result.model_copy(update={"summary": prefix + body})
 
 
 def _iteration_to_dict(it: TrainingIteration) -> dict:
     d = it.model_dump()
-    d["tool"] = d.pop("tool_used")
+    d.pop("tool_used", None)
     d["metrics"] = {
         "train_accuracy": it.train_accuracy,
         "val_accuracy": it.val_accuracy,
@@ -850,15 +920,30 @@ def _evaluate_model_on_test(
             result["test_rmse"] = float(np.sqrt(mean_squared_error(y_true, y_pred)))
             result["test_mae"] = float(mean_absolute_error(y_true, y_pred))
         else:
+            import pandas as pd
+
             y_pred = model.predict(X)
             y_true_arr = np.asarray(y_true)
             y_pred_arr = np.asarray(y_pred)
             if y_true_arr.dtype != y_pred_arr.dtype:
                 y_pred_arr = y_pred_arr.astype(y_true_arr.dtype)
             result["test_accuracy"] = float(accuracy_score(y_true_arr, y_pred_arr))
-            roc = classification_roc_auc(model, X, y_true_arr)
-            if roc is not None:
-                result["test_roc_auc"] = float(roc)
+            y_series = pd.Series(y_true)
+            n_unique = int(y_series.nunique(dropna=True))
+            n_rows = len(y_series)
+            looks_continuous = (
+                pd.api.types.is_numeric_dtype(y_series)
+                and n_unique > min(50, max(10, n_rows // 20))
+            )
+            if looks_continuous:
+                print(
+                    f"[training_agent] Skipping ROC-AUC on test: target has {n_unique} unique "
+                    f"numeric values (continuous-like for a classification task)."
+                )
+            else:
+                roc = classification_roc_auc(model, X, y_true_arr)
+                if roc is not None:
+                    result["test_roc_auc"] = float(roc)
         print(f"[training_agent] Programmatic test evaluation: {result}")
     except Exception as exc:
         print(f"[training_agent] Programmatic test evaluation failed: {exc}")
@@ -1015,8 +1100,6 @@ def _log_training_results(training_result: TrainingResult, task_type: str):
         print(f"  Test Accuracy: {training_result.test_accuracy}")
         print(f"  Test ROC-AUC: {training_result.test_roc_auc}")
     print(f"\n  Summary: {training_result.summary}")
-    if training_result.recommendations:
-        print(f"  Recommendations: {training_result.recommendations}")
 
 
 # =============================================================================
@@ -1039,6 +1122,7 @@ def run_training_agent(
     feature_rankings: Optional[dict[str, float]] = None,
     training_plan: Optional[dict[str, Any]] = None,
     max_continuation_rounds: int = 3,
+    explicit_task_type: Optional[str] = None,
 ) -> dict[str, Any]:
     """Run the training agent.
 
@@ -1058,7 +1142,16 @@ def run_training_agent(
         if ref and df is None:
             raise ValueError(f"{label} dataset not found: {ref}")
 
-    task_type = _infer_task_type(goal, estimator_hint, selected_model=selected_model)
+    plan_tt: Optional[str] = None
+    if training_plan and isinstance(training_plan, dict):
+        raw_tt = training_plan.get("task_type")
+        if isinstance(raw_tt, str) and raw_tt:
+            plan_tt = raw_tt
+    task_type = (
+        explicit_task_type
+        or plan_tt
+        or _infer_task_type(goal, estimator_hint, selected_model=selected_model)
+    )
 
     available_skills = [d.name for d in SKILLS_DIR.iterdir() if (d / "train.py").exists()]
     skill_name = selected_model if selected_model in available_skills else "supervised"
@@ -1206,6 +1299,8 @@ Follow the skill documentation below — it covers model selection and training.
         start_instruction = (
             "Begin training now. Maximize unsupervised objective quality by exploring "
             "estimators and hyperparameters. Use the dataset refs above. "
+            "When sample size allows, pass eval_holdout_fraction around 0.15 in train_with_skill "
+            "params so metrics include less optimistic val_* scores. "
             "Do not call evaluate_model because no target labels are required."
         )
     elif skill_name == "neural_networks":
@@ -1250,6 +1345,7 @@ Follow the skill documentation below — it covers model selection and training.
     if training_plan and isinstance(training_plan.get("max_continuation_rounds"), int):
         cont_cap = max(1, min(6, int(training_plan["max_continuation_rounds"])))
 
+    token = _training_expected_task_type.set(task_type)
     try:
         result = agent.invoke({"messages": messages})
         final_messages = result.get("messages", [])
@@ -1301,6 +1397,27 @@ Follow the skill documentation below — it covers model selection and training.
         iterations_dict = [_iteration_to_dict(it) for it in training_result.iterations]
         best_iteration = _find_best_iteration(iterations_dict, task_type)
         actual_best_name = best_iteration["model_name"] if best_iteration else training_result.best_model_name
+
+        if training_result.success and actual_best_name:
+            est_ok, est_msg = _validate_estimator_matches_task(
+                actual_best_name, task_type, skill_name
+            )
+            if not est_ok:
+                return {
+                    "success": False,
+                    "error": est_msg,
+                    "model_name": actual_best_name,
+                    "model_type": selected_model,
+                    "task_type": task_type,
+                    "target_column": target_column,
+                    "train_size": len(train_df),
+                    "val_size": len(val_df) if val_df is not None else 0,
+                    "test_size": len(test_df) if test_df is not None else 0,
+                    "iterations": iterations_dict,
+                    "num_iterations": len(all_iterations),
+                    "messages": final_messages,
+                    "summary": est_msg,
+                }
 
         training_result = training_result.model_copy(
             update=_training_result_updates_from_best_iteration(
@@ -1397,6 +1514,8 @@ Follow the skill documentation below — it covers model selection and training.
             "model_name": model_name,
             "model_type": selected_model,
         }
+    finally:
+        _training_expected_task_type.reset(token)
 
 
 # =============================================================================

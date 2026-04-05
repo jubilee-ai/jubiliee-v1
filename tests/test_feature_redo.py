@@ -165,9 +165,6 @@ def test_feature_redo_trigger():
         print(f"    {feature_redo_reason}")
     else:
         print(f"\n  ⚠️ Feature redo was NOT triggered")
-        print(f"\n  Recommendations from training:")
-        print(f"    {result.get('recommendations')}")
-        
         # Check the summary for mentions of features
         summary = result.get('summary', '')
         if 'feature' in summary.lower():

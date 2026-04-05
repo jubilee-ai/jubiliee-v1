@@ -28,10 +28,14 @@ export function SummaryTab({ agentState, datasets }: SummaryTabProps) {
   const hasClassificationMetrics = metrics?.test_accuracy != null || metrics?.test_roc_auc != null
   const hasRegressionMetrics = testR2 != null || testRmse != null || testMae != null
   const modelTypeLabel = metrics?.model_type || agentState.selected_model || "N/A"
+  const planDs = agentState.training_plan?.data_summary as { n_features?: number } | undefined
+  const nFeaturesFromPlan =
+    typeof planDs?.n_features === "number" && Number.isFinite(planDs.n_features) ? planDs.n_features : null
   const featureCount =
-    agentState.feature_spec?.features.length ||
-    (featureStep?.features_created as unknown[])?.length ||
-    0
+    nFeaturesFromPlan ??
+    (agentState.feature_spec?.features.length ||
+      (featureStep?.features_created as unknown[])?.length ||
+      0)
   const iterLabel = String(metrics?.num_iterations || 1)
 
   const taskDatasetRecap = useMemo(() => {
@@ -70,12 +74,11 @@ export function SummaryTab({ agentState, datasets }: SummaryTabProps) {
       </div>
       {(hasClassificationMetrics || hasRegressionMetrics) && metrics?.model_name ? (
         <p className="text-xs text-muted-foreground -mt-4">
-          Top row shows hold-out test metrics for the saved artifact{" "}
+          Test scores above are for the saved model{" "}
           <span className="text-foreground font-medium">{metrics.model_name}</span>
           {metrics.summary ? (
             <>
-              . The training narrative below may include experiments that were not selected as that
-              artifact.
+              . The summary may mention other runs that were tried but not kept.
             </>
           ) : (
             "."
@@ -148,8 +151,9 @@ export function SummaryTab({ agentState, datasets }: SummaryTabProps) {
             <li className="flex gap-2">
               <span className="text-muted-foreground/50 shrink-0">→</span>
               <span>
-                <span className="text-foreground font-medium">Features</span> lists all{" "}
-                {featureCount} engineered feature{featureCount !== 1 ? "s" : ""} and the data pipeline.
+                <span className="text-foreground font-medium">Trace</span> → <strong>Features</strong> lists all{" "}
+                {featureCount} engineered feature{featureCount !== 1 ? "s" : ""}, engineering details, and any feature
+                experiments.
               </span>
             </li>
           )}
@@ -173,13 +177,6 @@ export function SummaryTab({ agentState, datasets }: SummaryTabProps) {
       {metrics?.summary && (
         <Section title="Training Summary">
           <p className="text-sm leading-relaxed">{metrics.summary}</p>
-        </Section>
-      )}
-
-      {/* Recommendations */}
-      {metrics?.recommendations && (
-        <Section title="Recommendations">
-          <p className="text-sm leading-relaxed">{metrics.recommendations}</p>
         </Section>
       )}
 

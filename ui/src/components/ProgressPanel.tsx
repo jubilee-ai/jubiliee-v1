@@ -2,6 +2,7 @@ import { ScrollArea } from "@/components/ui/scroll-area"
 import { StepNode } from "./StepNode"
 import { Separator } from "@/components/ui/separator"
 import type { StepInfo, TrainingAgentState } from "@/types/agent"
+import { CHECKLIST_EXCLUDE_IDS } from "@/lib/trainingSteps"
 import { CheckCircle2 } from "lucide-react"
 
 interface ProgressPanelProps {
@@ -13,14 +14,11 @@ interface ProgressPanelProps {
 }
 
 const STEP_GROUPS: Array<{ label: string; ids: string[] }> = [
-  { label: "Setup", ids: ["select_model", "data_collection"] },
+  { label: "Setup", ids: ["data_collection"] },
   { label: "Preparation", ids: ["cleaning", "label_split_definition"] },
   { label: "Features", ids: ["feature_specification_and_engineering", "feature_selection_specification", "feature_engineering_executor"] },
   { label: "Training", ids: ["training_approval", "training"] },
 ]
-
-/** Still runs in the pipeline but not shown as its own checklist row */
-const CHECKLIST_EXCLUDED_IDS = new Set(["generate_report"])
 
 export function ProgressPanel({
   steps,
@@ -29,7 +27,7 @@ export function ProgressPanel({
   isRunning: _isRunning,
   onStepClick,
 }: ProgressPanelProps) {
-  const checklistSteps = steps.filter((s) => !CHECKLIST_EXCLUDED_IDS.has(s.id))
+  const checklistSteps = steps.filter((s) => !CHECKLIST_EXCLUDE_IDS.has(s.id))
   const completedSteps = checklistSteps.filter((s) => s.status === "completed").length
   const totalSteps = checklistSteps.length
   const progress = totalSteps > 0 ? Math.round((completedSteps / totalSteps) * 100) : 0

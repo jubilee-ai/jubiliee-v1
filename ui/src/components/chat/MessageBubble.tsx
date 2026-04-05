@@ -1,9 +1,9 @@
-import { useState, useRef, useEffect, forwardRef } from "react"
+import { useState, useRef, useEffect, useMemo, forwardRef } from "react"
 import type { Ref, MutableRefObject } from "react"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import { cn } from "@/lib/utils"
-import { FileText, ChevronRight, Check, RotateCcw, Info } from "lucide-react"
+import { Box, FileText, ChevronRight, Check, RotateCcw, Info, Database } from "lucide-react"
 import type { Dataset as ApiDataset } from "@/lib/api"
 import type { ChatMessage, ChatTaskPlanPayload, TaskPlanSummary } from "@/types/agent"
 import { looksLikeLeakedPlanJson, stripLeakedPlanJson } from "@/lib/planDisplay"
@@ -65,6 +65,8 @@ interface MessageBubbleProps {
   message: ChatMessage
   isHighlighted?: boolean
   onViewReport?: () => void
+  /** Shown beside View Report when a trained model can be opened on the Models page. */
+  onViewModelInRegistry?: () => void
   stepId?: string | null
   isClickable?: boolean
   onStepClick?: () => void
@@ -86,6 +88,7 @@ export const MessageBubble = forwardRef<HTMLDivElement, MessageBubbleProps>(
       message,
       isHighlighted,
       onViewReport,
+      onViewModelInRegistry,
       stepId,
       isClickable,
       onStepClick,
@@ -130,6 +133,17 @@ export const MessageBubble = forwardRef<HTMLDivElement, MessageBubbleProps>(
         cancelAnimationFrame(inner)
       }
     }, [isExpanded, shouldTruncateAgent])
+
+    const userLinkedKeys = message.linkedDatasetKeys?.filter(Boolean) ?? []
+    const datasetChipLabel = useMemo(() => {
+      const lookup = new Map<string, string>()
+      for (const d of datasets ?? []) {
+        if (d.file) lookup.set(d.file, d.name)
+        if (d.id) lookup.set(d.id, d.name)
+        if (d.name) lookup.set(d.name, d.name)
+      }
+      return (key: string) => lookup.get(key) ?? key.split("/").pop() ?? key
+    }, [datasets])
 
     if (isSystem) {
       if (message.id === "__graph_thinking__") {
@@ -196,9 +210,37 @@ export const MessageBubble = forwardRef<HTMLDivElement, MessageBubbleProps>(
                   Topic
                 </p>
                 <p className="text-sm text-foreground leading-snug">{message.content}</p>
+                {userLinkedKeys.length > 0 && (
+                  <div className="flex flex-wrap gap-1.5 mt-2 pt-2 border-t border-border/25 justify-start">
+                    {userLinkedKeys.map((key) => (
+                      <span
+                        key={key}
+                        className="inline-flex items-center gap-1 rounded-full bg-background/60 border border-border/40 px-2.5 py-0.5 text-[11px] text-muted-foreground"
+                      >
+                        <Database className="h-3 w-3 shrink-0 opacity-70" aria-hidden />
+                        <span className="truncate max-w-[220px]">{datasetChipLabel(key)}</span>
+                      </span>
+                    ))}
+                  </div>
+                )}
               </div>
             ) : (
-              <p className="text-[14px] leading-6 whitespace-pre-wrap">{message.content}</p>
+              <>
+                <p className="text-[14px] leading-6 whitespace-pre-wrap">{message.content}</p>
+                {userLinkedKeys.length > 0 && (
+                  <div className="flex flex-wrap gap-1.5 mt-2 justify-start w-full">
+                    {userLinkedKeys.map((key) => (
+                      <span
+                        key={key}
+                        className="inline-flex items-center gap-1 rounded-full bg-background/50 border border-border/35 px-2.5 py-0.5 text-[11px] text-muted-foreground"
+                      >
+                        <Database className="h-3 w-3 shrink-0 opacity-70" aria-hidden />
+                        <span className="truncate max-w-[220px]">{datasetChipLabel(key)}</span>
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </>
             )
           ) : (
             <>
@@ -249,16 +291,32 @@ export const MessageBubble = forwardRef<HTMLDivElement, MessageBubbleProps>(
           )}
           
           {showReportCta && (
-            <button
-              onClick={(e) => {
-                e.stopPropagation()
-                onViewReport?.()
-              }}
-              className="mt-4 w-full sm:w-auto inline-flex items-center justify-center gap-1.5 px-4 py-2 rounded-lg bg-primary-subtle text-primary-subtle-foreground text-sm font-medium hover:bg-primary-subtle/88 transition-colors"
-            >
-              <FileText className="h-3.5 w-3.5" />
-              View Report
-            </button>
+            <div className="mt-4 flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  onViewReport?.()
+                }}
+                className="w-full sm:w-auto inline-flex items-center justify-center gap-1.5 px-4 py-2 rounded-lg bg-primary-subtle text-primary-subtle-foreground text-sm font-medium hover:bg-primary-subtle/88 transition-colors"
+              >
+                <FileText className="h-3.5 w-3.5" />
+                View Report
+              </button>
+              {onViewModelInRegistry ? (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    onViewModelInRegistry()
+                  }}
+                  className="w-full sm:w-auto inline-flex items-center justify-center gap-1.5 px-4 py-2 rounded-lg border border-border bg-card text-foreground text-sm font-medium hover:bg-accent transition-colors"
+                >
+                  <Box className="h-3.5 w-3.5" />
+                  View model
+                </button>
+              ) : null}
+            </div>
           )}
         </div>
       </div>

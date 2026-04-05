@@ -23,6 +23,7 @@ from agents.training.utils.graph_stream_hooks import (
 
 from .conversation_context import transcript_for_planner_prompt
 from .hitl import run_with_hitl
+from .state import canonical_step_name
 
 load_dotenv(Path(__file__).parent.parent.parent.parent / ".env")
 
@@ -221,6 +222,7 @@ def _validate_plan(plan: Plan, state: "TrainingAgentState | None" = None) -> Pla
     step_names = [s.step for s in plan.steps]
 
     for s in plan.steps:
+        s.step = canonical_step_name(s.step)
         if s.step not in ALL_STEP_NAMES:
             raise ValueError(f"Unknown step in plan: {s.step}")
 

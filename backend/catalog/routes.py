@@ -1,8 +1,15 @@
-from fastapi import APIRouter, Depends, HTTPException
+import json
+
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import RedirectResponse
 
 from backend.catalog.interfaces import CatalogServiceInterface
 from backend.catalog import service as catalog_service
+from backend.catalog.service import (
+    DatasetUploadConflictError,
+    DatasetUploadValidationError,
+)
+from backend.catalog.repository import _trained_model_report_path
 from backend.shared.artifact_store import get_artifact_store
 from backend.shared.database import get_db_session
 from backend.shared.models import Dataset, Model, ModelVersion
@@ -25,6 +32,29 @@ async def get_datasets(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.post("/api/datasets/upload")
+async def upload_dataset(
+    file: UploadFile = File(...),
+    name: str | None = Form(None),
+    description: str | None = Form(None),
+    service: CatalogServiceInterface = Depends(get_catalog_service),
+):
+    try:
+        content = await file.read()
+        return service.upload_user_dataset(
+            content,
+            file.filename,
+            name=name,
+            description=description,
+        )
+    except DatasetUploadValidationError as e:
+        raise HTTPException(status_code=400, detail=e.detail) from e
+    except DatasetUploadConflictError as e:
+        raise HTTPException(status_code=409, detail=e.detail) from e
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
 @router.get("/api/models")
 async def get_models(service: CatalogServiceInterface = Depends(get_catalog_service)):
     return service.get_models()
@@ -38,6 +68,17 @@ async def get_trained_models(
         return service.get_trained_models()
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/api/trained-models/{model_name}/report")
+async def get_trained_model_report(model_name: str):
+    report_path = _trained_model_report_path(model_name)
+    if not report_path.is_file():
+        raise HTTPException(status_code=404, detail="Report not found")
+    try:
+        return json.loads(report_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as e:
+        raise HTTPException(status_code=500, detail="Invalid report JSON") from e
 
 
 @router.get("/api/trained-models/{model_name}/download")
@@ -58,6 +99,22 @@ async def download_model(model_name: str):
         store = get_artifact_store()
         url = store.get_presigned_url(version.storage_key)
         return RedirectResponse(url=url, status_code=307)
+
+
+@router.get("/api/datasets/{ref}/preview")
+async def preview_dataset(
+    ref: str,
+    limit: int = 25,
+    service: CatalogServiceInterface = Depends(get_catalog_service),
+):
+    try:
+        return service.get_dataset_preview(ref, limit=limit)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 @router.get("/api/datasets/{ref}/download")

@@ -18,6 +18,14 @@ export interface Dataset {
   use_case?: string
 }
 
+export interface DatasetPreview {
+  name: string
+  limit: number
+  returned: number
+  columns: string[]
+  rows: Array<Record<string, unknown>>
+}
+
 export interface ModelType {
   id: string
   name: string
@@ -37,6 +45,10 @@ export interface TrainedModelEntry {
   created_at: string
   updated_at: string
   version: number
+  experiment_id?: string | null
+  experiment_name?: string | null
+  /** True when `trained_models/{model_name}_report.json` exists on the server. */
+  report_available?: boolean
 }
 
 /** Unified SSE payloads from POST /api/chat (orchestrator and/or training graph). */
@@ -133,6 +145,54 @@ export async function getDatasets(): Promise<Dataset[]> {
   return res.json()
 }
 
+const DATASET_PREVIEW_LIMIT = 25
+
+export async function getDatasetPreview(
+  name: string,
+  opts?: { limit?: number },
+): Promise<DatasetPreview> {
+  const limit = opts?.limit ?? DATASET_PREVIEW_LIMIT
+  const res = await fetch(
+    `${API_BASE}/api/datasets/${encodeURIComponent(name)}/preview?limit=${limit}`,
+  )
+  if (!res.ok) {
+    let detail = `Preview failed (${res.status})`
+    try {
+      const body = (await res.json()) as { detail?: unknown }
+      if (typeof body.detail === "string") detail = body.detail
+    } catch {
+      /* ignore */
+    }
+    throw new Error(detail)
+  }
+  return res.json()
+}
+
+export async function uploadDataset(
+  file: File,
+  opts?: { name?: string; description?: string },
+): Promise<Dataset> {
+  const form = new FormData()
+  form.append("file", file)
+  if (opts?.name?.trim()) form.append("name", opts.name.trim())
+  if (opts?.description?.trim()) form.append("description", opts.description.trim())
+  const res = await fetch(`${API_BASE}/api/datasets/upload`, {
+    method: "POST",
+    body: form,
+  })
+  if (!res.ok) {
+    let detail = `Upload failed (${res.status})`
+    try {
+      const body = (await res.json()) as { detail?: unknown }
+      if (typeof body.detail === "string") detail = body.detail
+    } catch {
+      /* ignore */
+    }
+    throw new Error(detail)
+  }
+  return res.json()
+}
+
 export async function getModelTypes(): Promise<ModelType[]> {
   const res = await fetch(`${API_BASE}/api/models`)
   if (!res.ok) throw new Error(`Failed to fetch models: ${res.status}`)
@@ -143,6 +203,12 @@ export async function getModelTypes(): Promise<ModelType[]> {
 export async function getTrainedModels(): Promise<Record<string, TrainedModelEntry>> {
   const res = await fetch(`${API_BASE}/api/trained-models`)
   if (!res.ok) throw new Error(`Failed to fetch trained models: ${res.status}`)
+  return res.json()
+}
+
+export async function getTrainedModelReport(modelName: string): Promise<Record<string, unknown>> {
+  const res = await fetch(`${API_BASE}/api/trained-models/${encodeURIComponent(modelName)}/report`)
+  if (!res.ok) throw new Error(`Failed to fetch trained model report: ${res.status}`)
   return res.json()
 }
 

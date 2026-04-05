@@ -4,10 +4,21 @@ import { cn } from "@/lib/utils"
 /**
  * Section wrapper with a title
  */
-export function Section({ title, children }: { title: string; children: React.ReactNode }) {
+export function Section({
+  title,
+  description,
+  children,
+}: {
+  title: string
+  description?: React.ReactNode
+  children: React.ReactNode
+}) {
   return (
     <div>
-      <h3 className="text-sm font-medium mb-4">{title}</h3>
+      <h3 className="text-sm font-medium mb-2">{title}</h3>
+      {description != null ? (
+        <div className="text-xs text-muted-foreground mb-4 leading-relaxed">{description}</div>
+      ) : null}
       {children}
     </div>
   )

@@ -154,14 +154,7 @@ export function ChatInput({
                       className="w-full text-left px-4 py-2.5 rounded-xl hover:bg-muted/60 transition-colors"
                       onClick={() => handleDatasetSelect(ds)}
                     >
-                      <div className="flex items-center justify-between gap-3">
-                        <span className="font-medium truncate">{ds.name}</span>
-                        {ds.format && (
-                          <span className="shrink-0 text-[10px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground font-medium uppercase">
-                            {ds.format}
-                          </span>
-                        )}
-                      </div>
+                      <span className="font-medium truncate block">{ds.name}</span>
                       <div className="flex items-center gap-2 text-sm text-muted-foreground mt-0.5">
                         {ds.rows != null && <span>{ds.rows.toLocaleString()} rows</span>}
                         {ds.columns && ds.columns.length > 0 && (

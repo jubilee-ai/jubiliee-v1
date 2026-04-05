@@ -8,7 +8,6 @@ import type { TrainingAgentState, StepInfo } from "@/types/agent"
 import { SummaryTab } from "./SummaryTab"
 import { MetricsTab } from "./MetricsTab"
 import { AnalysisTab } from "./AnalysisTab"
-import { FeaturesTab } from "./FeaturesTab"
 import { TraceTab } from "./TraceTab"
 import { generateTextReport, generateJsonReport } from "./utils"
 
@@ -71,7 +70,6 @@ export function FinalReport({ agentState, steps, onClose, datasets }: FinalRepor
               <ReportTabTrigger value="summary">Summary</ReportTabTrigger>
               <ReportTabTrigger value="metrics">Metrics</ReportTabTrigger>
               <ReportTabTrigger value="analysis">Analysis</ReportTabTrigger>
-              <ReportTabTrigger value="features">Features</ReportTabTrigger>
               <ReportTabTrigger value="trace">Trace</ReportTabTrigger>
             </TabsList>
           </div>
@@ -86,9 +84,6 @@ export function FinalReport({ agentState, steps, onClose, datasets }: FinalRepor
               </TabsContent>
               <TabsContent value="analysis" className="mt-0">
                 <AnalysisTab agentState={agentState} />
-              </TabsContent>
-              <TabsContent value="features" className="mt-0">
-                <FeaturesTab agentState={agentState} />
               </TabsContent>
               <TabsContent value="trace" className="mt-0">
                 <TraceTab steps={steps} agentState={agentState} />

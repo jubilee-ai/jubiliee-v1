@@ -12,10 +12,7 @@ from pydantic import BaseModel, Field
 
 load_dotenv(Path(__file__).parent.parent.parent.parent / ".env")
 
-from agents.training.utils.graph_stream_hooks import (
-    GraphTokenStreamHandler,
-    emit_graph_stream,
-)
+from agents.training.utils.graph_stream_hooks import emit_graph_stream
 
 if TYPE_CHECKING:
     from ..core.state import TrainingAgentState
@@ -192,11 +189,21 @@ def _derive_task_type(family_key: str, goal: str) -> str:
     if family_key == "unsupervised":
         return "unsupervised"
     goal_lower = goal.lower()
-    if any(w in goal_lower for w in [
+    regression_hints = [
         "regress", "predict value", "forecast", "amount", "price",
-        "cost", "salary", "revenue", "income",
-    ]):
+        "cost", "salary", "revenue", "income", "score", "continuous",
+        "numeric target", "distress", "charges", "quantity", "duration",
+        "rate", "ratio",
+    ]
+    if any(w in goal_lower for w in regression_hints):
         return "regression"
+    classification_hints = [
+        "classif", "churn", "fraud", "default", "spam", "diagnos",
+        "detect", "binary", "multi-class", "category", "sentiment",
+        "predict whether", "predict if",
+    ]
+    if any(w in goal_lower for w in classification_hints):
+        return "classification"
     return "classification"
 
 
@@ -211,11 +218,11 @@ def select_model(state: "TrainingAgentState") -> "TrainingAgentState":
     """
     resolved = state.get("resolved_model_type")
     if resolved:
-        emit_graph_stream({"phase": "select_model", "message": f"Using pre-selected model type: {resolved}"})
+        emit_graph_stream({"phase": "select_model", "message": "Continuing setup…"})
         return {
             **state,
             "selected_model": resolved,
-            "model_explanation": f"Pre-selected by user: {resolved}",
+            "model_explanation": "Configured from your preferences.",
             "task_type": state.get("task_type", "classification"),
             "current_step": "select_model",
         }
@@ -240,7 +247,7 @@ def select_model(state: "TrainingAgentState") -> "TrainingAgentState":
             **state,
             "selected_model": family_key,
             "task_type": task_type,
-            "model_explanation": f"User specified {family_key}: {family_info['description']}",
+            "model_explanation": "Configured from your goal.",
             "audit_trace": [
                 *state.get("audit_trace", []),
                 {
@@ -252,12 +259,11 @@ def select_model(state: "TrainingAgentState") -> "TrainingAgentState":
             ],
             "explanations": [
                 *state.get("explanations", []),
-                f"Using user-specified model family: {family_key} (task_type: {task_type})",
+                "Pipeline approach configured from your goal.",
             ],
             "current_step": "select_model",
         }
 
-    token_handler = GraphTokenStreamHandler(phase="select_model")
     llm = init_chat_model(model="gpt-5.1", temperature=0, streaming=True)
     structured_llm = llm.with_structured_output(ModelFamilySelectionOutput)
 
@@ -279,18 +285,16 @@ def select_model(state: "TrainingAgentState") -> "TrainingAgentState":
 
     emit_graph_stream({
         "phase": "select_model",
-        "message": "Choosing model family (supervised / unsupervised / neural)…",
+        "message": "Continuing setup…",
     })
-    result: ModelFamilySelectionOutput = structured_llm.invoke(
-        prompt, config={"callbacks": [token_handler]}
-    )
+    result: ModelFamilySelectionOutput = structured_llm.invoke(prompt)
     task_type = _derive_task_type(result.selected_family, state.get("goal", ""))
 
     return {
         **state,
         "selected_model": result.selected_family,
         "task_type": task_type,
-        "model_explanation": result.explanation,
+        "model_explanation": "Configured for your task.",
         "model_regen_count": state.get("model_regen_count", 0),
         "audit_trace": [
             *state.get("audit_trace", []),
@@ -305,7 +309,7 @@ def select_model(state: "TrainingAgentState") -> "TrainingAgentState":
         ],
         "explanations": [
             *state.get("explanations", []),
-            f"Selected model family: {result.selected_family} (task_type: {task_type}). Reason: {result.explanation}",
+            "Pipeline approach configured for your task.",
         ],
         "current_step": "select_model",
     }

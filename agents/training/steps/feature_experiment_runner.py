@@ -29,6 +29,7 @@ if str(_DATA_TOOLS_DIR) not in sys.path:
 from utils import get_registered_dataset, register_dataset
 
 from ..utils.graph_stream_hooks import emit_graph_stream
+from .feature_engineering import _extract_columns_from_formula
 from .feature_engineering_executor import execute_feature_spec_split
 
 
@@ -148,7 +149,10 @@ def generate_feature_variants(
             top_names = set(list(mi_scores.keys())[:k])
             mi_features = [
                 f for f in features
-                if f.get("name") in top_names
+                if (
+                    f.get("name") in top_names
+                    or _extract_columns_from_formula(f.get("formula", {})) & top_names
+                )
             ]
             if len(mi_features) >= 3 and len(mi_features) < len(features):
                 variants.append(FeatureVariant(

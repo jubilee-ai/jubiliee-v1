@@ -334,8 +334,19 @@ def run_label_split_definition(
     if result.get("forbidden_columns") is None:
         result["forbidden_columns"] = []
 
-    # Detect target transform for skewed regression targets
+    # Validate the inferred target against the actual cleaned dataset so
+    # downstream steps do not proceed with a hallucinated label column.
     df = get_registered_dataset(dataset_ref)
+    if df is not None and result["target_column"] not in df.columns:
+        available_columns = ", ".join(df.columns[:10])
+        suffix = "..." if len(df.columns) > 10 else ""
+        raise ValueError(
+            f"Inferred target column '{result['target_column']}' does not exist in dataset "
+            f"'{dataset_ref}'. Available columns: {available_columns}{suffix}. "
+            "Create the label column first or provide an existing target column."
+        )
+
+    # Detect target transform for skewed regression targets
     if df is not None:
         transform = _detect_target_transform(df, result["target_column"], goal)
         if transform:
@@ -482,7 +493,18 @@ def _find_entity_column(df: pd.DataFrame, grain: str) -> Optional[str]:
     
     # Extract entity type from grain (e.g., "one policy" -> "policy")
     entity_keywords = []
-    for word in ["customer", "policy", "user", "account", "loan", "claim", "transaction", "order"]:
+    for word in [
+        "customer",
+        "company",
+        "firm",
+        "policy",
+        "user",
+        "account",
+        "loan",
+        "claim",
+        "transaction",
+        "order",
+    ]:
         if word in grain_lower:
             entity_keywords.append(word)
     
@@ -502,6 +524,25 @@ def _find_entity_column(df: pd.DataFrame, grain: str) -> Optional[str]:
     return None
 
 
+def normalize_label_definition_for_df(df: pd.DataFrame, label_def: dict) -> dict:
+    """If the LLM chose time/entity splits that cannot run on ``df``, fall back to random."""
+    out = dict(label_def)
+    strat = out.get("split_strategy", "random")
+    if strat == "time_based":
+        tcol = out.get("as_of_cutoff")
+        if not tcol or tcol not in df.columns:
+            out["split_strategy"] = "random"
+            out["as_of_cutoff"] = None
+    elif strat == "entity_based":
+        explicit = out.get("entity_column")
+        if isinstance(explicit, str) and explicit in df.columns:
+            return out
+        grain = out.get("grain") or ""
+        if not _find_entity_column(df, grain):
+            out["split_strategy"] = "random"
+    return out
+
+
 def apply_split(
     df: pd.DataFrame,
     split_indices: dict,
@@ -518,9 +559,15 @@ def apply_split(
     test_df = df.iloc[split_indices["test_idx"]].copy()
 
     if target_transform == "log1p" and target_column and target_column in df.columns:
-        for split_df in [train_df, val_df, test_df]:
-            split_df[target_column] = np.log1p(split_df[target_column])
-        print(f"[label_split] Applied log1p transform to '{target_column}'")
+        if df[target_column].min() < -1:
+            print(
+                f"[label_split] Skipping log1p — '{target_column}' has values < -1 "
+                f"(min={df[target_column].min():.4f})"
+            )
+        else:
+            for split_df in [train_df, val_df, test_df]:
+                split_df[target_column] = np.log1p(split_df[target_column])
+            print(f"[label_split] Applied log1p transform to '{target_column}'")
 
     return train_df, val_df, test_df
 
@@ -559,6 +606,7 @@ def add_split_column(
 
 __all__ = [
     "run_label_split_definition",
+    "normalize_label_definition_for_df",
     "compute_split_indices",
     "apply_split",
     "add_split_column",

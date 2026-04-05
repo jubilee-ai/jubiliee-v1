@@ -28,9 +28,9 @@ import type { ResolvedConfirmation } from "./chat"
 import { BackgroundTaskDialog } from "./chat/BackgroundTaskDialog"
 import type { BackgroundTaskPayload } from "./chat/BackgroundTaskDialog"
 import { TaskStatusView } from "@/components/TaskStatusView"
+import { TRACE_EXCLUDE_IDS } from "@/lib/trainingSteps"
 
 const STEP_TO_PHASE: Record<string, string> = {
-  select_model: "Setup",
   data_collection: "Setup",
   cleaning: "Preparation",
   label_split_definition: "Preparation",
@@ -60,6 +60,8 @@ interface ChatPanelProps {
   highlightedMessageId?: string | null
   onClearHighlight?: () => void
   onViewReport?: () => void
+  /** Opens the Models tab and highlights this experiment’s trained model (next to View Report in chat). */
+  onViewModelInRegistry?: () => void
   agentState?: TrainingAgentState
   steps?: StepInfo[]
   hasExperimentChecklist?: boolean
@@ -93,6 +95,7 @@ export const ChatPanel = forwardRef<ChatPanelRef, ChatPanelProps>(function ChatP
   highlightedMessageId,
   onClearHighlight,
   onViewReport,
+  onViewModelInRegistry,
   agentState,
   steps,
   hasExperimentChecklist,
@@ -144,7 +147,7 @@ export const ChatPanel = forwardRef<ChatPanelRef, ChatPanelProps>(function ChatP
     }
   }, [messages.length])
 
-  const getConfirmationsAfterMessage = useCallback(() => {
+  const confirmationsMap = useMemo(() => {
     const map = new Map<string, ResolvedConfirmation[]>()
     for (const conf of pastConfirmations) {
       if (conf.afterMessageId) {
@@ -236,11 +239,21 @@ export const ChatPanel = forwardRef<ChatPanelRef, ChatPanelProps>(function ChatP
     }
   }, [highlightedMessageId, onClearHighlight])
 
-  const confirmationsMap = getConfirmationsAfterMessage()
+  const setMessageRef = useCallback((id: string) => (el: HTMLDivElement | null) => {
+    if (el) messageRefs.current.set(id, el)
+    else messageRefs.current.delete(id)
+  }, [])
 
   const resolveAgentStep = useCallback((msg: ChatMessage) => {
     if (msg.role !== "agent") return null
-    return msg.stepId ?? detectStepFromMessage(msg.content)
+    const id = msg.stepId ?? detectStepFromMessage(msg.content)
+    if (id && TRACE_EXCLUDE_IDS.has(id)) return null
+    return id
+  }, [])
+
+  const openStepDetails = useCallback((stepId: string) => {
+    if (TRACE_EXCLUDE_IDS.has(stepId)) return
+    setSelectedStepId(stepId)
   }, [])
 
   const phaseMarkers = useMemo(() => {
@@ -249,7 +262,8 @@ export const ChatPanel = forwardRef<ChatPanelRef, ChatPanelProps>(function ChatP
     for (const msg of messages) {
       if (msg.role === "agent") {
         const step = msg.stepId ?? detectStepFromMessage(msg.content)
-        const phase = step ? STEP_TO_PHASE[step] : null
+        const phase =
+          step && !TRACE_EXCLUDE_IDS.has(step) ? STEP_TO_PHASE[step] : null
         if (phase && phase !== lastPhase) {
           markers.set(msg.id, phase)
           lastPhase = phase
@@ -351,16 +365,14 @@ export const ChatPanel = forwardRef<ChatPanelRef, ChatPanelProps>(function ChatP
                     message={msg}
                     isHighlighted={highlightedMessageId === msg.id}
                     onViewReport={onViewReport}
+                    onViewModelInRegistry={onViewModelInRegistry}
                     stepId={detectedStep}
                     isClickable={isClickable}
-                    onStepClick={isClickable ? () => setSelectedStepId(detectedStep) : undefined}
+                    onStepClick={isClickable ? () => openStepDetails(detectedStep) : undefined}
                     isRunning={isRunning}
                     onApproveTrainingPlan={onApproveTrainingPlan}
                     datasets={availableDatasets}
-                    ref={(el) => {
-                      if (el) messageRefs.current.set(msg.id, el)
-                      else messageRefs.current.delete(msg.id)
-                    }}
+                    ref={setMessageRef(msg.id)}
                   />
                 )}
                 
@@ -370,7 +382,7 @@ export const ChatPanel = forwardRef<ChatPanelRef, ChatPanelProps>(function ChatP
                     confirmation={conf}
                     agentState={agentState}
                     steps={steps}
-                    onViewDetails={setSelectedStepId}
+                    onViewDetails={openStepDetails}
                   />
                 ))}
               </React.Fragment>
@@ -387,7 +399,7 @@ export const ChatPanel = forwardRef<ChatPanelRef, ChatPanelProps>(function ChatP
               onConfirmation={handleConfirmationWithTracking}
               agentState={agentState}
               steps={steps}
-              onViewDetails={setSelectedStepId}
+              onViewDetails={openStepDetails}
             />
           )}
 

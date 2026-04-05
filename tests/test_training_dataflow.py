@@ -185,7 +185,6 @@ def _mock_training(**kwargs):
         "num_iterations": 1,
         "best_iteration": 0,
         "summary": "Test training run",
-        "recommendations": [],
         "feature_redo_requested": False,
         "feature_redo_recommendation": None,
         "feature_redo_reason": None,
