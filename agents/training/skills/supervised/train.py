@@ -698,7 +698,8 @@ def run(params: dict) -> str:
         model_type=f"sklearn_{estimator_name}",
         description=params.get("description", f"{estimator_name} trained on {dataset_ref}"),
         metrics=metrics,
-        feature_names=feature_names_out,
+        # Raw dataframe columns (pipeline input), not one-hot / transformed names
+        feature_names=feature_columns,
         target_column=target_column,
         hyperparameters=clean_params,
         training_samples=len(df),

@@ -11,7 +11,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from agents.training.utils.graph_stream_hooks import emit_graph_stream
-from .state import canonical_step_name
+from .state import STEP_PREREQUISITES, canonical_step_name
 
 if TYPE_CHECKING:
     from .state import TrainingAgentState
@@ -45,6 +45,29 @@ def _ensure_data_collection_before_cleaning(
     return new_plan, "data_collection", True
 
 
+def _ensure_prerequisites(
+    state: "TrainingAgentState", plan: list, plan_index: int, step_name: str
+) -> tuple[list, str, bool]:
+    """Check ``STEP_PREREQUISITES`` and auto-insert a missing provider step
+    when the current step depends on a state key that hasn't been produced yet.
+    """
+    for prereq in STEP_PREREQUISITES:
+        if step_name not in prereq["dependents"]:
+            continue
+        if state.get(prereq["state_key"]):
+            continue
+        skip_model = prereq.get("skip_when_model")
+        if skip_model and state.get("selected_model") == skip_model:
+            continue
+        new_plan = list(plan)
+        new_plan.insert(plan_index, {
+            "step": prereq["provider"],
+            "rationale": f"Auto-inserted: {prereq['state_key']} required.",
+        })
+        return new_plan, prereq["provider"], True
+    return plan, step_name, False
+
+
 def dispatcher_node(state: "TrainingAgentState") -> "TrainingAgentState":
     """Read the plan and advance ``current_step`` to the next step name.
 
@@ -60,6 +83,8 @@ def dispatcher_node(state: "TrainingAgentState") -> "TrainingAgentState":
     next_step = plan[plan_index]
     step_name = _plan_entry_step(next_step)
     plan, step_name, plan_mutated = _ensure_data_collection_before_cleaning(state, plan, plan_index, step_name)
+    plan, step_name, mutated2 = _ensure_prerequisites(state, plan, plan_index, step_name)
+    plan_mutated = plan_mutated or mutated2
 
     print(f"[dispatcher] Step {plan_index + 1}/{len(plan)}: {step_name}")
     emit_graph_stream({

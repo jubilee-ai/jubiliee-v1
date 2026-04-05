@@ -75,7 +75,7 @@ End your response with a JSON block:
 # LLM Setup
 # =============================================================================
 
-llm = ChatOpenAI(model="gpt-5.1", temperature=0)
+llm = ChatOpenAI(model="gpt-5.4", temperature=0)
 
 # =============================================================================
 # Tools

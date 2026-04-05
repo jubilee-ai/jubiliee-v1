@@ -1,7 +1,7 @@
-from functools import lru_cache
 import os
-from pathlib import Path
 import sys
+from functools import lru_cache
+from pathlib import Path
 from typing import Optional
 
 from dotenv import load_dotenv
@@ -131,10 +131,15 @@ def bootstrap_paths() -> None:
     settings = get_settings()
     project_root = str(settings.project_root)
     data_tools_dir = str(settings.data_tools_dir)
+    models_training_dir = str(
+        settings.project_root / "tools" / "models-tools" / "training"
+    )
     if project_root not in sys.path:
         sys.path.insert(0, project_root)
     if data_tools_dir not in sys.path:
         sys.path.insert(0, data_tools_dir)
+    if models_training_dir not in sys.path:
+        sys.path.insert(0, models_training_dir)
 
 
 def get_env(name: str, default: Optional[str] = None) -> Optional[str]:

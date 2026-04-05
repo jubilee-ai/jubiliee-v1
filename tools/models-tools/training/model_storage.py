@@ -202,8 +202,30 @@ def list_models() -> list[dict]:
     return results
 
 
+def _local_artifact_candidates(model_name: str, storage_key: Optional[str]) -> list[Path]:
+    """Prefer on-disk copies before remote storage (dev / stale DB keys)."""
+    candidates: list[Path] = [Path(TRAINED_MODELS_DIR) / f"{_sanitize(model_name)}.joblib"]
+    if storage_key:
+        try:
+            from backend.shared.settings import get_settings
+
+            candidates.append(get_settings().trained_models_dir / storage_key)
+        except Exception:
+            pass
+    return candidates
+
+
+def _deserialize_artifact(path: Path, model_type: str) -> Any:
+    if model_type == "pytorch_nn":
+        import pickle
+
+        with open(path, "rb") as f:
+            return pickle.load(f)
+    return joblib.load(path)
+
+
 def load_model(model_name: str) -> Any:
-    """Load a trained model by name. Downloads from R2 on first access, then cached in memory."""
+    """Load a trained model by name. Uses local files when present, else artifact store, then cache."""
     if model_name in _model_cache:
         return _model_cache[model_name]
 
@@ -212,32 +234,230 @@ def load_model(model_name: str) -> Any:
         raise ValueError(f"Model '{model_name}' not found in registry")
 
     storage_key = info.get("storage_key")
+    model_type = info.get("model_type") or ""
+
+    for path in _local_artifact_candidates(model_name, storage_key):
+        try:
+            if path.is_file():
+                loaded = _deserialize_artifact(path, model_type)
+                _model_cache[model_name] = loaded
+                return loaded
+        except Exception:
+            continue
+
     if not storage_key:
-        raise ValueError(f"Model '{model_name}' has no storage_key in registry")
+        raise ValueError(
+            f"Model '{model_name}' has no storage_key and no local file under "
+            f"{TRAINED_MODELS_DIR} or trained_models/."
+        )
 
     from backend.shared.artifact_store import get_artifact_store
-    store = get_artifact_store()
+    from botocore.exceptions import ClientError
 
-    suffix = ".pkl" if info.get("model_type") == "pytorch_nn" else ".joblib"
+    store = get_artifact_store()
+    suffix = ".pkl" if model_type == "pytorch_nn" else ".joblib"
     tmp = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
     tmp_path = tmp.name
     tmp.close()
 
     try:
-        store.download(storage_key, Path(tmp_path))
+        try:
+            store.download(storage_key, Path(tmp_path))
+        except ClientError as e:
+            err_code = ""
+            if hasattr(e, "response") and e.response is not None:
+                err_code = str(e.response.get("Error", {}).get("Code", ""))
+            msg = str(e)
+            detail = (
+                "Model weights are missing from remote storage (object not found). "
+                "Re-train or upload the artifact. For local dev, place the file at "
+                f"tools/trained_models/{_sanitize(model_name)}.joblib"
+            )
+            if err_code in ("404", "NoSuchKey", "NotFound") or "404" in msg or "Not Found" in msg:
+                raise ValueError(detail) from e
+            raise ValueError(f"Could not download model weights: {e}") from e
+        except FileNotFoundError as e:
+            raise ValueError(
+                f"Local artifact path is missing. Expected file under trained_models/ for key "
+                f"{storage_key!r}."
+            ) from e
 
-        if info.get("model_type") == "pytorch_nn":
-            import pickle
-            with open(tmp_path, "rb") as f:
-                loaded = pickle.load(f)
-        else:
-            loaded = joblib.load(tmp_path)
-
+        loaded = _deserialize_artifact(Path(tmp_path), model_type)
         _model_cache[model_name] = loaded
         return loaded
     finally:
         if os.path.exists(tmp_path):
             os.remove(tmp_path)
+
+
+def _supports_single_row_predict(info: dict) -> bool:
+    """True for supervised sklearn pipelines and supervised PyTorch wrappers."""
+    mt = info.get("model_type") or ""
+    if mt.startswith("sklearn_unsupervised_"):
+        return False
+    if mt == "pytorch_nn":
+        tt = (info.get("hyperparameters") or {}).get("task_type", "classification")
+        return tt in ("classification", "regression")
+    if mt.startswith("sklearn_"):
+        return True
+    return False
+
+
+def _looks_like_transformed_registry_names(names: list[str]) -> bool:
+    """True when registry stored sklearn ColumnTransformer output names (num__/cat__ one-hot)."""
+    if not names:
+        return False
+    for n in names[:8]:
+        if "__" in n and ("num__" in n or "cat__" in n):
+            return True
+    return False
+
+
+def resolve_input_feature_names(model: Any, stored: list[str]) -> list[str]:
+    """Columns the model expects before preprocessing (Country, Price, …), not one-hot names."""
+    fin = getattr(model, "feature_names_in_", None)
+    if fin is not None and len(fin) > 0:
+        return [str(x) for x in fin]
+
+    ns = getattr(model, "named_steps", None)
+    if ns and "preprocessor" in ns:
+        pre = ns["preprocessor"]
+        fin = getattr(pre, "feature_names_in_", None)
+        if fin is not None and len(fin) > 0:
+            return [str(x) for x in fin]
+
+    pre = getattr(model, "preprocessor", None)
+    if pre is not None:
+        fin = getattr(pre, "feature_names_in_", None)
+        if fin is not None and len(fin) > 0:
+            return [str(x) for x in fin]
+
+    if stored and not _looks_like_transformed_registry_names(stored):
+        return list(stored)
+    if stored:
+        return list(stored)
+    return []
+
+
+def get_predict_input_schema(model_name: str) -> dict[str, Any]:
+    """Feature column names for the prediction form (raw inputs, pipeline order)."""
+    info = get_model_info(model_name)
+    if info is None:
+        raise LookupError("Model not found")
+
+    if not _supports_single_row_predict(info):
+        raise ValueError(
+            "This model does not support interactive prediction "
+            "(unsupervised and unknown types are excluded)."
+        )
+
+    stored = info.get("feature_names") or []
+    model = load_model(model_name)
+    names = resolve_input_feature_names(model, stored)
+    if not names:
+        raise ValueError("Could not determine input features for this model")
+
+    return {
+        "feature_names": names,
+        "target_column": info.get("target_column") or "",
+        "model_name": model_name,
+        "model_type": info.get("model_type", ""),
+    }
+
+
+def _json_safe_scalar(val: Any) -> Any:
+    if hasattr(val, "item"):
+        try:
+            return val.item()
+        except Exception:
+            pass
+    if isinstance(val, (float, int, str, bool)) or val is None:
+        return val
+    return str(val)
+
+
+def _coerce_feature_value(val: Any) -> Any:
+    """Best-effort coercion from JSON (strings may encode numbers)."""
+    if isinstance(val, (bool, int, float)) or val is None:
+        return val
+    if isinstance(val, str):
+        s = val.strip()
+        if s == "":
+            raise ValueError("empty feature value")
+        try:
+            if any(c in s for c in ".eE"):
+                return float(s)
+            return int(s)
+        except ValueError:
+            return s
+    return val
+
+
+def _is_regression_task(info: dict, model: Any) -> bool:
+    """PyTorch stores task_type; sklearn pipelines often only infer from the estimator."""
+    tt = (info.get("hyperparameters") or {}).get("task_type")
+    if tt == "regression":
+        return True
+    if tt == "classification":
+        return False
+    return not (
+        hasattr(model, "predict_proba")
+        and getattr(model, "classes_", None) is not None
+    )
+
+
+def predict_from_feature_dict(model_name: str, features: dict[str, Any]) -> dict[str, Any]:
+    """Run a single-row prediction from feature name → value. No LLM."""
+    info = get_model_info(model_name)
+    if info is None:
+        raise LookupError("Model not found")
+
+    if not _supports_single_row_predict(info):
+        raise ValueError(
+            "This model does not support interactive prediction "
+            "(unsupervised and unknown types are excluded)."
+        )
+
+    stored = info.get("feature_names") or []
+    model = load_model(model_name)
+    feature_names = resolve_input_feature_names(model, stored)
+    if not feature_names:
+        raise ValueError("Model has no usable input feature names")
+
+    missing = [f for f in feature_names if f not in features]
+    if missing:
+        raise ValueError(f"Missing features: {', '.join(missing)}")
+
+    try:
+        row = {f: _coerce_feature_value(features[f]) for f in feature_names}
+    except ValueError as e:
+        raise ValueError(str(e)) from e
+
+    df = pd.DataFrame([row])
+    predictions = model.predict(df)
+    pred_raw = predictions[0]
+    prediction = _json_safe_scalar(pred_raw)
+
+    out: dict[str, Any] = {
+        "prediction": prediction,
+        "model_name": model_name,
+        "model_type": info.get("model_type", ""),
+        "target_column": info.get("target_column") or "",
+    }
+
+    if _is_regression_task(info, model):
+        return out
+
+    if not (hasattr(model, "predict_proba") and getattr(model, "classes_", None) is not None):
+        return out
+
+    probs = model.predict_proba(df)[0]
+    classes = model.classes_
+    out["probabilities"] = {
+        str(c): float(p) for c, p in zip(classes, probs)
+    }
+
+    return out
 
 
 def delete_model(model_name: str) -> bool:
@@ -752,14 +972,14 @@ def evaluate_model_tool(
     """
     import sys
     from pathlib import Path
-    
+
     # Add data-tools path
     data_tools_path = str(Path(__file__).parent.parent.parent / "data-tools")
     if data_tools_path not in sys.path:
         sys.path.insert(0, data_tools_path)
     
     from utils import get_registered_dataset
-    
+
     # Load model info
     info = get_model_info(model_name)
     if info is None:
@@ -803,12 +1023,13 @@ def evaluate_model_tool(
         
         if is_classification:
             # Classification metrics
-            from sklearn.metrics import (
-                accuracy_score, precision_score, recall_score,
-                f1_score, confusion_matrix, classification_report, balanced_accuracy_score
-            )
             import numpy as np
-            
+            from sklearn.metrics import (accuracy_score,
+                                         balanced_accuracy_score,
+                                         classification_report,
+                                         confusion_matrix, f1_score,
+                                         precision_score, recall_score)
+
             # Get probabilities if available (fallback: decision_function for Ridge, LinearSVC, etc.)
             y_proba = None
             roc_auc = classification_roc_auc(model, X, y_true)
@@ -945,8 +1166,9 @@ def evaluate_model_tool(
             
         else:
             # Regression metrics
-            from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
             import numpy as np
+            from sklearn.metrics import (mean_absolute_error,
+                                         mean_squared_error, r2_score)
             
             mse = mean_squared_error(y_true, y_pred)
             rmse = np.sqrt(mse)

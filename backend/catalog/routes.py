@@ -1,20 +1,24 @@
 import json
+from typing import Any
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import RedirectResponse
+from pydantic import BaseModel, Field
 
-from backend.catalog.interfaces import CatalogServiceInterface
 from backend.catalog import service as catalog_service
-from backend.catalog.service import (
-    DatasetUploadConflictError,
-    DatasetUploadValidationError,
-)
+from backend.catalog.interfaces import CatalogServiceInterface
 from backend.catalog.repository import _trained_model_report_path
+from backend.catalog.service import (DatasetUploadConflictError,
+                                     DatasetUploadValidationError)
 from backend.shared.artifact_store import get_artifact_store
 from backend.shared.database import get_db_session
 from backend.shared.models import Dataset, Model, ModelVersion
 
 router = APIRouter()
+
+
+class PredictFeaturesBody(BaseModel):
+    features: dict[str, Any] = Field(..., description="One row: feature column name → value")
 
 
 def get_catalog_service() -> CatalogServiceInterface:
@@ -99,6 +103,32 @@ async def download_model(model_name: str):
         store = get_artifact_store()
         url = store.get_presigned_url(version.storage_key)
         return RedirectResponse(url=url, status_code=307)
+
+
+@router.post("/api/trained-models/{model_name}/predict")
+async def predict_trained_model(model_name: str, body: PredictFeaturesBody):
+    """Run model inference on a single feature row (no LLM)."""
+    from model_storage import predict_from_feature_dict
+
+    try:
+        return predict_from_feature_dict(model_name, body.features)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+
+@router.get("/api/trained-models/{model_name}/input-features")
+async def get_trained_model_input_features(model_name: str):
+    """Raw training columns for the prediction form (resolved from the fitted artifact when possible)."""
+    from model_storage import get_predict_input_schema
+
+    try:
+        return get_predict_input_schema(model_name)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 @router.get("/api/datasets/{ref}/preview")
