@@ -505,13 +505,6 @@ function AuthenticatedApp() {
           </div>
         </nav>
 
-        {/* Backend offline banner */}
-        {!realAgent.isBackendConnected && (
-          <div className="fixed top-14 left-0 right-0 z-40 px-5 py-1.5 text-xs text-muted-foreground bg-muted text-center">
-            Run <code className="bg-card px-1.5 py-0.5 rounded text-[11px] font-mono">docker compose up --build</code> to start
-          </div>
-        )}
-
         {/* Main Layout — min-h-0 so inner chat can scroll instead of growing the page */}
         <div className="flex flex-1 min-h-0 overflow-hidden pt-14" style={layoutStyle}>
           {/* Fixed Sidebar */}
@@ -615,7 +608,12 @@ function AuthenticatedApp() {
                 </div>
             </div>
             <div className={cn("flex-1 overflow-auto", activeTab !== "datasets" && "hidden")}>
-              <DatasetsPage datasets={realAgent.datasets} />
+              <DatasetsPage
+                enabled={activeTab === "datasets" && realAgent.isBackendConnected}
+                onDatasetsChanged={() => {
+                  void realAgent.refreshDatasets()
+                }}
+              />
             </div>
             <div className={cn("flex-1 overflow-auto", activeTab !== "models" && "hidden")}>
               <ModelsPage

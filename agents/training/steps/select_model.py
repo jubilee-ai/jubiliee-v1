@@ -189,11 +189,21 @@ def _derive_task_type(family_key: str, goal: str) -> str:
     if family_key == "unsupervised":
         return "unsupervised"
     goal_lower = goal.lower()
-    if any(w in goal_lower for w in [
+    regression_hints = [
         "regress", "predict value", "forecast", "amount", "price",
-        "cost", "salary", "revenue", "income",
-    ]):
+        "cost", "salary", "revenue", "income", "score", "continuous",
+        "numeric target", "distress", "charges", "quantity", "duration",
+        "rate", "ratio",
+    ]
+    if any(w in goal_lower for w in regression_hints):
         return "regression"
+    classification_hints = [
+        "classif", "churn", "fraud", "default", "spam", "diagnos",
+        "detect", "binary", "multi-class", "category", "sentiment",
+        "predict whether", "predict if",
+    ]
+    if any(w in goal_lower for w in classification_hints):
+        return "classification"
     return "classification"
 
 

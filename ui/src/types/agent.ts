@@ -378,6 +378,8 @@ export interface ChatMessage {
   taskPlanResolved?: boolean
   /** Full prompt sent to the API when `content` is a short topic label (e.g. background task) */
   apiPayload?: string
+  /** Dataset ref keys attached with this user message (shown in bubble; cleared from composer on send) */
+  linkedDatasetKeys?: string[]
   links?: Array<{
     type: "dataset" | "model" | "step"
     id: string

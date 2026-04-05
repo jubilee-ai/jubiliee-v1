@@ -13,8 +13,13 @@ import {
   getExperiment,
   deleteExperiment,
   updateExperiment,
+  getDatasets,
+  getDatasetPreview,
+  uploadDataset,
   type ExperimentSummary,
   type ExperimentDetail,
+  type Dataset,
+  type DatasetPreview,
 } from "@/lib/api"
 
 function queryDebug(event: string, payload?: Record<string, unknown>) {
@@ -30,6 +35,13 @@ export const experimentKeys = {
   all: ["experiments"] as const,
   list: () => [...experimentKeys.all, "list"] as const,
   detail: (id: string) => [...experimentKeys.all, "detail", id] as const,
+}
+
+export const datasetKeys = {
+  all: ["datasets"] as const,
+  list: () => [...datasetKeys.all, "list"] as const,
+  preview: (name: string, limit: number) =>
+    [...datasetKeys.all, "preview", name, limit] as const,
 }
 
 export function useExperimentsList(options?: { enabled?: boolean }): UseQueryResult<ExperimentSummary[], Error> {
@@ -105,6 +117,42 @@ export function useUpdateExperimentMutation() {
     onSuccess: (_void, { id }) => {
       queryClient.invalidateQueries({ queryKey: experimentKeys.list() })
       queryClient.invalidateQueries({ queryKey: experimentKeys.detail(id) })
+    },
+  })
+}
+
+export function useDatasetsQuery(options?: { enabled?: boolean }) {
+  return useQuery<Dataset[], Error>({
+    queryKey: datasetKeys.list(),
+    queryFn: () => getDatasets(),
+    enabled: options?.enabled !== false,
+    staleTime: 30_000,
+  })
+}
+
+const DEFAULT_PREVIEW_LIMIT = 25
+
+export function useDatasetPreviewQuery(
+  name: string | null,
+  options?: { enabled?: boolean; limit?: number },
+): UseQueryResult<DatasetPreview, Error> {
+  const limit = options?.limit ?? DEFAULT_PREVIEW_LIMIT
+  const enabled = !!name && (options?.enabled !== false)
+  return useQuery<DatasetPreview, Error>({
+    queryKey: datasetKeys.preview(name ?? "__none__", limit),
+    queryFn: () => getDatasetPreview(name!, { limit }),
+    enabled,
+    staleTime: 60_000,
+  })
+}
+
+export function useUploadDatasetMutation() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (vars: { file: File; name?: string; description?: string }) =>
+      uploadDataset(vars.file, { name: vars.name, description: vars.description }),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: datasetKeys.all })
     },
   })
 }

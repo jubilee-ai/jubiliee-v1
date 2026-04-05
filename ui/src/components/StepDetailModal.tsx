@@ -180,16 +180,6 @@ function DataCollectionDetail({ agentState, audit }: { agentState: TrainingAgent
           </div>
         </div>
       )}
-
-      {/* What to check */}
-      <div className="bg-blue-50 dark:bg-blue-950/30 rounded-lg p-4">
-        <div className="text-sm font-medium text-blue-700 dark:text-blue-300 mb-2">What to Review</div>
-        <ul className="text-sm text-blue-600 dark:text-blue-400 space-y-1">
-          <li>• Is this the correct dataset for your goal?</li>
-          <li>• Are all expected columns present?</li>
-          <li>• Does the row count match expectations?</li>
-        </ul>
-      </div>
     </div>
   )
 }
@@ -242,16 +232,6 @@ function CleaningDetail({ agentState }: { agentState: TrainingAgentState; audit?
         ) : (
           <p className="text-sm text-muted-foreground">No transformations needed - data was already clean</p>
         )}
-      </div>
-
-      {/* What to check */}
-      <div className="bg-blue-50 dark:bg-blue-950/30 rounded-lg p-4">
-        <div className="text-sm font-medium text-blue-700 dark:text-blue-300 mb-2">What to Review</div>
-        <ul className="text-sm text-blue-600 dark:text-blue-400 space-y-1">
-          <li>• Are the cleaning operations appropriate for your data?</li>
-          <li>• Were any important values incorrectly treated as missing?</li>
-          <li>• Do the transformations preserve data integrity?</li>
-        </ul>
       </div>
     </div>
   )
@@ -320,16 +300,6 @@ function LabelSplitDetail({ agentState }: { agentState: TrainingAgentState; audi
           </div>
         </div>
       )}
-
-      {/* What to check */}
-      <div className="bg-blue-50 dark:bg-blue-950/30 rounded-lg p-4">
-        <div className="text-sm font-medium text-blue-700 dark:text-blue-300 mb-2">What to Review</div>
-        <ul className="text-sm text-blue-600 dark:text-blue-400 space-y-1">
-          <li>• Is the target column correctly identified?</li>
-          <li>• Is the split strategy appropriate for your data?</li>
-          <li>• Are there any columns that should be excluded?</li>
-        </ul>
-      </div>
     </div>
   )
 }
@@ -596,7 +566,6 @@ function FeatureSelectionDetail({ agentState }: { agentState: TrainingAgentState
 
 // Feature Engineering Detail
 function FeatureEngineeringDetail({ agentState, audit }: { agentState: TrainingAgentState; audit?: Record<string, unknown> }) {
-  const hadExperiments = Number(agentState.experiment_result?.total_scouts ?? 0) > 0
   const passthrough = agentState.feature_pipeline_mode === "passthrough"
 
   if (passthrough) {
@@ -639,19 +608,6 @@ function FeatureEngineeringDetail({ agentState, audit }: { agentState: TrainingA
             {agentState.feature_validation_passed ? "Feature Validation Passed" : "Validation Issues Found"}
           </span>
         </div>
-      </div>
-
-      <div className="rounded-lg border border-border/60 bg-muted/20 px-3 py-2.5 text-xs text-muted-foreground leading-relaxed">
-        <span className="font-medium text-foreground/90">First build pass.</span>{" "}
-        Your spec was turned into the encoded columns below (one-hot and similar transforms expand one logical feature into several columns).
-        {hadExperiments ? (
-          <>
-            {" "}
-            Feature experiments may then change which definitions or columns are used for final training — see{" "}
-            <span className="text-foreground/80 font-medium">Feature experiments</span> and{" "}
-            <span className="text-foreground/80 font-medium">Training approval</span> (data summary) for the final column count.
-          </>
-        ) : null}
       </div>
 
       {/* Initial encoded columns (pre–feature-experiments if those run later) */}

@@ -1101,6 +1101,7 @@ def create_simple_training_agent(
         training_plan = state.get("training_plan") or {}
         plan_max_iters = training_plan.get("max_iterations", 9 if selected_model == "neural_networks" else 7)
         plan_for_agent = training_plan if isinstance(training_plan, dict) and training_plan else None
+        tt = state.get("task_type")
         result = _run_training(
             train_ref=train_ref,
             val_ref=state.get("transformed_val_ref"),
@@ -1113,6 +1114,7 @@ def create_simple_training_agent(
             experiment_result=state.get("experiment_result"),
             feature_rankings=state.get("feature_rankings"),
             training_plan=plan_for_agent,
+            explicit_task_type=tt if isinstance(tt, str) else None,
         )
 
         feature_redo_requested = result.get("feature_redo_requested", False)

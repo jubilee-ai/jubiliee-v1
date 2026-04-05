@@ -494,10 +494,6 @@ function FeatureEngineeringStepContent({
         value={agentState.feature_validation_passed ? "Passed" : "Issues Found"}
         highlight={agentState.feature_validation_passed}
       />
-      <p className="text-xs text-muted-foreground leading-relaxed">
-        First build pass: spec → encoded columns below. Feature experiments (if any) can change the final matrix; see the
-        experiments section below or training approval for final column counts.
-      </p>
       {audit?.features_created != null && Array.isArray(audit.features_created) ? (
         <div>
           <div className="text-sm text-muted-foreground mb-1">

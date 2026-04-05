@@ -11,13 +11,15 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from agents.training.utils.graph_stream_hooks import emit_graph_stream
+from .state import canonical_step_name
 
 if TYPE_CHECKING:
     from .state import TrainingAgentState
 
 
 def _plan_entry_step(entry: object) -> str:
-    return entry["step"] if isinstance(entry, dict) else entry.step  # type: ignore[index]
+    step_name = entry["step"] if isinstance(entry, dict) else entry.step  # type: ignore[index]
+    return canonical_step_name(step_name)
 
 
 def _ensure_data_collection_before_cleaning(

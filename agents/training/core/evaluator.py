@@ -19,6 +19,8 @@ from agents.training.utils.graph_stream_hooks import (
     GraphTokenStreamHandler,
     emit_graph_stream,
 )
+from .planner import ALL_STEP_NAMES
+from .state import canonical_step_name
 
 load_dotenv(Path(__file__).parent.parent.parent.parent / ".env")
 
@@ -220,6 +222,31 @@ def evaluator_node(state: "TrainingAgentState") -> "TrainingAgentState":
             "plan_index": plan_index + 1,
         }
 
+    # Do not execute downstream steps after a step failure. Interactive runs should
+    # stop too, otherwise stale artifacts can leak into later steps/reporting.
+    if state.get("error"):
+        err = state.get("error")
+        node = state.get("hitl_error_node") or completed_step
+        reason_prefix = (
+            "Pipeline halted after step error (auto-approve):"
+            if state.get("hitl_auto_approve")
+            else "Pipeline halted after step error:"
+        )
+        return {
+            **state,
+            "evaluator_decision": "done",
+            "plan_index": plan_index + 1,
+            "audit_trace": state.get("audit_trace", []) + [{
+                "step": "evaluator",
+                "completed_step": completed_step,
+                "decision": "done",
+                "reasoning": (
+                    f"{reason_prefix} {err} "
+                    f"(node={node})"
+                ),
+            }],
+        }
+
     audit = state.get("audit_trace", [])
     evaluator_calls = sum(1 for e in audit if e.get("step") == "evaluator")
     replan_count = sum(
@@ -327,7 +354,11 @@ def evaluator_node(state: "TrainingAgentState") -> "TrainingAgentState":
                 + (decision.reasoning or "")
             )
         else:
-            amended = [{"step": s.step, "rationale": s.rationale} for s in decision.amended_remaining_steps]
+            amended = [
+                {"step": canonical_step_name(s.step), "rationale": s.rationale}
+                for s in decision.amended_remaining_steps
+            ]
+            amended = [s for s in amended if s["step"] in ALL_STEP_NAMES]
             done_set = set(completed_names)
             amended = [s for s in amended if s["step"] not in done_set]
             new_plan = list(plan[:plan_index + 1]) + amended

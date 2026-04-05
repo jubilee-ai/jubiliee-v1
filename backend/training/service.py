@@ -429,6 +429,15 @@ def generate_simple_sse_events(
 
     thread_id = thread_id or f"simple-{uuid.uuid4().hex[:8]}"
 
+    repository.ensure_training_job(
+        thread_id,
+        {
+            "goal": goal,
+            "linked_datasets": linked_datasets,
+            "model_preference": model_pref,
+        },
+    )
+
     registered_refs = []
     if linked_datasets:
         for entry in linked_datasets:
@@ -538,6 +547,8 @@ def generate_simple_resume_sse_events(
         yield f"data: {json.dumps({'type': 'error', 'error': 'Simple agent thread not found', 'thread_id': thread_id})}\n\n"
         return
 
+    repository.ensure_training_job(thread_id, {})
+
     agent = store["agent"]
     shared_state = store["state"]
     config = {"configurable": {"thread_id": thread_id}}
@@ -628,11 +639,33 @@ def generate_graph_sse_events(
     thread_id = thread_id or f"graph-{uuid.uuid4().hex[:8]}"
     goal = (goal or "").strip() or "Training run"
 
+    repository.ensure_training_job(
+        thread_id,
+        {
+            "goal": goal,
+            "linked_datasets": linked_datasets,
+            "model_preference": model_pref,
+        },
+    )
+
     if experiment_id:
         exp = repository.get_experiment(experiment_id)
         if exp:
-            ts = dict(exp.get("training_state") or {})
+            ts0 = dict(exp.get("training_state") or {})
+            if ts0.get("task_status") == "running" or ts0.get("graph_run_status") == "running":
+                yield format_sse(
+                    error_event(
+                        "Another training run is already in progress for this experiment "
+                        "(async task or interactive graph)."
+                    ),
+                    experiment_id,
+                )
+                yield format_sse(stream_end(experiment_id, pipeline_completed=False), experiment_id)
+                return
+            ts = dict(ts0)
             ts["graph_thread_id"] = thread_id
+            ts["graph_run_status"] = "running"
+            ts["graph_run_started_at"] = datetime.now(timezone.utc).isoformat()
             repository.update_experiment(
                 experiment_id,
                 {
@@ -752,6 +785,7 @@ def generate_graph_sse_events(
                 "task_error": str(pipeline_error) if pipeline_error else None,
                 "task_started_at": None,
                 "task_completed_at": None,
+                "graph_run_status": "failed" if pipeline_error else "completed",
             }
             repository.merge_experiment_training_state(experiment_id, persisted_state)
             repository.update_experiment(
@@ -770,6 +804,7 @@ def generate_graph_sse_events(
                     "graph_thread_id": thread_id,
                     "error": str(e),
                     "task_error": str(e),
+                    "graph_run_status": "failed",
                 },
             )
             repository.update_experiment(experiment_id, {"goal": goal, "status": "failed"})
@@ -789,6 +824,8 @@ def generate_graph_resume_sse_events(
     if not store:
         yield format_sse(error_event("Graph thread not found"), experiment_id)
         return
+
+    repository.ensure_training_job(thread_id, {})
 
     if experiment_id is None:
         experiment_id = store.get("experiment_id")
@@ -881,6 +918,7 @@ def generate_graph_resume_sse_events(
                 "task_error": str(pipeline_error) if pipeline_error else None,
                 "task_started_at": None,
                 "task_completed_at": None,
+                "graph_run_status": "failed" if pipeline_error else "completed",
             }
             repository.merge_experiment_training_state(experiment_id, persisted_state)
             repository.update_experiment(
@@ -899,6 +937,7 @@ def generate_graph_resume_sse_events(
                     "graph_thread_id": thread_id,
                     "error": str(e),
                     "task_error": str(e),
+                    "graph_run_status": "failed",
                 },
             )
             repository.update_experiment(experiment_id, {"goal": goal, "status": "failed"})
@@ -1060,6 +1099,15 @@ def _run_experiment_graph_task_worker(
     )
     repository.update_experiment(experiment_id, {"status": "running"})
 
+    repository.ensure_training_job(
+        thread_id,
+        {
+            "goal": goal,
+            "linked_datasets": linked_datasets,
+            "model_preference": model_pref,
+        },
+    )
+
     try:
         registered_refs: list[str] = []
         failed_datasets: list[str] = []
@@ -1201,6 +1249,10 @@ def start_experiment_async_training(
     ts = exp.get("training_state") or {}
     if ts.get("task_status") == "running":
         raise RuntimeError("A training task is already running for this experiment")
+    if ts.get("graph_run_status") == "running":
+        raise RuntimeError(
+            "An interactive graph run is already in progress for this experiment"
+        )
 
     goal = (exp.get("goal") or "").strip() or "Training run"
     raw_ld = exp.get("linked_datasets")

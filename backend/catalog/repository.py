@@ -2,6 +2,8 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from backend.shared.models import Dataset
+
 log = logging.getLogger(__name__)
 
 
@@ -21,7 +23,6 @@ def get_datasets(include_derived: bool = False) -> list[dict[str, object]]:
 
 def _get_datasets_from_db(include_derived: bool = False) -> list[dict[str, object]]:
     from backend.shared.database import get_db_session
-    from backend.shared.models import Dataset
 
     with get_db_session() as session:
         query = session.query(Dataset).order_by(Dataset.created_at.desc())
@@ -49,6 +50,28 @@ def _dataset_to_dict(row: Any) -> dict[str, object]:
         "description": props.get("description", ""),
         "use_case": props.get("use_case", ""),
     }
+
+
+def dataset_to_dict(row: Any) -> dict[str, object]:
+    """Same shape as list endpoints (`_dataset_to_dict`)."""
+    return _dataset_to_dict(row)
+
+
+def dataset_name_exists(session: Any, name: str) -> bool:
+    return session.query(Dataset).filter_by(name=name).first() is not None
+
+
+def insert_dataset(
+    session: Any,
+    *,
+    name: str,
+    source_type: str,
+    properties: dict[str, Any],
+) -> Any:
+    row = Dataset(name=name, source_type=source_type, properties=properties)
+    session.add(row)
+    session.flush()
+    return row
 
 
 def get_models() -> list[dict[str, str]]:

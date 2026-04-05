@@ -33,6 +33,7 @@ psycopg2-binary
 alembic
 boto3
 fastapi
+python-multipart
 uvicorn[standard]
 celery[redis]
 redis

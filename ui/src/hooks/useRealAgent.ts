@@ -36,11 +36,7 @@ import {
   type ExperimentDetail,
   updateExperiment,
 } from "@/lib/api"
-import {
-  uid,
-  suggestExperimentTitleFromLinkedDatasets,
-  suggestExperimentTitleFromUserMessage,
-} from "@/lib/utils"
+import { uid, suggestExperimentTitleFromUserMessage } from "@/lib/utils"
 import { buildStepDetailMarkdown } from "@/hooks/stepStreamDetails"
 import { looksLikeLeakedPlanJson, stripLeakedPlanJson } from "@/lib/planDisplay"
 import {
@@ -454,7 +450,12 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
     (
       role: ChatMessage["role"],
       content: string,
-      meta?: Partial<Pick<ChatMessage, "stepId" | "detailMarkdown" | "showReportButton" | "taskPlan" | "apiPayload">>,
+      meta?: Partial<
+        Pick<
+          ChatMessage,
+          "stepId" | "detailMarkdown" | "showReportButton" | "taskPlan" | "apiPayload" | "linkedDatasetKeys"
+        >
+      >,
     ) => {
       setMessages((prev) => [
         ...prev,
@@ -519,6 +520,7 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
       ...(m.taskPlan ? { task_plan: m.taskPlan } : {}),
       ...(m.taskPlanResolved ? { task_plan_resolved: true } : {}),
       ...(m.apiPayload ? { api_payload: m.apiPayload } : {}),
+      ...(m.linkedDatasetKeys?.length ? { linked_dataset_keys: m.linkedDatasetKeys } : {}),
     }))
 
     mergeChatIntoExperimentCache(eid, serialized)
@@ -1247,11 +1249,18 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
   }, [addMessage, computeStepSubtitle, saveCurrentMessages])
 
   const ensureExperimentId = useCallback(
-    async (suggestedName?: string | null): Promise<string | null> => {
+    async (
+      suggestedName?: string | null,
+      linkedDatasetsForCreate?: string[] | null,
+    ): Promise<string | null> => {
       if (experimentIdRef.current) return experimentIdRef.current
       try {
         const name = suggestedName?.trim() || undefined
-        const exp = await createExperiment(name)
+        const ld =
+          linkedDatasetsForCreate != null && linkedDatasetsForCreate.length > 0
+            ? linkedDatasetsForCreate
+            : undefined
+        const exp = await createExperiment(name, ld)
         setExperimentId(exp.id)
         experimentIdRef.current = exp.id
         void queryClient.invalidateQueries({ queryKey: experimentKeys.list() })
@@ -1276,23 +1285,9 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
   const updateLinkedDatasets = useCallback(
     (ids: string[]) => {
       setLinkedDatasets(ids)
-      void (async () => {
-        if (!experimentIdRef.current) {
-          if (ids.length === 0) return
-          try {
-            const title = suggestExperimentTitleFromLinkedDatasets(ids)
-            const exp = await createExperiment(title, ids)
-            setExperimentId(exp.id)
-            experimentIdRef.current = exp.id
-            void queryClient.invalidateQueries({ queryKey: experimentKeys.list() })
-            onExperimentEnsuredRef.current?.(exp.id)
-          } catch {
-            // keep local selection; persist can retry when user has an experiment
-          }
-          return
-        }
+      if (experimentIdRef.current) {
         scheduleLinkedDatasetsPatch(ids)
-      })()
+      }
     },
     [scheduleLinkedDatasetsPatch],
   )
@@ -1305,7 +1300,20 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
       return
     }
 
-    const runEid = await ensureExperimentId(suggestExperimentTitleFromUserMessage(goal))
+    let runEid = experimentIdRef.current
+    if (!runEid) {
+      const hasUserMessage = messagesRef.current.some((m) => m.role === "user")
+      if (!hasUserMessage) {
+        addMessage(
+          "system",
+          "Send a message in chat first to create an experiment before starting training.",
+        )
+        return
+      }
+      const linked =
+        linkedDatasets != null && linkedDatasets.length > 0 ? linkedDatasets : undefined
+      runEid = await ensureExperimentId(suggestExperimentTitleFromUserMessage(goal), linked ?? null)
+    }
     if (!runEid) {
       addMessage("system", "Could not create an experiment. Check the backend connection.")
       return
@@ -1430,22 +1438,6 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
     ) => {
       suppressPostPlanTokensRef.current = false
       const topic = opts?.displayTopic?.trim()
-      if (topic) {
-        addMessage("user", topic, { apiPayload: content })
-      } else {
-        addMessage("user", content)
-      }
-
-      if (isRunning) {
-        addMessage("agent", "Please wait — a task is still running.")
-        return
-      }
-
-      streamControllerRef.current?.abort()
-
-      if (opts?.begin_background_intake) {
-        setBackgroundIntake(true)
-      }
 
       const forceOrch =
         backgroundIntakeActiveRef.current || opts?.force_orchestrator === true
@@ -1460,9 +1452,59 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
             return raw.length > 0 ? raw : null
           })()
 
+      const linkedForCreate: string[] | undefined = (() => {
+        if (opts?.linked_datasets_override != null) {
+          const o = opts.linked_datasets_override.filter(Boolean)
+          return o.length > 0 ? o : undefined
+        }
+        if (opts?.begin_background_intake && opts?.persist_linked_datasets?.length) {
+          return [...opts.persist_linked_datasets]
+        }
+        if (linkedForApi && linkedForApi.length > 0) {
+          return [...linkedForApi]
+        }
+        const fromRef = [...linkedDatasetsRef.current].filter(Boolean)
+        return fromRef.length > 0 ? fromRef : undefined
+      })()
+
+      const attachedAtSend: string[] = (() => {
+        if (opts?.linked_datasets_override != null) {
+          return opts.linked_datasets_override.filter(Boolean)
+        }
+        if (opts?.begin_background_intake && opts?.persist_linked_datasets?.length) {
+          return [...opts.persist_linked_datasets]
+        }
+        return [...linkedDatasetsRef.current].filter(Boolean)
+      })()
+
+      const datasetBubbleMeta =
+        attachedAtSend.length > 0 ? { linkedDatasetKeys: attachedAtSend } : {}
+
+      if (topic) {
+        addMessage("user", topic, { apiPayload: content, ...datasetBubbleMeta })
+      } else {
+        addMessage("user", content, datasetBubbleMeta)
+      }
+
+      if (isRunning) {
+        addMessage("agent", "Please wait — a task is still running.")
+        return
+      }
+
+      if (attachedAtSend.length > 0) {
+        setLinkedDatasets([])
+      }
+
+      streamControllerRef.current?.abort()
+
+      if (opts?.begin_background_intake) {
+        setBackgroundIntake(true)
+      }
+
       void (async () => {
         const eid = await ensureExperimentId(
           suggestExperimentTitleFromUserMessage(topic || content),
+          linkedForCreate ?? null,
         )
         if (!eid) {
           addMessage("system", "Could not create an experiment. Check the backend connection.")
@@ -1471,12 +1513,10 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
 
         if (opts?.begin_background_intake && opts.persist_linked_datasets?.length) {
           const ids = [...opts.persist_linked_datasets]
-          setLinkedDatasets(ids)
           void updateExperiment(eid, { linked_datasets: ids })
         }
 
         if (!forceOrch && linkedForApi && linkedForApi.length > 0) {
-          setLinkedDatasets([])
           void updateExperiment(eid, { linked_datasets: [] })
           setSteps(createInitialSteps())
           emittedStepsRef.current = new Set()
@@ -1577,6 +1617,12 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
             ...(m.task_plan_resolved === true ? { taskPlanResolved: true } : {}),
             ...(typeof m.api_payload === "string" ? { apiPayload: m.api_payload } : {}),
             ...(typeof m.apiPayload === "string" ? { apiPayload: m.apiPayload } : {}),
+            ...(Array.isArray(m.linked_dataset_keys)
+              ? { linkedDatasetKeys: (m.linked_dataset_keys as unknown[]).map(String) }
+              : {}),
+            ...(Array.isArray(m.linkedDatasetKeys)
+              ? { linkedDatasetKeys: (m.linkedDatasetKeys as unknown[]).map(String) }
+              : {}),
           })),
       )
     } else {
@@ -1658,18 +1704,15 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
           addMessage("system", "Backend not connected.")
           return
         }
-        let eid = experimentIdRef.current
+        const eid = experimentIdRef.current
         if (!eid) {
-          const title = `Task: ${plan.goal.slice(0, 48)}${plan.goal.length > 48 ? "…" : ""}`
-          const exp = await createExperiment(title, refs)
-          eid = exp.id
-          setExperimentId(eid)
-          experimentIdRef.current = eid
-          onExperimentEnsuredRef.current?.(eid)
-          void queryClient.invalidateQueries({ queryKey: experimentKeys.list() })
-        } else {
-          await updateExperiment(eid, { goal: plan.goal, linked_datasets: refs })
+          addMessage(
+            "system",
+            "Send a message in chat first so your experiment exists before starting a background task.",
+          )
+          return
         }
+        await updateExperiment(eid, { goal: plan.goal, linked_datasets: refs })
         await updateExperiment(eid, {
           training_state_merge: {
             lab_mode: "task",

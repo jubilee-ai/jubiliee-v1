@@ -51,6 +51,15 @@ STEP_ORDER = [
     "generate_report",
 ]
 
+STEP_ALIASES = {
+    "label_definition": "label_split_definition",
+}
+
+
+def canonical_step_name(step_name: str) -> str:
+    """Normalize legacy step aliases to graph node names."""
+    return STEP_ALIASES.get(step_name, step_name)
+
 
 # =============================================================================
 # STATE DEFINITIONS

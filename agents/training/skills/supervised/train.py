@@ -42,7 +42,7 @@ import numpy as np
 import pandas as pd
 from scipy.stats import loguniform, randint, uniform
 from sklearn import set_config
-from sklearn.base import is_classifier
+from sklearn.base import is_classifier, is_regressor
 from sklearn.compose import ColumnTransformer
 from sklearn.impute import SimpleImputer
 from sklearn.metrics import (accuracy_score, classification_report,
@@ -491,6 +491,18 @@ def run(params: dict) -> str:
         estimator = _resolve_estimator(estimator_name, fixed_params)
     except Exception as e:
         return f"TRAINING FAILED\nError: {e}"
+
+    expected_task = params.get("expected_task_type")
+    if expected_task == "classification" and not is_classifier(estimator):
+        return (
+            f"TRAINING FAILED\nError: task_type is classification but '{estimator_name}' "
+            f"is not a classifier. Choose a classifier or fix the stated task type."
+        )
+    if expected_task == "regression" and not is_regressor(estimator):
+        return (
+            f"TRAINING FAILED\nError: task_type is regression but '{estimator_name}' "
+            f"is not a regressor. Choose a regressor or fix the stated task type."
+        )
 
     is_clf = is_classifier(estimator)
     task_type = "classification" if is_clf else "regression"

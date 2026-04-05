@@ -11,10 +11,13 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
+import pandas as pd
+
 from langchain.chat_models import init_chat_model
 from langgraph.types import interrupt
 
-from ..core.hitl import make_serializable, parse_decision, run_with_hitl
+from ..core.hitl import (_invalidate_split_downstream, make_serializable,
+                         parse_decision, run_with_hitl)
 from ..core.state import TrainingAgentState
 
 # Import utilities for dataset registration
@@ -29,6 +32,7 @@ from .data_collection import data_collection as _data_collection_impl
 from .feature_engineering_executor import execute_feature_spec_split
 from .feature_engineering_simple import run_feature_engineering_simple
 from .label_and_split import (apply_split, compute_split_indices,
+                              normalize_label_definition_for_df,
                               run_label_split_definition)
 from .select_model import select_model as _select_model_impl
 from .feature_experiment_runner import run_experiment_grid
@@ -314,6 +318,30 @@ def label_split_definition(state: TrainingAgentState) -> TrainingAgentState:
 
         # Compute and apply split
         df = get_registered_dataset(dataset_ref)
+        if df is None:
+            return {
+                **s,
+                "error": f"Could not load dataset {dataset_ref} for label/split.",
+                "current_step": "cleaning",
+            }
+
+        label_def = normalize_label_definition_for_df(df, label_def)
+
+        task_type = s.get("task_type")
+        tgt_col = label_def.get("target_column")
+        if task_type == "classification" and tgt_col and tgt_col in df.columns:
+            col = df[tgt_col]
+            if pd.api.types.is_numeric_dtype(col):
+                nunique = int(col.nunique(dropna=True))
+                n = len(col)
+                if n > 0 and nunique > min(50, max(10, n // 5)):
+                    print(
+                        f"[label_split_definition] Target `{tgt_col}` has {nunique} distinct "
+                        f"numeric values on {n} rows — auto-correcting task_type to regression."
+                    )
+                    task_type = "regression"
+                    s = {**s, "task_type": "regression"}
+
         print(f"[label_split_definition] Computing {label_def.get('split_strategy', 'random')} split...")
         
         split_indices = compute_split_indices(df=df, label_definition=label_def, train_ratio=0.7, val_ratio=0.15, test_ratio=0.15)
@@ -600,8 +628,17 @@ def feature_experiment_runner(state: TrainingAgentState) -> TrainingAgentState:
         selected_model = s.get("selected_model", "supervised")
 
         if not train_ref or not val_ref:
-            print("[feature_experiment_runner] Missing train/val refs — skipping")
-            return {**s, "experiment_result": None, "feature_rankings": None, "experiment_grid_summary": None}
+            missing = []
+            if not train_ref:
+                missing.append("train")
+            if not val_ref:
+                missing.append("validation")
+            raise ValueError(
+                "feature_experiment_runner requires registered train and validation dataset refs "
+                f"(missing: {', '.join(missing)}). "
+                "Re-run label_split_definition after cleaning, or ensure the prior steps "
+                "completed successfully (check state.error)."
+            )
 
         if not feature_spec or not feature_spec.get("features"):
             print("[feature_experiment_runner] Empty feature spec — skipping")
@@ -726,12 +763,32 @@ def training_approval(state: TrainingAgentState) -> TrainingAgentState:
                 "current_step": "training_approval",
             }
 
+        if not unsupervised and target_column and target_column not in train_df.columns:
+            return {
+                **state,
+                "error": (
+                    f"Target column '{target_column}' is missing from training dataset "
+                    f"(ref={train_ref}). Label definition may reference a non-existent "
+                    "column, or feature engineering may have dropped it."
+                ),
+                "current_step": "training_approval",
+            }
+
         n_rows, n_features = len(train_df), len([c for c in train_df.columns if c != target_column]) if target_column else len(train_df.columns)
-        class_counts = train_df[target_column].value_counts().to_dict() if not unsupervised and target_column else {}
+        resolved_task_type = state.get("task_type")
+        if not isinstance(resolved_task_type, str) or not resolved_task_type:
+            resolved_task_type = "unsupervised" if unsupervised else _infer_task_type(
+                goal, selected_model
+            )
+        task_type = resolved_task_type
+        class_counts = (
+            train_df[target_column].value_counts().to_dict()
+            if task_type == "classification" and target_column
+            else {}
+        )
         total = sum(class_counts.values()) if class_counts else 0
         minority_ratio = (min(class_counts.values()) / total) if total > 0 else 0
         is_imbalanced = (minority_ratio < 0.3) if class_counts else False
-        task_type = "unsupervised" if unsupervised else _infer_task_type(goal, selected_model)
 
         features_list = [f.get("name") for f in feature_spec.get("features", [])][:20]
         imbalance_msg = (
@@ -884,6 +941,9 @@ def training(state: TrainingAgentState) -> TrainingAgentState:
         print(f"  Train: {train_ref}\n  Val: {val_ref}\n  Test: {test_ref}\n  Target: {target_column}")
 
         plan_for_agent = training_plan if training_plan else None
+        explicit_tt = s.get("task_type")
+        if not explicit_tt and isinstance(training_plan, dict):
+            explicit_tt = training_plan.get("task_type")
         result = _run_training(
             train_ref=train_ref, val_ref=val_ref, test_ref=test_ref,
             target_column=target_column, selected_model=selected_model,
@@ -891,6 +951,7 @@ def training(state: TrainingAgentState) -> TrainingAgentState:
             experiment_result=s.get("experiment_result"),
             feature_rankings=s.get("feature_rankings"),
             training_plan=plan_for_agent,
+            explicit_task_type=explicit_tt if isinstance(explicit_tt, str) else None,
         )
 
         if result.get("success"):
@@ -910,6 +971,7 @@ def training(state: TrainingAgentState) -> TrainingAgentState:
             **s,
             "model_weights_path": result.get("model_name"),
             "selected_model": best_model_type,
+            "error": result.get("error"),
             "training_metrics": {
                 "success": result.get("success"), "model_name": result.get("model_name"), "model_type": best_model_type,
                 "val_accuracy": result.get("val_accuracy"), "val_roc_auc": result.get("val_roc_auc"),
@@ -953,6 +1015,20 @@ def generate_report(state: TrainingAgentState) -> TrainingAgentState:
         raw_metrics = s.get("training_metrics")
         training_metrics = raw_metrics if isinstance(raw_metrics, dict) else {}
         label_def = _get_label_def(s)
+
+        if not training_metrics.get("success"):
+            return {
+                **s,
+                "error": s.get("error")
+                or "Cannot generate report because training did not succeed.",
+                "current_step": "generate_report",
+            }
+        if not training_metrics.get("model_name"):
+            return {
+                **s,
+                "error": "Cannot generate report because no trained model name is available.",
+                "current_step": "generate_report",
+            }
 
         report = {
             "generated_at": datetime.now().isoformat(),

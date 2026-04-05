@@ -175,6 +175,42 @@ def start_training(job_id: str, request_payload: dict[str, object]) -> None:
     }
 
 
+def ensure_training_job(
+    job_id: str,
+    request_payload: Optional[dict[str, object]] = None,
+) -> None:
+    """Ensure a ``training_jobs`` row exists for this id (graph/simple SSE use thread_id as id).
+
+    Idempotent: no-op if the row already exists. Required so ``run_dataset_links``
+    FK to ``training_jobs`` succeeds for LangGraph checkpoint thread ids.
+    """
+    request_payload = request_payload or {}
+    with get_db_session() as session:
+        if session.get(TrainingJob, job_id) is not None:
+            return
+        job = TrainingJob(
+            id=job_id,
+            status="pending",
+            progress=0,
+            goal=request_payload.get("goal"),
+            linked_datasets=request_payload.get("linked_datasets"),
+            model_preference=request_payload.get("model_preference"),
+        )
+        session.add(job)
+
+    if job_id not in training_jobs:
+        training_jobs[job_id] = {
+            "status": "pending",
+            "progress": 0,
+            "current_step": None,
+            "state": None,
+            "error": None,
+            "started_at": datetime.now(timezone.utc).isoformat(),
+            "completed_at": None,
+            **request_payload,
+        }
+
+
 def get_training_status(job_id: str) -> Optional[dict[str, object]]:
     # Check in-memory first (hot path for SSE polling)
     if job_id in training_jobs:
@@ -449,6 +485,8 @@ def save_run_dataset_links(job_id: str, agent_state: dict[str, object]) -> None:
 
     try:
         with get_db_session() as session:
+            if session.get(TrainingJob, job_id) is None:
+                return
             for ref, role in refs_to_link:
                 ds = session.query(Dataset).filter(Dataset.name == ref).first()
                 if ds is None:
