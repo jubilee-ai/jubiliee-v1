@@ -999,12 +999,6 @@ function TrainingConfigDetail({ agentState, audit }: { agentState: TrainingAgent
               <div className="text-sm font-medium">{String(classWeight)}</div>
             </div>
           ) : null}
-          {maxIter ? (
-            <div className="bg-blue-50 dark:bg-blue-950/30 rounded-lg px-3 py-2">
-              <div className="text-[11px] text-blue-600 dark:text-blue-400">Max Iterations</div>
-              <div className="text-sm font-medium">{String(maxIter)}</div>
-            </div>
-          ) : null}
         </div>
       ) : null}
 
@@ -1269,11 +1263,6 @@ function TrainingDetail({ agentState }: { agentState: TrainingAgentState }) {
       {iterations.length > 0 && (
         <div>
           <div className="text-sm font-medium mb-1">Training Iterations ({iterations.length})</div>
-          <p className="text-xs text-muted-foreground mb-2">
-            {hasUnsupervised
-              ? "Best (val) ranks by silhouette / Davies-Bouldin (as logged)."
-              : "Best (val) ranks by validation metric (ROC-AUC first, then accuracy for classification; R² for regression)."}
-          </p>
           <div className="space-y-3">
             {displayedIterations.map((iter, i) => {
               const iterNum = iter.iteration ?? i + 1

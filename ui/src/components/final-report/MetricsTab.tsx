@@ -58,10 +58,6 @@ export function MetricsTab({ agentState }: MetricsTabProps) {
       </div>
 
       <Section title="Training Iterations">
-        <p className="text-xs text-muted-foreground -mt-2 mb-3">
-          Best (val) picks the strongest validation score: ROC-AUC, then accuracy for classification;
-          R² for regression; silhouette / Davies-Bouldin for unsupervised (as logged).
-        </p>
         <div className="space-y-2">
           {metrics?.iterations && metrics.iterations.length > 0 ? (
             metrics.iterations.map((iter, i) => {

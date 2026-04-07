@@ -604,10 +604,6 @@ function TrainingStepContent({ agentState }: { agentState: TrainingAgentState })
           <div className="text-sm font-medium mb-1">
             All Training Iterations ({iterations.length})
           </div>
-          <p className="text-xs text-muted-foreground mb-2">
-            Best (val) uses validation ranking: ROC-AUC then accuracy (classification); R² (regression);
-            silhouette / Davies-Bouldin (unsupervised) as logged.
-          </p>
           <div className="space-y-2 max-h-[400px] overflow-y-auto">
             {iterations.map((iter, i) => (
               <TrainingIterationRow
