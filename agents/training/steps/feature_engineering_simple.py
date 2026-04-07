@@ -35,8 +35,7 @@ from analysis import (analyze_concentration, analyze_distribution,
                       run_eda_report, run_feature_diagnostics)
 from transformations.tool_utils import resolve_dataset
 
-from .feature_engineering import (AsOfConstraint,
-                                  FeatureDefinition,
+from .feature_engineering import (AsOfConstraint, FeatureDefinition,
                                   FeatureSpec, FormulaOp,
                                   _extract_columns_from_formula,
                                   validate_feature_spec)
@@ -432,7 +431,8 @@ def _compute_mutual_information(df, feature_cols: list[str], target_column: str,
     Compute mutual information between each feature and the target.
     Works for both numeric and categorical features, captures non-linear associations.
     """
-    from sklearn.feature_selection import mutual_info_classif, mutual_info_regression
+    from sklearn.feature_selection import (mutual_info_classif,
+                                           mutual_info_regression)
     from sklearn.preprocessing import LabelEncoder
 
     target = df[target_column].copy()

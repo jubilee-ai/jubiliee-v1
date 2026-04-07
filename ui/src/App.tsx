@@ -462,7 +462,9 @@ function AuthenticatedApp() {
       ? null
       : currentStep?.id === "generate_report"
         ? { ...currentStep, name: "Finishing up" }
-        : currentStep
+        : currentStep?.id === "training_approval" || currentStep?.id === "training"
+          ? { ...currentStep, name: "Training" }
+          : currentStep
   const trainingPhaseStepIds = ["training_approval", "training", "generate_report"] as const
   const isInTrainingPhase = realAgent.steps.some(
     (s) =>

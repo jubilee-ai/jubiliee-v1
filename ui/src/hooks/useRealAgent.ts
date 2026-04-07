@@ -726,7 +726,7 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
           ? (Number(summary.num_transformations) === 0 ? "No changes needed" : `${summary.num_transformations} transformations`)
           : ""
       case "label_split_definition": {
-        if (summary.split_strategy === "none") return "Full dataset · no train/val/test split"
+        if (summary.split_strategy === "none") return ""
         return summary.target_column ? `Target: ${summary.target_column}` : ""
       }
       case "feature_selection_specification":
@@ -1177,6 +1177,21 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
       // Model-family setup is internal; no user-facing chat line (headline/details are generic on the wire).
       if (nodeName === "select_model") {
         return
+      }
+
+      // Unsupervised label/split is graph bookkeeping only (no target or split); Cleaning already covered the dataset.
+      if (nodeName === "label_split_definition") {
+        const summ = summary as { split_strategy?: string } | undefined
+        const evState = event.state as Partial<TrainingAgentState> | undefined
+        const splitStrat =
+          summ?.split_strategy ??
+          evState?.label_definition?.split_strategy ??
+          agentStateRef.current.label_definition?.split_strategy
+        const selected =
+          evState?.selected_model ?? agentStateRef.current.selected_model
+        if (selected === "unsupervised" || splitStrat === "none") {
+          return
+        }
       }
 
       const headline =

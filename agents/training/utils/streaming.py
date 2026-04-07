@@ -271,7 +271,8 @@ def build_node_update(node_name: str, node_output: dict[str, Any]) -> dict[str, 
                 "label_definition": {"target": ld.get("target_column"), "strategy": ld.get("split_strategy"), "grain": ld.get("grain"), "forbidden_columns": ld.get("forbidden_columns", [])},
                 "datasets": {"train": node_output.get("train_dataset_ref"), "validation": node_output.get("val_dataset_ref"), "test": node_output.get("test_dataset_ref")},
             }
-            update["headline"] = f"**Unsupervised:** {split_phrase[0].upper() + split_phrase[1:] if split_phrase else ''}"
+            # No chat line in UI for unsupervised (frontend skips); keep headline minimal for logs/tools.
+            update["headline"] = "Data prep complete"
         else:
             col = ld.get("target_column") or "not set"
             update["details"] = {

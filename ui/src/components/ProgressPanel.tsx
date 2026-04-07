@@ -13,12 +13,45 @@ interface ProgressPanelProps {
   onStepClick?: (stepId: string) => void
 }
 
-const STEP_GROUPS: Array<{ label: string; ids: string[] }> = [
+const STEP_GROUPS: Array<{ label: string; ids: string[]; mergeTraining?: boolean }> = [
   { label: "Setup", ids: ["data_collection"] },
   { label: "Preparation", ids: ["cleaning", "label_split_definition"] },
   { label: "Features", ids: ["feature_specification_and_engineering", "feature_selection_specification", "feature_engineering_executor"] },
-  { label: "Training", ids: ["training_approval", "training"] },
+  /** One checklist row: plan approval + model training share a single "Training" label */
+  { label: "Training", ids: ["training_approval", "training"], mergeTraining: true },
 ]
+
+function mergeTrainingSteps(
+  approval: StepInfo | undefined,
+  training: StepInfo | undefined,
+): StepInfo | null {
+  if (!approval && !training) return null
+  const a = approval
+  const t = training
+  const status: StepInfo["status"] = (() => {
+    if (!t && a) return a.status
+    if (!a && t) return t.status
+    if (!a || !t) return "pending"
+    if (t.status === "completed") return "completed"
+    if (t.status === "error" || a.status === "error") return "error"
+    if (t.status === "stale" || a.status === "stale") return "stale"
+    if (a.status === "awaiting_confirmation") return "awaiting_confirmation"
+    if (t.status === "running" || a.status === "running") return "running"
+    if (a.status === "completed" && (t.status === "pending" || t.status === "skipped")) return "pending"
+    if (a.status === "pending") return "pending"
+    return t.status
+  })()
+  const detailId =
+    a && t && (a.status === "completed" || a.status === "skipped") ? t.id : a?.id ?? t?.id ?? "training"
+  const base = (a && t && (a.status === "completed" || a.status === "skipped") ? t : a) ?? t ?? a!
+  return {
+    ...base,
+    id: detailId,
+    name: "Training",
+    runCount: Math.max(a?.runCount ?? 0, t?.runCount ?? 0),
+    status,
+  }
+}
 
 export function ProgressPanel({
   steps,
@@ -63,6 +96,34 @@ export function ProgressPanel({
       <ScrollArea className="flex-1">
         <div className="p-3">
           {STEP_GROUPS.map((group, gi) => {
+            if (group.mergeTraining) {
+              const merged = mergeTrainingSteps(
+                steps.find((s) => s.id === "training_approval"),
+                steps.find((s) => s.id === "training"),
+              )
+              if (!merged) return null
+              const active =
+                merged.id === currentStepId ||
+                currentStepId === "training_approval" ||
+                currentStepId === "training" ||
+                merged.status === "awaiting_confirmation"
+              return (
+                <div key={group.label} className={gi > 0 ? "mt-3" : ""}>
+                  <div className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground/60 px-2.5 mb-1">
+                    {group.label}
+                  </div>
+                  <div className="space-y-0.5">
+                    <StepNode
+                      key="training_merged"
+                      step={merged}
+                      isActive={active}
+                      onSelect={() => onStepClick?.(merged.id)}
+                    />
+                  </div>
+                </div>
+              )
+            }
+
             const groupSteps = group.ids
               .map((id) => steps.find((s) => s.id === id))
               .filter(Boolean) as StepInfo[]

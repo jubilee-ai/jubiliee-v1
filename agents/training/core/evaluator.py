@@ -15,10 +15,9 @@ from dotenv import load_dotenv
 from langchain.chat_models import init_chat_model
 from pydantic import BaseModel, Field
 
-from agents.training.utils.graph_stream_hooks import (
-    GraphTokenStreamHandler,
-    emit_graph_stream,
-)
+from agents.training.utils.graph_stream_hooks import (GraphTokenStreamHandler,
+                                                      emit_graph_stream)
+
 from .planner import ALL_STEP_NAMES
 from .state import canonical_step_name
 

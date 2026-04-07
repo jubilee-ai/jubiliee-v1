@@ -70,6 +70,16 @@ export function StepDetailModal({ stepId, agentState, steps, onClose }: StepDeta
       case "cleaning":
         return <CleaningDetail agentState={agentState} audit={audit} />
       case "label_split_definition":
+        if (
+          agentState.selected_model === "unsupervised" ||
+          agentState.label_definition?.split_strategy === "none"
+        ) {
+          return (
+            <p className="text-sm text-muted-foreground">
+              No details for this step — dataset and preprocessing are under Cleaning.
+            </p>
+          )
+        }
         return <LabelSplitDetail agentState={agentState} audit={audit} />
       case "feature_selection_specification":
         return <FeatureSelectionDetail agentState={agentState} />
@@ -237,31 +247,9 @@ function CleaningDetail({ agentState }: { agentState: TrainingAgentState; audit?
   )
 }
 
-// Label & Split Detail
+// Label & Split Detail (supervised only — unsupervised is hidden from the checklist; see switch above)
 function LabelSplitDetail({ agentState }: { agentState: TrainingAgentState; audit?: Record<string, unknown> }) {
   const labelDef = agentState.label_definition
-  const unsupervised =
-    agentState.selected_model === "unsupervised" || labelDef?.split_strategy === "none"
-
-  if (unsupervised) {
-    const ref = agentState.train_dataset_ref ?? ""
-    const shortRef = ref ? (ref.split("/").pop() ?? ref) : "—"
-    return (
-      <div className="space-y-6">
-        <div className="bg-foreground/5 rounded-xl p-4">
-          <div className="text-xs text-muted-foreground mb-1">Unsupervised setup</div>
-          <p className="text-sm leading-relaxed text-foreground">
-            No outcome column or train/validation/test split. The full cleaned dataset is used for
-            clustering and other unsupervised training.
-          </p>
-        </div>
-        <div className="bg-muted/30 rounded-lg p-3">
-          <div className="text-xs text-muted-foreground mb-1">Dataset used for training</div>
-          <div className="text-sm font-mono break-all">{shortRef}</div>
-        </div>
-      </div>
-    )
-  }
 
   return (
     <div className="space-y-6">
@@ -952,7 +940,7 @@ function TrainingConfigDetail({ agentState, audit }: { agentState: TrainingAgent
   return (
     <div className="space-y-6">
       <p className="text-sm text-muted-foreground leading-relaxed -mt-1">
-        Estimator, objective, and parameters approved for the final training run.
+        Starting point from your approval—we iterate and keep the best model by validation.
       </p>
 
       {/* Model & Task header */}
@@ -978,7 +966,7 @@ function TrainingConfigDetail({ agentState, audit }: { agentState: TrainingAgent
         <div className="space-y-5">
           {scalars.length > 0 ? (
             <div>
-              <h3 className="text-sm font-semibold text-foreground mb-3">Model parameters</h3>
+              <h3 className="text-sm font-semibold text-foreground mb-3">Initial parameters</h3>
               <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
                 {scalars.map(([key, value]) => (
                   <div key={key} className="rounded-lg border border-border/40 bg-muted/20 px-3 py-2.5">
@@ -1141,14 +1129,14 @@ function TrainingDetail({ agentState }: { agentState: TrainingAgentState }) {
   return (
     <div className="space-y-6">
       {/* Status */}
-      <div className={`rounded-xl p-4 ${metrics?.success ? 'bg-success/8 dark:bg-success/12' : 'bg-red-50 dark:bg-red-950/30'}`}>
+      {/* <div className={`rounded-xl p-4 ${metrics?.success ? 'bg-success/8 dark:bg-success/12' : 'bg-red-50 dark:bg-red-950/30'}`}>
         <div className="flex items-center gap-2">
           <CheckCircle2 className={`h-5 w-5 ${metrics?.success ? 'text-success' : 'text-destructive'}`} />
           <span className={`font-medium ${metrics?.success ? 'text-foreground dark:text-success' : 'text-red-700 dark:text-red-300'}`}>
             {metrics?.success ? "Training Successful" : "Training Completed"}
           </span>
         </div>
-      </div>
+      </div> */}
 
       {/* Model Information */}
       <div>

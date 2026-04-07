@@ -8,22 +8,23 @@ from typing import Optional
 
 import pandas as pd
 from fastapi import HTTPException
+from utils import get_registered_dataset, register_dataset
 
 from agents.training.core.graph import ALL_STEP_NAMES
-from agents.training.utils.streaming import build_node_update, is_unsupervised_passthrough
+from agents.training.utils.streaming import (build_node_update,
+                                             is_unsupervised_passthrough)
+from backend.chat.events import (dataset_error, dataset_resolved, error_event,
+                                 format_sse, review_required, step_complete,
+                                 step_progress, step_skipped, stream_end,
+                                 stream_start)
+from backend.chat.events import token as token_event
+from backend.shared.database import get_db_session
+from backend.shared.models import Dataset as DatasetModel
 from backend.shared.serialization import serialize_state
 from backend.shared.settings import get_settings
 from backend.shared.state import TOOL_TO_STEP
 from backend.training import repository
 from backend.training.schemas import JobStatus, TrainRequest, TrainResponse
-from backend.shared.database import get_db_session
-from backend.shared.models import Dataset as DatasetModel
-from utils import get_registered_dataset, register_dataset
-from backend.chat.events import (
-    format_sse, stream_start, stream_end, step_complete, step_skipped,
-    step_progress, review_required, dataset_resolved, dataset_error, error_event,
-    token as token_event,
-)
 
 
 def load_and_register_dataset(file_path: str) -> Optional[str]:
@@ -101,7 +102,7 @@ def _try_register_from_db_row(row) -> Optional[str]:
     storage_key = props.get("storage_key")
     if storage_key:
         try:
-            from utils import _download_parquet_from_r2, _dataset_registry
+            from utils import _dataset_registry, _download_parquet_from_r2
             df = _download_parquet_from_r2(storage_key)
             if df is not None:
                 _dataset_registry[ref_name] = df
@@ -441,8 +442,9 @@ def generate_simple_sse_events(
     hitl: bool = True,
     thread_id: Optional[str] = None,
 ):
-    from agents.training.agent_simple import create_simple_training_agent
     from langgraph.checkpoint.memory import MemorySaver
+
+    from agents.training.agent_simple import create_simple_training_agent
 
     thread_id = thread_id or f"simple-{uuid.uuid4().hex[:8]}"
 
@@ -648,10 +650,12 @@ def generate_graph_sse_events(
     conversation: Optional[list[dict]] = None,
 ):
     """SSE generator using the agentic graph (planner + executor + evaluator)."""
-    from agents.training.core.conversation_context import normalize_conversation_turns
+    from langgraph.checkpoint.memory import MemorySaver
+
+    from agents.training.core.conversation_context import \
+        normalize_conversation_turns
     from agents.training.core.graph import create_training_agent
     from agents.training.core.state import create_initial_state
-    from langgraph.checkpoint.memory import MemorySaver
 
     thread_id = thread_id or f"graph-{uuid.uuid4().hex[:8]}"
     goal = (goal or "").strip() or "Training run"
@@ -1097,10 +1101,12 @@ def _run_experiment_graph_task_worker(
     conversation: Optional[list[dict]],
 ) -> None:
     """Run the planner graph with HITL auto-approved; persist progress on the experiment row."""
-    from agents.training.core.conversation_context import normalize_conversation_turns
+    from langgraph.checkpoint.memory import MemorySaver
+
+    from agents.training.core.conversation_context import \
+        normalize_conversation_turns
     from agents.training.core.graph import create_training_agent
     from agents.training.core.state import create_initial_state
-    from langgraph.checkpoint.memory import MemorySaver
 
     thread_id = f"graph-{uuid.uuid4().hex[:8]}"
     repository.merge_experiment_training_state(
