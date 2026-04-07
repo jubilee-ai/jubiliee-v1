@@ -2,8 +2,9 @@ import { useMemo } from "react"
 import type { TrainingAgentState, TaskPlanSummary } from "@/types/agent"
 import type { Dataset as ApiDataset } from "@/lib/api"
 import { resolveDatasetDisplayNames } from "@/lib/datasetDisplay"
-import { formatDisplayDateTime, formatNumber, formatPercent } from "@/lib/utils"
+import { formatDisplayDateTime, formatNumber } from "@/lib/utils"
 import { Section, MetricBox, InfoRow } from "./shared"
+import { getHeroMetrics, mergeTrainingMetricSources, pickNumber, resolveModelFamily } from "./metricDefs"
 
 interface SummaryTabProps {
   agentState: TrainingAgentState
@@ -19,14 +20,21 @@ export function SummaryTab({ agentState, datasets }: SummaryTabProps) {
     (t) => t.step === "feature_engineering_executor"
   ) as Record<string, unknown> | undefined
 
-  const bestIter = metrics?.best_iteration as Record<string, unknown> | undefined
-  const testR2 = metrics?.test_r2 ?? (bestIter?.test_r2 as number | undefined)
-  const testRmse = metrics?.test_rmse ?? (bestIter?.test_rmse as number | undefined)
-  const testMae = metrics?.test_mae ?? (bestIter?.test_mae as number | undefined)
-  const valR2 = metrics?.val_r2 ?? (bestIter?.val_r2 as number | undefined)
-
-  const hasClassificationMetrics = metrics?.test_accuracy != null || metrics?.test_roc_auc != null
-  const hasRegressionMetrics = testR2 != null || testRmse != null || testMae != null
+  const merged = mergeTrainingMetricSources(metrics)
+  const modelFamily = resolveModelFamily(metrics, agentState)
+  const hasPrimaryMetrics =
+    modelFamily === "classification"
+      ? pickNumber(merged, "test_accuracy") != null || pickNumber(merged, "test_roc_auc") != null
+      : modelFamily === "regression"
+        ? pickNumber(merged, "test_r2") != null ||
+          pickNumber(merged, "test_rmse") != null ||
+          pickNumber(merged, "test_mae") != null
+        : pickNumber(merged, "silhouette_score") != null ||
+          pickNumber(merged, "davies_bouldin") != null ||
+          pickNumber(merged, "inertia") != null ||
+          pickNumber(merged, "reconstruction_loss") != null
+  const heroMetrics = getHeroMetrics(metrics, agentState)
+  const valR2 = metrics?.val_r2 ?? pickNumber(merged, "val_r2")
   const modelTypeLabel = metrics?.model_type || agentState.selected_model || "N/A"
   const planDs = agentState.training_plan?.data_summary as { n_features?: number } | undefined
   const nFeaturesFromPlan =
@@ -37,6 +45,9 @@ export function SummaryTab({ agentState, datasets }: SummaryTabProps) {
       (featureStep?.features_created as unknown[])?.length ||
       0)
   const iterLabel = String(metrics?.num_iterations || 1)
+  const isUnsupervisedFlow =
+    agentState.selected_model === "unsupervised" ||
+    agentState.label_definition?.split_strategy === "none"
 
   const taskDatasetRecap = useMemo(() => {
     const tp = agentState.task_plan as TaskPlanSummary | null | undefined
@@ -49,39 +60,40 @@ export function SummaryTab({ agentState, datasets }: SummaryTabProps) {
     <div className="space-y-8">
       {/* Hero metrics — test headline scores + run shape; model type once (or feature count when model is already in slot 2) */}
       <div className="flex flex-wrap gap-4 [&>div]:flex-[1_1_11rem] [&>div]:min-w-0 [&>div]:max-w-full [&>div>div:first-child]:text-[11px] [&>div>div:last-child]:text-md">
-        {hasClassificationMetrics ? (
-          <>
-            <MetricBox label="Test Accuracy" value={formatPercent(metrics?.test_accuracy)} highlight />
-            <MetricBox label="Test ROC-AUC" value={formatNumber(metrics?.test_roc_auc, 3)} highlight />
-          </>
-        ) : hasRegressionMetrics ? (
-          <>
-            <MetricBox label="Test R²" value={formatNumber(testR2, 4)} highlight />
-            <MetricBox label="Test RMSE" value={formatNumber(testRmse, 2)} highlight />
-          </>
-        ) : (
-          <>
-            <MetricBox label="Status" value={metrics?.success ? "Success" : "Complete"} highlight />
-            <MetricBox label="Model" value={modelTypeLabel} />
-          </>
-        )}
+        {heroMetrics.map((h) => (
+          <MetricBox key={h.label} label={h.label} value={h.value} highlight={h.highlight} />
+        ))}
         <MetricBox label="Iterations" value={iterLabel} />
-        {hasClassificationMetrics || hasRegressionMetrics ? (
+        {hasPrimaryMetrics ? (
           <MetricBox label="Model" value={modelTypeLabel} />
         ) : (
           <MetricBox label="Features" value={featureCount > 0 ? String(featureCount) : "—"} />
         )}
       </div>
-      {(hasClassificationMetrics || hasRegressionMetrics) && metrics?.model_name ? (
+      {hasPrimaryMetrics && metrics?.model_name ? (
         <p className="text-xs text-muted-foreground -mt-4">
-          Test scores above are for the saved model{" "}
-          <span className="text-foreground font-medium">{metrics.model_name}</span>
-          {metrics.summary ? (
+          {modelFamily === "unsupervised" ? (
             <>
-              . The summary may mention other runs that were tried but not kept.
+              Metrics above describe the saved model{" "}
+              <span className="text-foreground font-medium">{metrics.model_name}</span>
+              {metrics.summary ? (
+                <> — the summary may mention other runs that were tried but not kept.</>
+              ) : (
+                "."
+              )}
             </>
           ) : (
-            "."
+            <>
+              Test scores above are for the saved model{" "}
+              <span className="text-foreground font-medium">{metrics.model_name}</span>
+              {metrics.summary ? (
+                <>
+                  . The summary may mention other runs that were tried but not kept.
+                </>
+              ) : (
+                "."
+              )}
+            </>
           )}
         </p>
       ) : null}
@@ -116,26 +128,45 @@ export function SummaryTab({ agentState, datasets }: SummaryTabProps) {
         <div className="space-y-3">
           <InfoRow label="Goal" value={agentState.goal} />
           <InfoRow label="Dataset" value={agentState.collected_dataset_ref} />
-          <InfoRow label="Target Column" value={agentState.label_definition?.target_column} />
-          <InfoRow label="Split Strategy" value={agentState.label_definition?.split_strategy} />
+          {!isUnsupervisedFlow ? (
+            <InfoRow label="Target Column" value={agentState.label_definition?.target_column || "—"} />
+          ) : (
+            <InfoRow label="Target Column" value="None (unsupervised)" />
+          )}
+          <InfoRow
+            label="Split Strategy"
+            value={
+              isUnsupervisedFlow
+                ? "None — full dataset for training"
+                : agentState.label_definition?.split_strategy
+            }
+          />
         </div>
       </Section>
 
       {/* Pointers to other tabs — avoids repeating hero numbers and Overview rows */}
       <Section title="Where to look next">
         <ul className="space-y-2.5 text-sm text-muted-foreground leading-relaxed">
-          {hasClassificationMetrics || hasRegressionMetrics ? (
+          {modelFamily === "classification" || modelFamily === "regression" ? (
             <li className="flex gap-2">
               <span className="text-muted-foreground/50 shrink-0">→</span>
               <span>
                 <span className="text-foreground font-medium">Metrics</span> has validation vs. test
                 scores and each training iteration.
-                {hasRegressionMetrics && valR2 != null && (
+                {modelFamily === "regression" && valR2 != null && (
                   <> Validation R² there: {formatNumber(valR2, 4)}.</>
                 )}
-                {hasClassificationMetrics && metrics?.val_roc_auc != null && (
+                {modelFamily === "classification" && metrics?.val_roc_auc != null && (
                   <> Validation ROC-AUC there: {formatNumber(metrics.val_roc_auc, 3)}.</>
                 )}
+              </span>
+            </li>
+          ) : modelFamily === "unsupervised" ? (
+            <li className="flex gap-2">
+              <span className="text-muted-foreground/50 shrink-0">→</span>
+              <span>
+                <span className="text-foreground font-medium">Metrics</span> lists clustering /
+                unsupervised scores (silhouette, Davies-Bouldin, inertia, etc.) and each iteration.
               </span>
             </li>
           ) : (

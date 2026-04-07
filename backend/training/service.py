@@ -10,7 +10,7 @@ import pandas as pd
 from fastapi import HTTPException
 
 from agents.training.core.graph import ALL_STEP_NAMES
-from agents.training.utils.streaming import build_node_update
+from agents.training.utils.streaming import build_node_update, is_unsupervised_passthrough
 from backend.shared.serialization import serialize_state
 from backend.shared.settings import get_settings
 from backend.shared.state import TOOL_TO_STEP
@@ -391,16 +391,33 @@ def _iter_graph_sse_lines(agent, config: dict, thread_id: str, stream_input: obj
                     continue
                 emitted_steps.add(step_key)
                 store["emitted_steps"] = emitted_steps
-                update = build_node_update(node_name, raw)
-                update["type"] = "step.complete"
-                update["thread_id"] = thread_id
-                update["stream_step_key"] = step_key
-                yield format_sse(serialize_state(update), experiment_id)
+
+                if is_unsupervised_passthrough(node_name, raw):
+                    emitted_skipped_steps.add(node_name)
+                    store["emitted_skipped_steps"] = emitted_skipped_steps
+                    yield format_sse(step_skipped(
+                        node=node_name,
+                        headline="Skipped — unsupervised models use cleaned data directly",
+                    ), experiment_id)
+                else:
+                    update = build_node_update(node_name, raw)
+                    update["type"] = "step.complete"
+                    update["thread_id"] = thread_id
+                    update["stream_step_key"] = step_key
+                    yield format_sse(serialize_state(update), experiment_id)
             else:
                 update = build_node_update(node_name, raw)
-                update["type"] = "step.complete"
-                update["thread_id"] = thread_id
-                yield format_sse(serialize_state(update), experiment_id)
+                if is_unsupervised_passthrough(node_name, raw):
+                    emitted_skipped_steps.add(node_name)
+                    store["emitted_skipped_steps"] = emitted_skipped_steps
+                    yield format_sse(step_skipped(
+                        node=node_name,
+                        headline="Skipped — unsupervised models use cleaned data directly",
+                    ), experiment_id)
+                else:
+                    update["type"] = "step.complete"
+                    update["thread_id"] = thread_id
+                    yield format_sse(serialize_state(update), experiment_id)
                 if node_name == "planner":
                     skipped_list, skip_reason = _planner_skipped_info(raw)
                     for sid in skipped_list:

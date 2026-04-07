@@ -424,15 +424,14 @@ def create_simple_training_agent(
             df = get_registered_dataset(dataset_ref)
             if df is None:
                 return f"SKIP: Dataset not found: {dataset_ref}"
-            train_ref = f"{dataset_ref}_train"
-            register_dataset(train_ref, df)
+            train_ref = dataset_ref
             state.update({
                 "label_definition": {
                     "target_column": "",
                     "prediction_horizon": None,
                     "grain": "",
                     "as_of_cutoff": None,
-                    "split_strategy": "random",
+                    "split_strategy": "none",
                     "forbidden_columns": [],
                 },
                 "split_indices": None,
@@ -442,8 +441,8 @@ def create_simple_training_agent(
                 "current_step": "feature_specification_and_engineering",
             })
             _completed_steps.add("label_split_definition")
-            print(f"🏷️ label_split: unsupervised bypass — train={train_ref}", flush=True)
-            return f"Unsupervised flow: label/split skipped. Train: {train_ref}"
+            print(f"🏷️ label_split: unsupervised bypass — full dataset ref={train_ref}", flush=True)
+            return f"Unsupervised flow: no train/val/test split — using full cleaned dataset: {train_ref}"
 
         redo_fb = state.pop("_redo_feedback_label_split", None)
 

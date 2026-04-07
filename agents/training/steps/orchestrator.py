@@ -269,9 +269,13 @@ def label_split_definition(state: TrainingAgentState) -> TrainingAgentState:
                     "error": "Cannot run unsupervised split passthrough — cleaning must run first.",
                     "current_step": "cleaning",
                 }
-            split_ref = f"{dataset_ref}_train"
             df = get_registered_dataset(dataset_ref)
-            register_dataset(split_ref, df)
+            if df is None:
+                return {
+                    **s,
+                    "error": f"Cannot load cleaned dataset {dataset_ref} for unsupervised training.",
+                    "current_step": "cleaning",
+                }
             return {
                 **s,
                 "label_definition": {
@@ -279,11 +283,11 @@ def label_split_definition(state: TrainingAgentState) -> TrainingAgentState:
                     "prediction_horizon": None,
                     "grain": "",
                     "as_of_cutoff": None,
-                    "split_strategy": "random",
+                    "split_strategy": "none",
                     "forbidden_columns": [],
                 },
                 "split_indices": None,
-                "train_dataset_ref": split_ref,
+                "train_dataset_ref": dataset_ref,
                 "val_dataset_ref": None,
                 "test_dataset_ref": None,
                 "current_step": "feature_selection_specification",
@@ -366,10 +370,10 @@ def label_split_definition(state: TrainingAgentState) -> TrainingAgentState:
     def get_summary(r: TrainingAgentState) -> str:
         if _is_unsupervised(r):
             return (
-                "Unsupervised flow: skipped label/target definition.\n"
-                f"Train: {r.get('train_dataset_ref')}\n"
-                "Val: None\n"
-                "Test: None"
+                "Unsupervised flow: no target column or train/val/test split.\n"
+                f"Full cleaned dataset for training: {r.get('train_dataset_ref')}\n"
+                "Validation: N/A\n"
+                "Test: N/A"
             )
         ld = _get_label_def(r)
         return (
@@ -976,6 +980,8 @@ def training(state: TrainingAgentState) -> TrainingAgentState:
                 "test_accuracy": result.get("test_accuracy"), "test_roc_auc": result.get("test_roc_auc"),
                 "train_r2": result.get("train_r2"), "val_r2": result.get("val_r2"), "val_rmse": result.get("val_rmse"), "val_mae": result.get("val_mae"),
                 "test_r2": result.get("test_r2"), "test_rmse": result.get("test_rmse"), "test_mae": result.get("test_mae"),
+                "silhouette_score": result.get("silhouette_score"), "davies_bouldin": result.get("davies_bouldin"),
+                "inertia": result.get("inertia"), "reconstruction_loss": result.get("reconstruction_loss"),
                 "iterations": result.get("iterations", []), "num_iterations": result.get("num_iterations", 0),
                 "best_iteration": result.get("best_iteration"), "summary": result.get("summary"),
                 "feature_redo_requested": feature_redo_requested,
@@ -996,7 +1002,17 @@ def training(state: TrainingAgentState) -> TrainingAgentState:
     def get_summary(r: TrainingAgentState) -> str:
         metrics = r.get("training_metrics") or {}
         lines = [f"Training {'succeeded' if metrics.get('success') else 'failed'}", f"Model: {metrics.get('model_name', 'unknown')}"]
-        for key, label in [("val_accuracy", "Val Accuracy"), ("val_roc_auc", "Val ROC-AUC"), ("test_accuracy", "Test Accuracy"), ("val_r2", "Val R²"), ("test_r2", "Test R²")]:
+        for key, label in [
+            ("val_accuracy", "Val Accuracy"),
+            ("val_roc_auc", "Val ROC-AUC"),
+            ("test_accuracy", "Test Accuracy"),
+            ("val_r2", "Val R²"),
+            ("test_r2", "Test R²"),
+            ("silhouette_score", "Silhouette"),
+            ("davies_bouldin", "Davies-Bouldin"),
+            ("inertia", "Inertia"),
+            ("reconstruction_loss", "Reconstruction loss"),
+        ]:
             if metrics.get(key) is not None:
                 lines.append(f"{label}: {metrics.get(key):.4f}")
         if metrics.get("summary"):

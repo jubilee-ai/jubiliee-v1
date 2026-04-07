@@ -41,7 +41,7 @@ from utils import get_registered_dataset
 # TYPES
 # =============================================================================
 
-SplitStrategy = Literal["random", "time_based", "entity_based"]
+SplitStrategy = Literal["random", "time_based", "entity_based", "none"]
 
 
 class LabelDefinition:
@@ -398,7 +398,12 @@ def compute_split_indices(
     strategy = label_definition.get("split_strategy", "random")
     n = len(df)
     indices = np.arange(n)
-    
+
+    if strategy == "none":
+        raise ValueError(
+            "split_strategy 'none' is for unsupervised flows only — do not call compute_split_indices"
+        )
+
     if strategy == "random":
         train_idx, temp_idx = train_test_split(
             indices,
@@ -528,6 +533,8 @@ def normalize_label_definition_for_df(df: pd.DataFrame, label_def: dict) -> dict
     """If the LLM chose time/entity splits that cannot run on ``df``, fall back to random."""
     out = dict(label_def)
     strat = out.get("split_strategy", "random")
+    if strat == "none":
+        return out
     if strat == "time_based":
         tcol = out.get("as_of_cutoff")
         if not tcol or tcol not in df.columns:

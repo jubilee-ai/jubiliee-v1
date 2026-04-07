@@ -84,6 +84,17 @@ function createInitialSteps(): StepInfo[] {
 
 const STEP_ORDER_IDS = STEP_DEFINITIONS.map((s) => s.id)
 
+/** Label & Split step copy: supervised needs target + splits; unsupervised uses full cleaned data only */
+function labelSplitStepDescription(
+  selectedModel: string | null | undefined,
+  splitStrategy: string | null | undefined,
+): string {
+  if (selectedModel === "unsupervised" || splitStrategy === "none") {
+    return "Prepare the full dataset for unsupervised training (no target or split)"
+  }
+  return "Define target column and train/val/test splits"
+}
+
 /** Shown next to the loading indicator while a checklist step is active */
 const STEP_LOADING_HINTS: Record<string, string> = {
   data_collection: "Loading your dataset…",
@@ -627,6 +638,16 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
   }, [])
 
   useEffect(() => {
+    const desc = labelSplitStepDescription(
+      agentState.selected_model,
+      agentState.label_definition?.split_strategy ?? null,
+    )
+    setSteps((prev) =>
+      prev.map((s) => (s.id === "label_split_definition" ? { ...s, description: desc } : s)),
+    )
+  }, [agentState.selected_model, agentState.label_definition?.split_strategy])
+
+  useEffect(() => {
     if (!isRunning) {
       setRunningStepHint(null)
       setProgressPhaseHint(null)
@@ -656,7 +677,15 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
     }
     if (running) {
       const hintKey = running.id === "training_approval" ? "training" : running.id
-      setRunningStepHint(STEP_LOADING_HINTS[hintKey] ?? `Running ${running.name}…`)
+      let hint = STEP_LOADING_HINTS[hintKey] ?? `Running ${running.name}…`
+      if (
+        running.id === "label_split_definition" &&
+        (agentState.selected_model === "unsupervised" ||
+          agentState.label_definition?.split_strategy === "none")
+      ) {
+        hint = "Preparing full dataset for unsupervised training…"
+      }
+      setRunningStepHint(hint)
       return
     }
     if (steps.length > 0 && steps.every((s) => s.status === "pending")) {
@@ -664,7 +693,14 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
       return
     }
     setRunningStepHint(null)
-  }, [isRunning, steps, confirmationRequest, progressPhaseHint])
+  }, [
+    isRunning,
+    steps,
+    confirmationRequest,
+    progressPhaseHint,
+    agentState.selected_model,
+    agentState.label_definition?.split_strategy,
+  ])
 
   // Derive a brief subtitle for a completed step
   const computeStepSubtitle = useCallback((nodeName: string, summary?: Record<string, unknown>): string => {
@@ -689,10 +725,10 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
         return summary.num_transformations != null
           ? (Number(summary.num_transformations) === 0 ? "No changes needed" : `${summary.num_transformations} transformations`)
           : ""
-      case "label_split_definition":
-        return summary.target_column
-          ? `Target: ${summary.target_column}`
-          : ""
+      case "label_split_definition": {
+        if (summary.split_strategy === "none") return "Full dataset · no train/val/test split"
+        return summary.target_column ? `Target: ${summary.target_column}` : ""
+      }
       case "feature_selection_specification":
         return summary.num_features
           ? `${summary.num_features} features`
@@ -1192,7 +1228,16 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
       }
       emittedStepsRef.current.add(`skipped:${nodeName}`)
 
-      setSteps((prev) => applyNodeSkippedToSteps(prev, nodeName))
+      setSteps((prev) => {
+        let next = applyNodeSkippedToSteps(prev, nodeName)
+        if (
+          nodeName === "feature_selection_specification" ||
+          nodeName === "feature_engineering_executor"
+        ) {
+          next = applyNodeSkippedToSteps(next, "feature_specification_and_engineering")
+        }
+        return next
+      })
       const skipSubtitle = subtitleFromSkippedEvent(event.summary)
       if (skipSubtitle) {
         setSteps((prev) =>
@@ -1231,7 +1276,7 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
 
       addMessage(
         "agent",
-        `**Pipeline finished.** ${recap}\n\nOpen the report for feature importance, comparisons, and next steps.`,
+        `**Pipeline finished.** ${recap}`,
         { showReportButton: true },
       )
       setTimeout(() => saveCurrentMessages(), 100)

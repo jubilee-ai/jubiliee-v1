@@ -26,6 +26,10 @@ def _get_or_empty(d: dict, key: str) -> dict:
 def _humanize_split_strategy(strategy: object) -> str:
     """Short, user-facing copy for train/val/test strategy (not raw enum tokens)."""
     raw = str(strategy).strip().lower() if strategy not in (None, "") else "random"
+    if raw == "none":
+        return (
+            "no train/validation/test split — all rows are used for unsupervised training"
+        )
     if raw == "random":
         return (
             "rows are shuffled, then split into train, validation, and test "
@@ -129,6 +133,29 @@ def extract_interrupt_info(interrupt_data: list) -> dict[str, Any]:
     return {**default, "summary": str(val)}
 
 
+_UNSUPERVISED_SKIP_NODES = frozenset({
+    "feature_selection_specification",
+    "feature_engineering_executor",
+    "feature_experiment_runner",
+    "feature_specification_and_engineering",
+})
+
+
+def is_unsupervised_passthrough(node_name: str, node_output: dict[str, Any]) -> bool:
+    """True when ``node_name`` is a feature step that was a no-op because the run is unsupervised."""
+    if node_name not in _UNSUPERVISED_SKIP_NODES:
+        return False
+    if node_output.get("selected_model") == "unsupervised":
+        return True
+    ld = node_output.get("label_definition")
+    if isinstance(ld, dict) and ld.get("split_strategy") == "none":
+        return True
+    fpm = node_output.get("feature_pipeline_mode")
+    if fpm == "passthrough":
+        return True
+    return False
+
+
 def build_node_update(node_name: str, node_output: dict[str, Any]) -> dict[str, Any]:
     """Build summary/details for a node output."""
     update = {"type": "node_complete", "node": node_name, "progress": calculate_progress(node_name), "state": node_output}
@@ -230,17 +257,32 @@ def build_node_update(node_name: str, node_output: dict[str, Any]) -> dict[str, 
             "target_column": ld.get("target_column"), "split_strategy": ld.get("split_strategy"), "grain": ld.get("grain"),
             "train_ref": node_output.get("train_dataset_ref"), "val_ref": node_output.get("val_dataset_ref"), "test_ref": node_output.get("test_dataset_ref"),
         }
-        col = ld.get("target_column") or "not set"
-        split_phrase = _humanize_split_strategy(ld.get("split_strategy"))
-        update["details"] = {
-            "title": "Label & Split Definition Complete",
-            "description": (
-                f"The outcome column is **{col}**. {split_phrase[0].upper() + split_phrase[1:] if split_phrase else ''}"
-            ),
-            "label_definition": {"target": ld.get("target_column"), "strategy": ld.get("split_strategy"), "grain": ld.get("grain"), "forbidden_columns": ld.get("forbidden_columns", [])},
-            "datasets": {"train": node_output.get("train_dataset_ref"), "validation": node_output.get("val_dataset_ref"), "test": node_output.get("test_dataset_ref")},
-        }
-        update["headline"] = f"**Outcome column:** {col} · **Train/val/test:** {split_phrase}"
+        split_strat = ld.get("split_strategy")
+        unsupervised_split = split_strat == "none" or node_output.get("selected_model") == "unsupervised"
+        split_phrase = _humanize_split_strategy(split_strat)
+        if unsupervised_split:
+            short_train = str(node_output.get("train_dataset_ref") or "").rsplit("/", 1)[-1] or "cleaned data"
+            update["details"] = {
+                "title": "Data prep (unsupervised)",
+                "description": (
+                    "No outcome column or holdout split is needed for clustering and other unsupervised models. "
+                    f"**All rows** from the cleaned dataset (`{short_train}`) are used for training."
+                ),
+                "label_definition": {"target": ld.get("target_column"), "strategy": ld.get("split_strategy"), "grain": ld.get("grain"), "forbidden_columns": ld.get("forbidden_columns", [])},
+                "datasets": {"train": node_output.get("train_dataset_ref"), "validation": node_output.get("val_dataset_ref"), "test": node_output.get("test_dataset_ref")},
+            }
+            update["headline"] = f"**Unsupervised:** {split_phrase[0].upper() + split_phrase[1:] if split_phrase else ''}"
+        else:
+            col = ld.get("target_column") or "not set"
+            update["details"] = {
+                "title": "Label & Split Definition Complete",
+                "description": (
+                    f"The outcome column is **{col}**. {split_phrase[0].upper() + split_phrase[1:] if split_phrase else ''}"
+                ),
+                "label_definition": {"target": ld.get("target_column"), "strategy": ld.get("split_strategy"), "grain": ld.get("grain"), "forbidden_columns": ld.get("forbidden_columns", [])},
+                "datasets": {"train": node_output.get("train_dataset_ref"), "validation": node_output.get("val_dataset_ref"), "test": node_output.get("test_dataset_ref")},
+            }
+            update["headline"] = f"**Outcome column:** {col} · **Train/val/test:** {split_phrase}"
 
     elif node_name == "feature_selection_specification":
         fs = _get_or_empty(node_output, "feature_spec")

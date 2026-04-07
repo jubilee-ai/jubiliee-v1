@@ -1159,7 +1159,14 @@ def run_training_agent(
     if not model_name:
         model_name = f"{estimator_hint or skill_name}_{int(time.time())}"
 
-    feature_columns = [c for c in train_df.columns if c != target_column] if target_column else list(train_df.columns)
+    if target_column:
+        feature_columns = [c for c in train_df.columns if c != target_column]
+    else:
+        feature_columns = list(train_df.columns)
+    if task_type == "unsupervised":
+        no_dt = [c for c in feature_columns if not str(train_df[c].dtype).startswith("datetime")]
+        if no_dt:
+            feature_columns = no_dt
 
     print(f"[training_agent] Starting training...")
     print(f"  Skill: {skill_name} | Target: {target_column or '(none)'} | Task: {task_type}")

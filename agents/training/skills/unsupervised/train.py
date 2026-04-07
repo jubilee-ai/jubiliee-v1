@@ -41,6 +41,15 @@ from model_storage import generate_model_path, register_model
 from utils import get_registered_dataset
 
 
+def _datetime_cols_to_unix_seconds(X: pd.DataFrame) -> None:
+    """Datetime columns break SimpleImputer/StandardScaler; convert to float seconds."""
+    epoch = pd.Timestamp("1970-01-01", tz="UTC")
+    for c in X.columns:
+        if pd.api.types.is_datetime64_any_dtype(X[c]):
+            ts = pd.to_datetime(X[c], utc=True, errors="coerce")
+            X[c] = (ts - epoch) / pd.Timedelta(seconds=1)
+
+
 ESTIMATORS = {
     "KMeans": KMeans,
     "MiniBatchKMeans": MiniBatchKMeans,
@@ -160,6 +169,7 @@ def run(params: dict) -> str:
         return "TRAINING FAILED\nError: No usable feature columns found."
 
     X = df[feature_columns].copy()
+    _datetime_cols_to_unix_seconds(X)
     categorical_cols = params.get("categorical_columns") or X.select_dtypes(
         include=["object", "category"]
     ).columns.tolist()

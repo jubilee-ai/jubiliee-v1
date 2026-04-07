@@ -6,6 +6,9 @@ import { X, CheckCircle2, AlertTriangle } from "lucide-react"
 import { formatCleaningTransformationParts } from "@/lib/cleaningTransformDisplay"
 import { TRACE_EXCLUDE_IDS } from "@/lib/trainingSteps"
 import { formatNumber, formatPercent } from "@/lib/utils"
+import { getHeroMetrics, getValidationTestRows } from "@/components/final-report/metricDefs"
+import { mergeTrainingMetricSources, pickNumber, resolveModelFamily } from "@/components/final-report/metricModelFamily"
+import { getIterationMetrics } from "@/components/final-report/utils"
 
 interface StepDetailModalProps {
   stepId: string
@@ -39,7 +42,11 @@ export function StepDetailModal({ stepId, agentState, steps, onClose }: StepDeta
     switch (stepId) {
       case "data_collection": return "Data Collection"
       case "cleaning": return "Data Cleaning & Standardization"
-      case "label_split_definition": return "Label & Split Definition"
+      case "label_split_definition":
+        return agentState.selected_model === "unsupervised" ||
+          agentState.label_definition?.split_strategy === "none"
+          ? "Data prep (unsupervised)"
+          : "Label & Split Definition"
       case "feature_selection_specification": return "Feature Selection"
       case "feature_specification_and_engineering": return "Features (spec + build)"
       case "feature_engineering_executor": return "Feature Engineering"
@@ -128,13 +135,6 @@ export function StepDetailModal({ stepId, agentState, steps, onClose }: StepDeta
         {/* Content - scrollable */}
         <div className="flex-1 overflow-y-auto p-6 min-h-0">
           {renderContent()}
-        </div>
-
-        {/* Footer with action hint */}
-        <div className="flex-shrink-0 px-6 py-4 border-t bg-muted/30">
-          <p className="text-xs text-muted-foreground text-center">
-            Review the details above to decide if you should proceed or request changes.
-          </p>
         </div>
       </div>
     </div>
@@ -240,7 +240,29 @@ function CleaningDetail({ agentState }: { agentState: TrainingAgentState; audit?
 // Label & Split Detail
 function LabelSplitDetail({ agentState }: { agentState: TrainingAgentState; audit?: Record<string, unknown> }) {
   const labelDef = agentState.label_definition
-  
+  const unsupervised =
+    agentState.selected_model === "unsupervised" || labelDef?.split_strategy === "none"
+
+  if (unsupervised) {
+    const ref = agentState.train_dataset_ref ?? ""
+    const shortRef = ref ? (ref.split("/").pop() ?? ref) : "—"
+    return (
+      <div className="space-y-6">
+        <div className="bg-foreground/5 rounded-xl p-4">
+          <div className="text-xs text-muted-foreground mb-1">Unsupervised setup</div>
+          <p className="text-sm leading-relaxed text-foreground">
+            No outcome column or train/validation/test split. The full cleaned dataset is used for
+            clustering and other unsupervised training.
+          </p>
+        </div>
+        <div className="bg-muted/30 rounded-lg p-3">
+          <div className="text-xs text-muted-foreground mb-1">Dataset used for training</div>
+          <div className="text-sm font-mono break-all">{shortRef}</div>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="space-y-6">
       {/* Target Column */}
@@ -1062,9 +1084,48 @@ function TrainingDetail({ agentState }: { agentState: TrainingAgentState }) {
   
   const metrics = agentState.training_metrics
   const iterations = metrics?.iterations || []
-  const hasClassification = metrics?.test_accuracy != null || metrics?.test_roc_auc != null
-  const hasRegression = metrics?.test_r2 != null || metrics?.val_r2 != null || iterations[0]?.test_r2 != null
-  
+  const family = resolveModelFamily(metrics, agentState)
+  const merged = mergeTrainingMetricSources(metrics)
+  const hasClassification = family === "classification"
+  const hasRegression = family === "regression"
+  const hasUnsupervised = family === "unsupervised"
+  const heroMetrics = getHeroMetrics(metrics, agentState)
+  const validationTest = getValidationTestRows(metrics, agentState)
+
+  const unsupervisedMetricRows = [
+    {
+      label: "Silhouette",
+      full: pickNumber(merged, "silhouette_score"),
+      second: pickNumber(merged, "val_silhouette_score"),
+      decimalsFull: 4,
+    },
+    {
+      label: "Davies-Bouldin",
+      full:
+        pickNumber(merged, "davies_bouldin") ?? pickNumber(merged, "davies_bouldin_score"),
+      second: pickNumber(merged, "val_davies_bouldin_score"),
+      decimalsFull: 4,
+    },
+    {
+      label: "Inertia",
+      full: pickNumber(merged, "inertia"),
+      second: undefined as number | undefined,
+      decimalsFull: 1,
+    },
+    {
+      label: "Reconstruction loss",
+      full: pickNumber(merged, "reconstruction_loss"),
+      second: undefined as number | undefined,
+      decimalsFull: 4,
+    },
+    {
+      label: "Clusters / groups",
+      full: pickNumber(merged, "n_clusters_or_groups"),
+      second: undefined as number | undefined,
+      decimalsFull: 0,
+    },
+  ].filter((row) => row.full != null || row.second != null)
+
   const bestIter = metrics?.best_iteration as Record<string, number | string | null | undefined> | undefined
   const testR2 = metrics?.test_r2 ?? (bestIter?.test_r2 as number | undefined)
   const testRmse = metrics?.test_rmse ?? (bestIter?.test_rmse as number | undefined)
@@ -1112,40 +1173,12 @@ function TrainingDetail({ agentState }: { agentState: TrainingAgentState }) {
 
       {/* Key Metrics - Hero */}
       <div className="grid grid-cols-2 gap-4">
-        {hasClassification ? (
-          <>
-            <div className="bg-foreground/5 rounded-xl p-4">
-              <div className="text-xs text-muted-foreground mb-1">Test Accuracy</div>
-              <div className="text-2xl font-semibold">{formatPercent(metrics?.test_accuracy)}</div>
-            </div>
-            <div className="bg-foreground/5 rounded-xl p-4">
-              <div className="text-xs text-muted-foreground mb-1">Test ROC-AUC</div>
-              <div className="text-2xl font-semibold">{formatNumber(metrics?.test_roc_auc, 3)}</div>
-            </div>
-          </>
-        ) : hasRegression ? (
-          <>
-            <div className="bg-foreground/5 rounded-xl p-4">
-              <div className="text-xs text-muted-foreground mb-1">Test R²</div>
-              <div className="text-2xl font-semibold">{formatNumber(testR2, 4)}</div>
-            </div>
-            <div className="bg-foreground/5 rounded-xl p-4">
-              <div className="text-xs text-muted-foreground mb-1">Test RMSE</div>
-              <div className="text-2xl font-semibold">{formatNumber(testRmse, 2)}</div>
-            </div>
-          </>
-        ) : (
-          <>
-            <div className="bg-foreground/5 rounded-xl p-4">
-              <div className="text-xs text-muted-foreground mb-1">Status</div>
-              <div className="text-2xl font-semibold">Complete</div>
-            </div>
-            <div className="bg-foreground/5 rounded-xl p-4">
-              <div className="text-xs text-muted-foreground mb-1">Iterations</div>
-              <div className="text-2xl font-semibold">{metrics?.num_iterations || 1}</div>
-            </div>
-          </>
-        )}
+        {heroMetrics.map((h) => (
+          <div key={h.label} className="bg-foreground/5 rounded-xl p-4">
+            <div className="text-xs text-muted-foreground mb-1">{h.label}</div>
+            <div className="text-2xl font-semibold">{h.value}</div>
+          </div>
+        ))}
       </div>
 
       {/* Full Metrics Table */}
@@ -1156,9 +1189,21 @@ function TrainingDetail({ agentState }: { agentState: TrainingAgentState }) {
             <thead className="bg-muted/50">
               <tr>
                 <th className="text-left py-2 px-3 font-medium">Metric</th>
-                <th className="text-right py-2 px-3 font-medium">Train</th>
-                <th className="text-right py-2 px-3 font-medium">Validation</th>
-                <th className="text-right py-2 px-3 font-medium">Test</th>
+                {hasUnsupervised ? (
+                  <>
+                    <th className="text-right py-2 px-3 font-medium">Full fit</th>
+                    <th className="text-right py-2 px-3 font-medium">
+                      {validationTest.right.title}
+                    </th>
+                    <th className="text-right py-2 px-3 font-medium text-muted-foreground">Test</th>
+                  </>
+                ) : (
+                  <>
+                    <th className="text-right py-2 px-3 font-medium">Train</th>
+                    <th className="text-right py-2 px-3 font-medium">Validation</th>
+                    <th className="text-right py-2 px-3 font-medium">Test</th>
+                  </>
+                )}
               </tr>
             </thead>
             <tbody>
@@ -1198,6 +1243,30 @@ function TrainingDetail({ agentState }: { agentState: TrainingAgentState }) {
                     <td className="text-right py-2 px-3 font-mono font-semibold">{formatNumber(testMae, 2)}</td>
                   </tr>
                 </>
+              ) : hasUnsupervised ? (
+                <>
+                  {unsupervisedMetricRows.length > 0 ? (
+                    unsupervisedMetricRows.map((row) => (
+                      <tr key={row.label} className="border-t border-border/50">
+                        <td className="py-2 px-3">{row.label}</td>
+                        <td className="text-right py-2 px-3 font-mono">
+                          {row.full != null ? formatNumber(row.full, row.decimalsFull) : "—"}
+                        </td>
+                        <td className="text-right py-2 px-3 font-mono font-semibold">
+                          {row.second != null ? formatNumber(row.second, 4) : "—"}
+                        </td>
+                        <td className="text-right py-2 px-3 font-mono text-muted-foreground">—</td>
+                      </tr>
+                    ))
+                  ) : (
+                    <tr className="border-t border-border/50">
+                      <td className="py-2 px-3 text-muted-foreground" colSpan={4}>
+                        No detailed metrics in state — open the training report Metrics tab if the run finished
+                        successfully.
+                      </td>
+                    </tr>
+                  )}
+                </>
               ) : (
                 <tr className="border-t border-border/50">
                   <td className="py-2 px-3 text-muted-foreground" colSpan={4}>No detailed metrics available</td>
@@ -1213,11 +1282,14 @@ function TrainingDetail({ agentState }: { agentState: TrainingAgentState }) {
         <div>
           <div className="text-sm font-medium mb-1">Training Iterations ({iterations.length})</div>
           <p className="text-xs text-muted-foreground mb-2">
-            Best (val) ranks by validation metric (ROC-AUC first, then accuracy for classification).
+            {hasUnsupervised
+              ? "Best (val) ranks by silhouette / Davies-Bouldin (as logged)."
+              : "Best (val) ranks by validation metric (ROC-AUC first, then accuracy for classification; R² for regression)."}
           </p>
           <div className="space-y-3">
             {displayedIterations.map((iter, i) => {
               const iterNum = iter.iteration ?? i + 1
+              const im = getIterationMetrics(iter)
               const bestIterName = bestIter?.model_name as string | undefined
               const isBest = bestIterName
                 ? iter.model_name === bestIterName
@@ -1235,15 +1307,19 @@ function TrainingDetail({ agentState }: { agentState: TrainingAgentState }) {
                         <Badge
                           variant="secondary"
                           className="text-xs"
-                          title="Highest validation ROC-AUC then accuracy (classification), or val R² (regression)"
+                          title={
+                            hasUnsupervised
+                              ? "Best iteration by silhouette / Davies-Bouldin (as logged)"
+                              : "Highest validation ROC-AUC then accuracy (classification), or val R² (regression)"
+                          }
                         >
                           Best (val)
                         </Badge>
                       )}
                       {iter.success === false && <Badge variant="destructive" className="text-xs">Failed</Badge>}
                     </div>
-                    {iter.tool && (
-                      <span className="text-xs text-muted-foreground font-mono">{iter.tool}</span>
+                    {im.tool && (
+                      <span className="text-xs text-muted-foreground font-mono">{im.tool}</span>
                     )}
                   </div>
                   
@@ -1270,7 +1346,7 @@ function TrainingDetail({ agentState }: { agentState: TrainingAgentState }) {
                           </div>
                         )}
                       </>
-                    ) : (
+                    ) : hasRegression ? (
                       <>
                         {iter.val_r2 != null && (
                           <div>
@@ -1297,7 +1373,34 @@ function TrainingDetail({ agentState }: { agentState: TrainingAgentState }) {
                           </div>
                         )}
                       </>
-                    )}
+                    ) : hasUnsupervised ? (
+                      <>
+                        {im.silhouette_score != null && (
+                          <div>
+                            <span className="text-muted-foreground">Silhouette:</span>{" "}
+                            <span className="font-medium">{im.silhouette_score.toFixed(4)}</span>
+                          </div>
+                        )}
+                        {im.davies_bouldin != null && (
+                          <div>
+                            <span className="text-muted-foreground">Davies-Bouldin:</span>{" "}
+                            <span className="font-medium">{im.davies_bouldin.toFixed(4)}</span>
+                          </div>
+                        )}
+                        {im.inertia != null && (
+                          <div>
+                            <span className="text-muted-foreground">Inertia:</span>{" "}
+                            <span className="font-medium">{im.inertia.toFixed(1)}</span>
+                          </div>
+                        )}
+                        {im.reconstruction_loss != null && (
+                          <div>
+                            <span className="text-muted-foreground">Recon. loss:</span>{" "}
+                            <span className="font-medium">{im.reconstruction_loss.toFixed(4)}</span>
+                          </div>
+                        )}
+                      </>
+                    ) : null}
                   </div>
                   
                   {/* Hyperparameters */}
