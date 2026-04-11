@@ -101,8 +101,15 @@ export const STEP_PATTERNS: Array<{ stepId: string; patterns: RegExp[] }> = [
       /data collection complete/i,
       /dataset loaded/i,
       /loading dataset/i,
+      // "Loaded dataset **name**" (no row stats) — word order differs from "dataset loaded"
+      /loaded dataset/i,
       /loaded.*rows/i,
+      // Comma-formatted counts: "**1,234 rows** across **10 columns**"
+      /[\d,]+\s*rows[\s\S]{0,120}columns/i,
       /\d+\s+rows.*\d+\s+columns/i,
+      // Short confirmations from the wire
+      /^dataset ready\.?$/i,
+      /^dataset collected\.?$/i,
     ]
   },
 ]
@@ -113,7 +120,7 @@ export const STEP_PATTERNS: Array<{ stepId: string; patterns: RegExp[] }> = [
  * @returns The step ID if detected, null otherwise
  */
 export function detectStepFromMessage(content: string): string | null {
-  // Don't attach "See details" to report / finish messages (View Report is enough).
+  // Don't attach the step CTA ("See details" / "See preview") to report / finish messages (View Report is enough).
   if (
     /view report/i.test(content) ||
     /click.*report/i.test(content) ||

@@ -102,9 +102,15 @@ ALL_STEP_NAMES: set[str] = {
 # ---------------------------------------------------------------------------
 
 PLANNER_PROMPT = """\
-You are an expert ML pipeline planner.  Given the user's training goal and any
-available context, produce an execution plan: an ordered list of pipeline steps
-to run, along with steps to skip and why.
+You are an expert ML pipeline planner. Your job is to turn the user's **stated purpose**
+into a runnable pipeline—not to invent a different problem.
+
+**Goal first:** Infer from the dialogue, the latest instruction, and dataset names what the user is
+actually trying to accomplish (e.g. support underwriting decisions, flag high-risk loans). The
+`strategy` field must restate that purpose in plain language, not generic boilerplate like
+"supervised model with cleaning and features." Technical pipeline steps are implementation; the
+strategy is the **why**. (You cannot ask questions in this step—earlier chat should have clarified;
+if the dialogue is still thin, write the clearest honest `strategy` you can from what they said.)
 
 ## Available Steps
 
@@ -166,9 +172,9 @@ to run, along with steps to skip and why.
 
 Produce a Plan JSON object. **Synthesize** pipeline steps from the full dialogue above
 (negotiated constraints, model preferences, dataset hints, task type), not from the
-latest instruction alone. The `strategy` field should briefly restate what you are
-building and why, as agreed in the chat. Be decisive — include only steps genuinely
-needed for this request.
+latest instruction alone. The `strategy` field must make the **user's goal** obvious to a
+non-engineer: what decision or outcome this model serves. Then be decisive on steps—include
+only what is genuinely needed for that goal; do not pad with jargon.
 
 ## Brevity (required — shown in the human approval card)
 
@@ -339,7 +345,7 @@ def planner_node(state: "TrainingAgentState") -> "TrainingAgentState":
             "message": "Planning: drafting execution steps…",
         })
         token_handler = GraphTokenStreamHandler(phase="planner")
-        llm = init_chat_model(model="gpt-5.4-mini", temperature=0, streaming=True)
+        llm = init_chat_model(model="gpt-5.4", temperature=0, streaming=True)
         structured_llm = llm.with_structured_output(Plan)
         plan: Plan = structured_llm.invoke(
             prompt, config={"callbacks": [token_handler]}

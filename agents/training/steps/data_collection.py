@@ -252,7 +252,7 @@ def run_data_collection(
     goal: str,
     selected_model: str | None = None,
     linked_datasets: list[str] | None = None,
-    model: str = "openai:gpt-5.4-mini",
+    model: str = "openai:gpt-5.4",
     max_iterations: int = 8,
 ) -> dict:
     """

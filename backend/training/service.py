@@ -22,6 +22,10 @@ from backend.shared.database import get_db_session
 from backend.shared.models import Dataset as DatasetModel
 from backend.shared.serialization import serialize_state
 from backend.shared.settings import get_settings
+from backend.shared.training_artifacts import (
+    prepare_experiment_training_state_for_persistence,
+    prepare_job_state_for_persistence,
+)
 from backend.shared.state import TOOL_TO_STEP
 from backend.training import repository
 from backend.training.schemas import JobStatus, TrainRequest, TrainResponse
@@ -171,49 +175,53 @@ def run_training_sync(
     model_pref: Optional[str],
 ) -> None:
     from agents.training.agent_simple import invoke_simple_training_agent
+    from utils import training_dataset_scope
 
-    try:
-        repository.update_training_status(
-            job_id, {"status": "running", "current_step": "data_collection"}
-        )
+    with training_dataset_scope(job_id):
+        try:
+            repository.update_training_status(
+                job_id, {"status": "running", "current_step": "data_collection"}
+            )
 
-        registered_refs = []
-        if linked_datasets:
-            for entry in linked_datasets:
-                ref = resolve_linked_dataset(entry)
-                if ref:
-                    registered_refs.append(ref)
+            registered_refs = []
+            if linked_datasets:
+                for entry in linked_datasets:
+                    ref = resolve_linked_dataset(entry)
+                    if ref:
+                        registered_refs.append(ref)
 
-        repository.update_training_status(job_id, {"current_step": "select_model"})
-        final_linked_datasets = registered_refs or None
+            repository.update_training_status(job_id, {"current_step": "select_model"})
+            final_linked_datasets = registered_refs or None
 
-        result = invoke_simple_training_agent(
-            goal=goal,
-            linked_datasets=final_linked_datasets,
-            user_model_preference=model_pref,
-        )
+            result = invoke_simple_training_agent(
+                goal=goal,
+                linked_datasets=final_linked_datasets,
+                user_model_preference=model_pref,
+            )
 
-        repository.save_run_dataset_links(job_id, result)
-        repository.update_training_status(
-            job_id,
-            {
-                "status": "completed",
-                "progress": 100,
-                "current_step": "completed",
-                "state": serialize_state(result),
-                "completed_at": datetime.now().isoformat(),
-            },
-        )
-    except Exception as e:
-        repository.update_training_status(
-            job_id,
-            {
-                "status": "error",
-                "error": str(e),
-                "completed_at": datetime.now().isoformat(),
-            },
-        )
-        print(f"Training error for job {job_id}: {e}")
+            repository.save_run_dataset_links(job_id, result)
+            serialized = serialize_state(result)
+            stored_state = prepare_job_state_for_persistence(job_id, serialized)
+            repository.update_training_status(
+                job_id,
+                {
+                    "status": "completed",
+                    "progress": 100,
+                    "current_step": "completed",
+                    "state": stored_state,
+                    "completed_at": datetime.now().isoformat(),
+                },
+            )
+        except Exception as e:
+            repository.update_training_status(
+                job_id,
+                {
+                    "status": "error",
+                    "error": str(e),
+                    "completed_at": datetime.now().isoformat(),
+                },
+            )
+            print(f"Training error for job {job_id}: {e}")
 
 
 def _extract_simple_interrupt(interrupt_data: list, thread_id: str | None = None) -> dict:
@@ -797,8 +805,11 @@ def generate_graph_sse_events(
         pipeline_error = final_values.get("error") if final_values else None
         if experiment_id:
             serialized = serialize_state(final_values) if final_values else {}
+            merged_core = prepare_experiment_training_state_for_persistence(
+                experiment_id, serialized
+            )
             persisted_state = {
-                **serialized,
+                **merged_core,
                 "graph_thread_id": thread_id,
                 "task_step_events": step_events,
                 "task_current_node": step_events[-1]["node"] if step_events else None,
@@ -930,8 +941,11 @@ def generate_graph_resume_sse_events(
         if experiment_id:
             goal = str((final_values or {}).get("goal") or goal)
             serialized = serialize_state(final_values) if final_values else {}
+            merged_core = prepare_experiment_training_state_for_persistence(
+                experiment_id, serialized
+            )
             persisted_state = {
-                **serialized,
+                **merged_core,
                 "graph_thread_id": thread_id,
                 "task_step_events": step_events,
                 "task_current_node": step_events[-1]["node"] if step_events else None,
@@ -978,6 +992,7 @@ def _celery_available() -> bool:
 
 
 def start_training(request: TrainRequest) -> TrainResponse:
+    settings = get_settings()
     job_id = str(uuid.uuid4())
     repository.start_training(
         job_id,
@@ -988,7 +1003,28 @@ def start_training(request: TrainRequest) -> TrainResponse:
         },
     )
 
-    if _celery_available():
+    celery_ok = _celery_available()
+    if settings.training_require_celery_effective and not celery_ok:
+        repository.update_training_status(
+            job_id,
+            {
+                "status": "error",
+                "error": (
+                    "Training requires Redis and a Celery worker in this environment. "
+                    "Configure REDIS_URL and deploy a worker service."
+                ),
+                "completed_at": datetime.now().isoformat(),
+            },
+        )
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Training requires Redis and a Celery worker (production). "
+                "Set REDIS_URL and run celery -A backend.celery_app worker."
+            ),
+        )
+
+    if celery_ok:
         from backend.training.tasks import run_training_task
         run_training_task.delay(
             job_id=job_id,
@@ -1070,7 +1106,11 @@ def train_sync(request: TrainRequest) -> dict[str, object]:
         linked_datasets=registered_refs or None,
         user_model_preference=request.user_model_preference,
     )
-    return {"status": "completed", "state": serialize_state(result)}
+    sid = str(uuid.uuid4())
+    return {
+        "status": "completed",
+        "state": prepare_job_state_for_persistence(sid, serialize_state(result)),
+    }
 
 
 def cancel_training(job_id: str) -> dict[str, str]:
@@ -1101,12 +1141,7 @@ def _run_experiment_graph_task_worker(
     conversation: Optional[list[dict]],
 ) -> None:
     """Run the planner graph with HITL auto-approved; persist progress on the experiment row."""
-    from langgraph.checkpoint.memory import MemorySaver
-
-    from agents.training.core.conversation_context import \
-        normalize_conversation_turns
-    from agents.training.core.graph import create_training_agent
-    from agents.training.core.state import create_initial_state
+    from utils import training_dataset_scope
 
     thread_id = f"graph-{uuid.uuid4().hex[:8]}"
     repository.merge_experiment_training_state(
@@ -1130,6 +1165,33 @@ def _run_experiment_graph_task_worker(
             "model_preference": model_pref,
         },
     )
+
+    scope_id = f"exp-graph-{experiment_id}"
+    with training_dataset_scope(scope_id):
+        _run_experiment_graph_task_worker_body(
+            experiment_id,
+            goal,
+            linked_datasets,
+            model_pref,
+            conversation,
+            thread_id,
+        )
+
+
+def _run_experiment_graph_task_worker_body(
+    experiment_id: str,
+    goal: str,
+    linked_datasets: Optional[list[str]],
+    model_pref: Optional[str],
+    conversation: Optional[list[dict]],
+    thread_id: str,
+) -> None:
+    from langgraph.checkpoint.memory import MemorySaver
+
+    from agents.training.core.conversation_context import \
+        normalize_conversation_turns
+    from agents.training.core.graph import create_training_agent
+    from agents.training.core.state import create_initial_state
 
     try:
         registered_refs: list[str] = []
@@ -1230,9 +1292,12 @@ def _run_experiment_graph_task_worker(
                 traceback.print_exc()
 
         serialized = serialize_state(final_values) if final_values else {}
+        merged_core = prepare_experiment_training_state_for_persistence(
+            experiment_id, serialized
+        )
         pipeline_error = final_values.get("error") if final_values else None
         ts_complete = {
-            **serialized,
+            **merged_core,
             "task_status": "failed" if pipeline_error else "completed",
             "graph_thread_id": thread_id,
             "lab_mode": "task",
@@ -1282,6 +1347,23 @@ def start_experiment_async_training(
     linked: list[str] = []
     if isinstance(raw_ld, list):
         linked = [str(x) for x in raw_ld]
+
+    settings = get_settings()
+    if settings.training_require_celery_effective:
+        if not _celery_available():
+            raise RuntimeError(
+                "Async experiment training requires Redis and a Celery worker. "
+                "Configure REDIS_URL and deploy a worker service."
+            )
+        from backend.training.tasks import run_experiment_graph_task
+        run_experiment_graph_task.delay(
+            experiment_id=experiment_id,
+            goal=goal,
+            linked_datasets=linked,
+            model_pref=model_pref,
+            conversation=conversation,
+        )
+        return
 
     thread = threading.Thread(
         target=_run_experiment_graph_task_worker,

@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useMemo, forwardRef } from "react"
+import { useRef, useMemo, forwardRef } from "react"
 import type { Ref, MutableRefObject } from "react"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
@@ -9,9 +9,6 @@ import type { ChatMessage, ChatTaskPlanPayload, TaskPlanSummary, TrainingAgentSt
 import { FeatureAnalysisChatCard } from "@/components/chat/FeatureAnalysisChatCard"
 import { looksLikeLeakedPlanJson, stripLeakedPlanJson } from "@/lib/planDisplay"
 import { TaskPlanCard } from "@/components/TaskPlanCard"
-
-/** Long follow-up explanations from the model; keep readable without walls of text. */
-const MAX_AGENT_BODY = 380
 
 /** Pipeline steps whose chat line should include the EDA digest when `key_stats` is present. */
 const FEATURE_ANALYSIS_STEP_IDS = new Set([
@@ -79,7 +76,8 @@ interface MessageBubbleProps {
   isClickable?: boolean
   onStepClick?: () => void
   isRunning?: boolean
-  onApproveTrainingPlan?: (messageId: string, plan: TaskPlanSummary, refs: string[]) => void
+  onApproveTrainingPlanGuided?: (messageId: string, plan: TaskPlanSummary, refs: string[]) => void
+  onApproveTrainingPlanBackground?: (messageId: string, plan: TaskPlanSummary, refs: string[]) => void
   datasets?: ApiDataset[]
   /** Latest experiment state — used to render the training metrics card on the training step message. */
   agentState?: TrainingAgentState | null
@@ -103,17 +101,19 @@ export const MessageBubble = forwardRef<HTMLDivElement, MessageBubbleProps>(
       isClickable,
       onStepClick,
       isRunning,
-      onApproveTrainingPlan,
+      onApproveTrainingPlanGuided,
+      onApproveTrainingPlanBackground,
       datasets,
       agentState,
     },
     ref,
   ) {
-    const [isExpanded, setIsExpanded] = useState(false)
     const rootRef = useRef<HTMLDivElement | null>(null) as MutableRefObject<HTMLDivElement | null>
     const isUser = message.role === "user"
     const isSystem = message.role === "system"
     const effectiveStepId = message.stepId ?? stepId ?? null
+    const stepDetailsCtaLabel =
+      effectiveStepId === "data_collection" ? "See preview" : "See details"
     const showFeatureAnalysisCard =
       !isUser &&
       !isSystem &&
@@ -130,27 +130,6 @@ export const MessageBubble = forwardRef<HTMLDivElement, MessageBubbleProps>(
     const hasTaskPlan = Boolean(message.taskPlan)
     const sanitizedAgent = sanitizeAgentContent(message.content)
     const agentBodyForMarkdown = hasTaskPlan ? "" : sanitizedAgent.trim()
-    const shouldTruncateAgent = !hasTaskPlan && agentBodyForMarkdown.length > MAX_AGENT_BODY
-    const displayAgentBody =
-      shouldTruncateAgent && !isExpanded
-        ? `${agentBodyForMarkdown.slice(0, MAX_AGENT_BODY).trim()}…`
-        : agentBodyForMarkdown
-
-    useEffect(() => {
-      if (!isExpanded || !shouldTruncateAgent) return
-      const el = rootRef.current
-      if (!el) return
-      let inner = 0
-      const outer = requestAnimationFrame(() => {
-        inner = requestAnimationFrame(() => {
-          el.scrollIntoView({ behavior: "smooth", block: "end", inline: "nearest" })
-        })
-      })
-      return () => {
-        cancelAnimationFrame(outer)
-        cancelAnimationFrame(inner)
-      }
-    }, [isExpanded, shouldTruncateAgent])
 
     const userLinkedKeys = message.linkedDatasetKeys?.filter(Boolean) ?? []
     const datasetChipLabel = useMemo(() => {
@@ -261,39 +240,41 @@ export const MessageBubble = forwardRef<HTMLDivElement, MessageBubbleProps>(
             )
           ) : (
             <>
-              {hasTaskPlan ? null : displayAgentBody ? (
+              {hasTaskPlan ? null : agentBodyForMarkdown ? (
                 <div className="text-sm leading-relaxed prose prose-sm dark:prose-invert max-w-none prose-p:my-1 prose-p:leading-relaxed prose-headings:my-2 prose-headings:font-medium prose-ul:my-1 prose-ol:my-1 prose-li:my-0 prose-a:text-primary prose-a:no-underline hover:prose-a:underline prose-code:bg-primary/10 prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded-md prose-code:text-ui prose-code:font-normal prose-code:before:content-none prose-code:after:content-none prose-strong:font-semibold">
-                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{displayAgentBody}</ReactMarkdown>
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{agentBodyForMarkdown}</ReactMarkdown>
                 </div>
               ) : null}
               {showFeatureAnalysisCard && agentState ? <FeatureAnalysisChatCard agentState={agentState} /> : null}
-              {message.taskPlan && onApproveTrainingPlan && (
+              {message.taskPlan && onApproveTrainingPlanGuided && (
                 <TaskPlanCard
                   payload={message.taskPlan as ChatTaskPlanPayload}
                   datasets={datasets}
                   resolved={message.taskPlanResolved}
                   isRunning={isRunning}
                   disabled={isRunning || Boolean(message.taskPlanResolved)}
-                  onApproveStart={() =>
-                    onApproveTrainingPlan(message.id, message.taskPlan!.plan, message.taskPlan!.datasetRefs)
+                  onApproveGuided={() =>
+                    onApproveTrainingPlanGuided(
+                      message.id,
+                      message.taskPlan!.plan,
+                      message.taskPlan!.datasetRefs,
+                    )
+                  }
+                  onApproveBackground={
+                    onApproveTrainingPlanBackground
+                      ? () =>
+                          onApproveTrainingPlanBackground(
+                            message.id,
+                            message.taskPlan!.plan,
+                            message.taskPlan!.datasetRefs,
+                          )
+                      : undefined
                   }
                 />
               )}
             </>
           )}
 
-          {shouldTruncateAgent && (
-            <button
-              onClick={(e) => {
-                e.stopPropagation()
-                setIsExpanded(!isExpanded)
-              }}
-              className="mt-2 text-sm text-muted-foreground hover:text-foreground transition-colors font-medium"
-            >
-              {isExpanded ? "Show less" : "Show more"}
-            </button>
-          )}
-          
           {isClickable && onStepClick && (
             <button
               type="button"
@@ -303,7 +284,7 @@ export const MessageBubble = forwardRef<HTMLDivElement, MessageBubbleProps>(
               }}
               className="mt-3 inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
             >
-              See details
+              {stepDetailsCtaLabel}
               <ChevronRight className="h-3 w-3 group-hover:translate-x-0.5 transition-transform" />
             </button>
           )}

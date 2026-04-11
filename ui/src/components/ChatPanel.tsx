@@ -11,6 +11,7 @@ import type {
 import type { Dataset as ApiDataset } from "@/lib/api"
 import { AVAILABLE_DATASETS } from "@/lib/mockAgent"
 import { StepDetailModal } from "@/components/StepDetailModal"
+import { DatasetPreviewDialog } from "@/components/DatasetPreviewDialog"
 import { Settings2, Sparkles, BarChart3, Zap, FileText, Moon, Loader2 } from "lucide-react"
 
 import {
@@ -71,7 +72,10 @@ interface ChatPanelProps {
   hideComposer?: boolean
   /** Bridge UI while hands-off run is being registered after plan approval. */
   startingHandsOffTask?: boolean
-  onApproveTrainingPlan?: (messageId: string, plan: TaskPlanSummary, refs: string[]) => void
+  /** Start the interactive training graph in chat (default from plan card). */
+  onApproveTrainingPlanGuided?: (messageId: string, plan: TaskPlanSummary, refs: string[]) => void
+  /** Async background run (optional second action). */
+  onApproveTrainingPlanBackground?: (messageId: string, plan: TaskPlanSummary, refs: string[]) => void
   /** Opens from empty state + composer; submits a planning message geared toward background run */
   onSubmitBackgroundTask?: (payload: BackgroundTaskPayload) => void
 }
@@ -101,7 +105,8 @@ export const ChatPanel = forwardRef<ChatPanelRef, ChatPanelProps>(function ChatP
   runningStepHint,
   hideComposer,
   startingHandsOffTask = false,
-  onApproveTrainingPlan,
+  onApproveTrainingPlanGuided,
+  onApproveTrainingPlanBackground,
   onSubmitBackgroundTask,
 }, ref) {
   const availableDatasets = propDatasets && propDatasets.length > 0 
@@ -110,6 +115,7 @@ export const ChatPanel = forwardRef<ChatPanelRef, ChatPanelProps>(function ChatP
 
   const [draft, setDraft] = useState("")
   const [selectedStepId, setSelectedStepId] = useState<string | null>(null)
+  const [previewDatasetName, setPreviewDatasetName] = useState<string | null>(null)
   const [backgroundDialogOpen, setBackgroundDialogOpen] = useState(false)
   
   const messageRefs = useRef<Map<string, HTMLDivElement>>(new Map())
@@ -249,10 +255,20 @@ export const ChatPanel = forwardRef<ChatPanelRef, ChatPanelProps>(function ChatP
     return id
   }, [])
 
-  const openStepDetails = useCallback((stepId: string) => {
-    if (TRACE_EXCLUDE_IDS.has(stepId)) return
-    setSelectedStepId(stepId)
-  }, [])
+  const openStepDetails = useCallback(
+    (stepId: string) => {
+      if (TRACE_EXCLUDE_IDS.has(stepId)) return
+      if (stepId === "data_collection") {
+        const ref = agentState?.collected_dataset_ref?.trim()
+        if (ref) {
+          setPreviewDatasetName(ref)
+          return
+        }
+      }
+      setSelectedStepId(stepId)
+    },
+    [agentState?.collected_dataset_ref],
+  )
 
   const phaseMarkers = useMemo(() => {
     const markers = new Map<string, string>()
@@ -368,7 +384,8 @@ export const ChatPanel = forwardRef<ChatPanelRef, ChatPanelProps>(function ChatP
                     isClickable={isClickable}
                     onStepClick={isClickable ? () => openStepDetails(detectedStep) : undefined}
                     isRunning={isRunning}
-                    onApproveTrainingPlan={onApproveTrainingPlan}
+                    onApproveTrainingPlanGuided={onApproveTrainingPlanGuided}
+                    onApproveTrainingPlanBackground={onApproveTrainingPlanBackground}
                     datasets={availableDatasets}
                     agentState={agentState}
                     ref={setMessageRef(msg.id)}
@@ -439,6 +456,13 @@ export const ChatPanel = forwardRef<ChatPanelRef, ChatPanelProps>(function ChatP
           onSubmit={handleBackgroundDialogSubmit}
         />
       )}
+
+      <DatasetPreviewDialog
+        datasetName={previewDatasetName}
+        onOpenChange={(open) => {
+          if (!open) setPreviewDatasetName(null)
+        }}
+      />
 
       {selectedStepId && agentState && steps && (
         <StepDetailModal

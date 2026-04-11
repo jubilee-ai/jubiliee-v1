@@ -9,11 +9,12 @@ a singleton configured from Settings.
 from __future__ import annotations
 
 import hashlib
-import os
+import json
 import shutil
+import tempfile
 from functools import lru_cache
 from pathlib import Path
-from typing import Optional, Protocol
+from typing import Any, Optional, Protocol
 
 import boto3
 from botocore.config import Config as BotoConfig
@@ -24,6 +25,7 @@ from backend.shared.settings import get_settings
 
 class ArtifactStoreProtocol(Protocol):
     def upload(self, local_path: Path, key: str) -> str: ...
+    def upload_json(self, key: str, data: Any) -> str: ...
     def download(self, key: str, local_path: Path) -> Path: ...
     def exists(self, key: str) -> bool: ...
     def delete(self, key: str) -> None: ...
@@ -57,6 +59,17 @@ class R2ArtifactStore:
     def upload(self, local_path: Path, key: str) -> str:
         self._client.upload_file(str(local_path), self._bucket, key)
         return key
+
+    def upload_json(self, key: str, data: Any) -> str:
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False, encoding="utf-8"
+        ) as tmp:
+            json.dump(data, tmp, indent=2, default=str)
+            tmp_path = Path(tmp.name)
+        try:
+            return self.upload(tmp_path, key)
+        finally:
+            tmp_path.unlink(missing_ok=True)
 
     def download(self, key: str, local_path: Path) -> Path:
         local_path.parent.mkdir(parents=True, exist_ok=True)
@@ -99,6 +112,13 @@ class LocalArtifactStore:
         dest.parent.mkdir(parents=True, exist_ok=True)
         if local_path.resolve() != dest.resolve():
             shutil.copy2(local_path, dest)
+        return key
+
+    def upload_json(self, key: str, data: Any) -> str:
+        dest = self._resolve(key)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        with open(dest, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, default=str)
         return key
 
     def download(self, key: str, local_path: Path) -> Path:

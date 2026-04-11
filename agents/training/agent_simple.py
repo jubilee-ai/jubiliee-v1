@@ -59,7 +59,7 @@ class TrainingPlan(BaseModel):
         description="Class weighting strategy for imbalanced data. E.g. 'balanced', 'use CrossEntropyLoss weight param', or null.",
     )
     max_iterations: int = Field(
-        default=9,
+        default=4,
         description="Number of experiment iterations the training agent should run",
     )
     strategy_notes: str = Field(description="High-level training strategy and experiment plan")
@@ -249,7 +249,7 @@ def create_simple_training_agent(
             "feature_redo_requested", "feature_redo_recommendation",
             "feature_redo_reason",
         ],
-        "generate_report": ["report_path"],
+        "generate_report": ["report_path", "report_storage_key"],
     }
     # Logical dependency order for invalidation (includes split feature sub-steps).
     _INVALIDATION_ORDER = [
@@ -583,6 +583,7 @@ def create_simple_training_agent(
                 as_of_cutoff=label_def.get("as_of_cutoff"),
                 prediction_horizon=label_def.get("prediction_horizon"),
                 selected_model=state.get("selected_model"),
+                model=model,
             )
 
             feature_spec = result.get("feature_spec")
@@ -840,7 +841,7 @@ def create_simple_training_agent(
             "HistGradientBoostingClassifier": ("sklearn.ensemble", {}),
             "RandomForestClassifier": (
                 "sklearn.ensemble",
-                {"n_estimators": 200, "n_jobs": -1},
+                {"n_estimators": 200, "n_jobs": 1},
             ),
             "LogisticRegression": (
                 "sklearn.linear_model",
@@ -850,7 +851,7 @@ def create_simple_training_agent(
             "HistGradientBoostingRegressor": ("sklearn.ensemble", {}),
             "RandomForestRegressor": (
                 "sklearn.ensemble",
-                {"n_estimators": 200, "n_jobs": -1},
+                {"n_estimators": 200, "n_jobs": 1},
             ),
             "Ridge": ("sklearn.linear_model", {}),
             "Lasso": ("sklearn.linear_model", {"max_iter": 1000}),
@@ -917,8 +918,17 @@ def create_simple_training_agent(
             except Exception as e:
                 return {"name": name, "success": False, "error": str(e)}
 
+        def _max_parallel_eval() -> int:
+            try:
+                from backend.shared.settings import get_settings
+
+                return max(1, int(get_settings().MAX_PARALLEL_MODEL_EVAL))
+            except Exception:
+                return 1
+
         results: list[dict] = []
-        with ThreadPoolExecutor(max_workers=3) as pool:
+        mw = min(len(names), _max_parallel_eval())
+        with ThreadPoolExecutor(max_workers=mw) as pool:
             futures = {pool.submit(_train_one, n): n for n in names}
             for f in as_completed(futures):
                 results.append(f.result())
@@ -1039,7 +1049,7 @@ def create_simple_training_agent(
             f"{redo_section}"
         )
 
-        structured_llm = init_chat_model("openai:gpt-5.4").with_structured_output(
+        structured_llm = init_chat_model(model).with_structured_output(
             TrainingPlan, method="function_calling"
         )
         training_plan = structured_llm.invoke(prompt).model_dump()
@@ -1093,7 +1103,7 @@ def create_simple_training_agent(
 
         model_name = f"{selected_model}_{int(time.time())}"
         training_plan = state.get("training_plan") or {}
-        plan_max_iters = training_plan.get("max_iterations", 9 if selected_model == "neural_networks" else 7)
+        plan_max_iters = training_plan.get("max_iterations", 4)
         plan_for_agent = training_plan if isinstance(training_plan, dict) and training_plan else None
         tt = state.get("task_type")
         result = _run_training(
@@ -1108,7 +1118,9 @@ def create_simple_training_agent(
             experiment_result=state.get("experiment_result"),
             feature_rankings=state.get("feature_rankings"),
             training_plan=plan_for_agent,
+            prior_training_metrics=state.get("training_metrics"),
             explicit_task_type=tt if isinstance(tt, str) else None,
+            llm_model=model,
         )
 
         feature_redo_requested = result.get("feature_redo_requested", False)
@@ -1301,9 +1313,27 @@ def create_simple_training_agent(
         with open(report_path, "w") as f:
             json.dump(report, f, indent=2, default=str)
 
+        report_storage_key: Optional[str] = None
+        try:
+            from backend.shared.artifact_store import get_artifact_store
+
+            store = get_artifact_store()
+            safe_name = re.sub(r"[^\w\-.]", "_", str(metrics.get("model_name", "unknown")))
+            report_storage_key = store.upload_json(
+                f"reports/{safe_name}_report.json", report
+            )
+        except Exception as ex:
+            print(f"[generate_report] Object storage upload skipped: {ex}")
+
         state["report_path"] = str(report_path)
+        if report_storage_key:
+            state["report_storage_key"] = report_storage_key
         state["audit_trace"] = state.get("audit_trace", []) + [
-            {"step": "generate_report", "path": str(report_path)}
+            {
+                "step": "generate_report",
+                "path": str(report_path),
+                **({"storage_key": report_storage_key} if report_storage_key else {}),
+            }
         ]
         _completed_steps.add("generate_report")
         return f"Report saved to {report_path}"
@@ -1374,9 +1404,9 @@ def invoke_simple_training_agent(
     use_external_sources: bool = False,
 ):
     """Convenience function: create and invoke the simple training agent (no HITL)."""
-    agent, _state = create_simple_training_agent(
+    agent, state = create_simple_training_agent(
         goal, linked_datasets, user_model_preference, model, hitl=False,
         use_external_sources=use_external_sources,
     )
-    result = agent.invoke({"messages": [{"role": "user", "content": goal}]})
-    return result
+    agent.invoke({"messages": [{"role": "user", "content": goal}]})
+    return state

@@ -46,9 +46,9 @@ interface AppSidebarProps {
 }
 
 const navItems: { id: AppTab; label: string; icon: React.ReactNode }[] = [
-  { id: "experiment_lab", label: "Experiments", icon: <FlaskConical className="h-3.5 w-3.5 shrink-0 opacity-90" /> },
-  { id: "models", label: "Models", icon: <Box className="h-3.5 w-3.5 shrink-0 opacity-90" /> },
-  { id: "datasets", label: "Datasets", icon: <Database className="h-3.5 w-3.5 shrink-0 opacity-90" /> },
+  { id: "experiment_lab", label: "Experiments", icon: <FlaskConical className="h-4 w-4 shrink-0 opacity-90" /> },
+  { id: "models", label: "Models", icon: <Box className="h-4 w-4 shrink-0 opacity-90" /> },
+  { id: "datasets", label: "Datasets", icon: <Database className="h-4 w-4 shrink-0 opacity-90" /> },
   // { id: "settings", label: "Settings", icon: <Settings className="h-4 w-4" /> },
 ]
 
@@ -264,7 +264,7 @@ export function AppSidebar({
             key={item.id}
             onClick={() => onTabChange(item.id)}
             className={cn(
-              "flex items-center gap-2 px-2.5 py-1.5 rounded-md text-xs transition-colors",
+              "flex items-center gap-2 px-2.5 py-1.5 rounded-md text-sm transition-colors",
               activeTab === item.id
                 ? "text-foreground font-semibold bg-muted"
                 : "text-muted-foreground font-medium hover:bg-muted/50 hover:text-foreground"

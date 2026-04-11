@@ -15,6 +15,8 @@ import json
 import logging
 import os
 import re
+from contextlib import contextmanager
+from contextvars import ContextVar
 import tempfile
 import uuid
 from datetime import datetime, timezone
@@ -420,6 +422,39 @@ import threading as _threading
 _dataset_registry: dict = {}
 _registry_lock = _threading.Lock()
 
+# Job-scoped dataset retention (Celery / training tasks). When set, refs are tracked and removable.
+_training_dataset_scope_id: ContextVar[Optional[str]] = ContextVar(
+    "training_dataset_scope_id", default=None
+)
+_job_dataset_refs: dict[str, list[str]] = {}
+_job_refs_lock = _threading.Lock()
+
+
+@contextmanager
+def training_dataset_scope(job_id: str):
+    """Bind dataset registration to ``job_id`` for later cleanup via :func:`clear_training_job_datasets`."""
+    token = _training_dataset_scope_id.set(job_id)
+    with _job_refs_lock:
+        _job_dataset_refs[job_id] = []
+    try:
+        yield
+    finally:
+        clear_training_job_datasets(job_id)
+        _training_dataset_scope_id.reset(token)
+
+
+def clear_training_job_datasets(job_id: str) -> int:
+    """Remove datasets registered while ``job_id`` was active. Returns number of refs cleared."""
+    with _job_refs_lock:
+        refs = list(_job_dataset_refs.pop(job_id, []))
+    n = 0
+    with _registry_lock:
+        for ref in refs:
+            if ref in _dataset_registry:
+                del _dataset_registry[ref]
+                n += 1
+    return n
+
 
 def _sanitize_ref_for_sql(ref: str) -> str:
     """Convert a dataset ref to a valid SQL table name."""
@@ -464,6 +499,11 @@ def register_dataset(
     
     with _registry_lock:
         _dataset_registry[ref] = df
+
+    scope_id = _training_dataset_scope_id.get()
+    if scope_id:
+        with _job_refs_lock:
+            _job_dataset_refs.setdefault(scope_id, []).append(ref)
     
     storage_key = f"datasets/{source_type}/{ref}.parquet"
 

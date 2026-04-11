@@ -363,7 +363,17 @@ function AuthenticatedApp() {
     switchingTo,
   ])
 
-  const handleApproveTrainingPlan = useCallback(
+  /** From chat: keep the interactive training pipeline in this session (SSE graph). */
+  const handleApproveTrainingPlanGuided = useCallback(
+    (messageId: string, plan: TaskPlanSummary, refs: string[]) => {
+      realAgent.markTaskPlanResolved(messageId)
+      realAgent.startGuidedTrainingFromPlan(plan, refs)
+    },
+    [realAgent],
+  )
+
+  /** Optional: async run without tying the UI to live graph steps (lab_mode task). */
+  const handleApproveTrainingPlanBackground = useCallback(
     async (messageId: string, plan: TaskPlanSummary, refs: string[]) => {
       realAgent.markTaskPlanResolved(messageId)
       await realAgent.startHandsOffTrainingFromPlan(plan, refs)
@@ -556,7 +566,8 @@ function AuthenticatedApp() {
                     runningStepHint={realAgent.runningStepHint}
                     hideComposer={agent.agentState.lab_mode === "task"}
                     startingHandsOffTask={realAgent.startingHandsOffTask}
-                    onApproveTrainingPlan={handleApproveTrainingPlan}
+                    onApproveTrainingPlanGuided={handleApproveTrainingPlanGuided}
+                    onApproveTrainingPlanBackground={handleApproveTrainingPlanBackground}
                     onSubmitBackgroundTask={handleSubmitBackgroundTask}
                   />
                 </div>

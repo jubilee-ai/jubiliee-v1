@@ -54,7 +54,15 @@ def _build_training_context_message(ctx: dict) -> str:
         lines.append(f"  Iterations  : {ctx['num_iterations']}")
     if ctx.get("report_path"):
         lines.append(f"  Report      : {ctx['report_path']}")
-    lines.append("[END CONTEXT — answer the user's question using this information]")
+    if ctx.get("report_storage_key"):
+        lines.append(f"  Report key  : {ctx['report_storage_key']}")
+    lines.extend([
+        "  This is background context only.",
+        "  Do not assume the user's new message is fully answered by this prior run.",
+        "  If the new message is short or ambiguous (for example: 'train', 'again', 'run it'),",
+        "  ask a clarifying question about what they want to train, change, or do next.",
+    ])
+    lines.append("[END CONTEXT — use this as background while responding to the user's latest message]")
     return "\n".join(lines)
 
 
@@ -84,14 +92,102 @@ def _stable_tool_call_id(tc) -> str:
     return f"{name}:{hash(args_key)}"
 
 
+def _orchestrator_user_content(
+    message: str,
+    conversation: Optional[list[dict[str, Any]]],
+    context_block: str,
+) -> str:
+    """Single user blob so the model sees prior turns (fast-path search skips agent memory)."""
+    if not conversation or len(conversation) <= 1:
+        if context_block:
+            return f"{context_block}\n\nUser message: {message}"
+        return message
+    parts: list[str] = []
+    for t in conversation:
+        role = (t.get("role") or "").strip()
+        c = (t.get("content") or "").strip()
+        if not c:
+            continue
+        label = "User" if role == "user" else "Assistant"
+        parts.append(f"{label}: {c}")
+    transcript = "\n\n".join(parts)
+    hint = (
+        "\n\nReply to the last user message. If it is only a number, map it to the matching "
+        "dataset from the assistant's most recent numbered list; do not ask for the dataset again "
+        "if the user already chose."
+    )
+    if context_block:
+        return f"{context_block}\n\nChat so far:\n\n{transcript}{hint}"
+    return f"Chat so far:\n\n{transcript}{hint}"
+
+
+def _persist_chat_exchange(
+    experiment_id: Optional[str],
+    user_message: str,
+    agent_text: str,
+) -> None:
+    if not experiment_id:
+        return
+    try:
+        import time as _t
+
+        now = int(_t.time() * 1000)
+        existing = []
+        exp_data = training_repo.get_experiment(experiment_id)
+        if exp_data and exp_data.get("chat_history"):
+            existing = list(exp_data["chat_history"])
+        existing.append({"role": "user", "content": user_message, "timestamp": now - 1})
+        if agent_text.strip():
+            existing.append({"role": "agent", "content": agent_text, "timestamp": now})
+        training_repo.save_experiment_chat_history(experiment_id, existing)
+    except Exception:
+        pass
+
+
+def generate_direct_dataset_search_sse(
+    message: str,
+    experiment_id: Optional[str] = None,
+):
+    orchestrator_mod = repository.get_orchestrator_module()
+    tool_args = orchestrator_mod.build_dataset_search_args(message)
+    yield format_sse(stream_start(experiment_id), experiment_id)
+    yield format_sse(
+        tool_start(
+            "search_datasets",
+            tool_args,
+            headline="Running search_datasets...",
+            experiment_id=experiment_id,
+        ),
+        experiment_id,
+    )
+    try:
+        result = orchestrator_mod.search_datasets.invoke(tool_args)
+        yield format_sse(tool_end("search_datasets", result, experiment_id), experiment_id)
+        visible_reply = result
+        if result and not result.startswith("No datasets found"):
+            visible_reply += "\n\nReply with the dataset name or its number to continue (or **go** if that single match is what you want)."
+        yield format_sse(token_event(visible_reply, experiment_id), experiment_id)
+        _persist_chat_exchange(experiment_id, message, visible_reply)
+        yield format_sse(stream_end(experiment_id), experiment_id)
+    except Exception as exc:
+        yield format_sse(error_event(str(exc), experiment_id), experiment_id)
+
+
 def generate_chat_sse(
     thread_id: str,
     message: str,
     training_context: Optional[str] = None,
     experiment_id: Optional[str] = None,
+    conversation: Optional[list[dict[str, Any]]] = None,
 ):
     orchestrator_agent = repository.get_orchestrator_agent()
-    config = {"configurable": {"thread_id": thread_id}}
+    # Snapshot thread when sending full transcript so checkpoint state does not hide prior turns
+    # (e.g. fast-path dataset search never wrote to the agent graph).
+    _conv_len = len(conversation) if conversation else 0
+    effective_thread = (
+        f"{thread_id}-orch-{_conv_len}" if _conv_len > 1 else thread_id
+    )
+    config = {"configurable": {"thread_id": effective_thread}}
 
     context_block = training_context or ""
     if not context_block:
@@ -101,10 +197,7 @@ def generate_chat_sse(
         if latest_ctx:
             context_block = _build_training_context_message(latest_ctx)
 
-    if context_block:
-        augmented_message = f"{context_block}\n\nUser message: {message}"
-    else:
-        augmented_message = message
+    augmented_message = _orchestrator_user_content(message, conversation, context_block)
 
     agent_input = {"messages": [{"role": "user", "content": augmented_message}]}
     yield format_sse(stream_start(experiment_id), experiment_id)
@@ -217,22 +310,7 @@ def generate_chat_sse(
                         else:
                             yield format_sse(tool_end(name, snippet, experiment_id), experiment_id)
 
-        # Persist the exchange to the experiment's chat_history
-        if experiment_id and accumulated_response:
-            try:
-                import time as _t
-                now = int(_t.time() * 1000)
-                agent_text = "".join(accumulated_response)
-                existing = []
-                exp_data = training_repo.get_experiment(experiment_id)
-                if exp_data and exp_data.get("chat_history"):
-                    existing = list(exp_data["chat_history"])
-                existing.append({"role": "user", "content": message, "timestamp": now - 1})
-                if agent_text.strip():
-                    existing.append({"role": "agent", "content": agent_text, "timestamp": now})
-                training_repo.save_experiment_chat_history(experiment_id, existing)
-            except Exception:
-                pass
+        _persist_chat_exchange(experiment_id, message, "".join(accumulated_response))
 
         yield format_sse(stream_end(experiment_id), experiment_id)
     except Exception as exc:
@@ -343,6 +421,13 @@ def chat(request: ChatRequest) -> tuple[str, object]:
             conversation=request.conversation,
         )
 
+    orchestrator_mod = repository.get_orchestrator_module()
+    if orchestrator_mod.is_dataset_search_request(request.message):
+        return resolved_thread_id, generate_direct_dataset_search_sse(
+            request.message,
+            experiment_id=request.experiment_id,
+        )
+
     training_context = None
     ctx = training_repo.get_latest_training_context(experiment_id=request.experiment_id)
     if ctx:
@@ -353,4 +438,5 @@ def chat(request: ChatRequest) -> tuple[str, object]:
         request.message,
         training_context,
         experiment_id=request.experiment_id,
+        conversation=request.conversation,
     )
