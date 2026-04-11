@@ -9,7 +9,7 @@ import type { TrainedModelEntry } from "@/lib/api"
 function MetricPill({ label, value }: { label: string; value: number }) {
   const display = value < 1 && value > 0 ? (value * 100).toFixed(1) + "%" : value.toFixed(4)
   return (
-    <span className="inline-flex items-center gap-1 rounded-md bg-muted px-2 py-0.5 text-[11px] font-mono">
+    <span className="inline-flex items-center gap-1 rounded-md bg-muted px-2 py-0.5 text-caption font-mono">
       <span className="text-muted-foreground">{label}</span>
       <span className="font-medium text-foreground tabular-nums">{display}</span>
     </span>
@@ -55,7 +55,7 @@ function FeatureList({ features }: { features: string[] }) {
       {open && (
         <div className="mt-1.5 flex flex-wrap gap-1">
           {features.map((f) => (
-            <span key={f} className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-mono text-muted-foreground">
+            <span key={f} className="rounded bg-muted px-1.5 py-0.5 text-overline font-mono text-muted-foreground">
               {f}
             </span>
           ))}
@@ -160,15 +160,15 @@ export function ModelsPage({
       <div className="max-w-5xl mx-auto px-8 py-10">
         <div className="flex items-start gap-3">
           <div>
-            <span className="text-[10px] font-bold text-muted-foreground tracking-widest uppercase">
+            <span className="text-overline font-bold text-muted-foreground tracking-widest uppercase">
               Model Management
             </span>
-            <h1 className="font-headline text-3xl font-semibold text-foreground tracking-tight mt-1">
+            <h1 className="font-headline text-2xl sm:text-3xl font-semibold text-foreground tracking-tight mt-1">
               Model Registry
             </h1>
           </div>
         </div>
-        <p className="mt-2 text-muted-foreground text-sm leading-relaxed max-w-lg">
+        <p className="mt-2 text-muted-foreground text-base leading-relaxed max-w-lg">
           Monitor deployments, track performance metrics, and manage your model lifecycle.
         </p>
 
@@ -217,10 +217,10 @@ export function ModelsPage({
                         <div className="flex items-center gap-2 flex-wrap">
                           <Box className="h-4 w-4 shrink-0 text-primary" />
                           <span className="font-medium text-sm text-foreground">{m.model_name}</span>
-                          <Badge variant="secondary" className="text-[10px] px-1.5 py-0">
+                          <Badge variant="secondary" className="text-overline px-1.5 py-0">
                             {m.model_type}
                           </Badge>
-                          <span className="flex items-center gap-0.5 text-[10px] text-muted-foreground">
+                          <span className="flex items-center gap-0.5 text-overline text-muted-foreground">
                             <Hash className="h-3 w-3" />v{m.version}
                           </span>
                         </div>

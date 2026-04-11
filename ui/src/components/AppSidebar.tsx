@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from "react"
 import { useQueryClient } from "@tanstack/react-query"
-import { Plus, MessageSquare, Loader2, CheckCircle2, AlertCircle, Trash2, FlaskConical, Database, Box, Settings, Moon } from "lucide-react"
+import { Plus, MessageSquare, Loader2, CheckCircle2, AlertCircle, Trash2, FlaskConical, Database, Box, Moon } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import {
   Dialog,
@@ -30,7 +30,7 @@ function sidebarDebug(event: string, payload?: Record<string, unknown>) {
   console.log(`[sidebar:experiment-switch][${ts}] ${event}`)
 }
 
-export type AppTab = "experiment_lab" | "datasets" | "models" | "settings"
+export type AppTab = "experiment_lab" | "datasets" | "models"
 
 interface AppSidebarProps {
   activeTab: AppTab
@@ -46,10 +46,10 @@ interface AppSidebarProps {
 }
 
 const navItems: { id: AppTab; label: string; icon: React.ReactNode }[] = [
-  { id: "experiment_lab", label: "Experiments", icon: <FlaskConical className="h-4 w-4" /> },
-  { id: "models", label: "Models", icon: <Box className="h-4 w-4" /> },
-  { id: "datasets", label: "Datasets", icon: <Database className="h-4 w-4" /> },
-  { id: "settings", label: "Settings", icon: <Settings className="h-4 w-4" /> },
+  { id: "experiment_lab", label: "Experiments", icon: <FlaskConical className="h-3.5 w-3.5 shrink-0 opacity-90" /> },
+  { id: "models", label: "Models", icon: <Box className="h-3.5 w-3.5 shrink-0 opacity-90" /> },
+  { id: "datasets", label: "Datasets", icon: <Database className="h-3.5 w-3.5 shrink-0 opacity-90" /> },
+  // { id: "settings", label: "Settings", icon: <Settings className="h-4 w-4" /> },
 ]
 
 function statusIcon(status: string) {
@@ -142,7 +142,7 @@ function EditableExperimentTitle({
             setEditing(false)
           }
         }}
-        className="h-7 text-[13px] px-2 py-0"
+        className="h-6 text-xs px-2 py-0"
         onClick={(e) => e.stopPropagation()}
         onMouseDown={(e) => e.stopPropagation()}
       />
@@ -152,7 +152,7 @@ function EditableExperimentTitle({
   return (
     <span
       className={cn(
-        "text-[13px] leading-snug line-clamp-2 break-all overflow-hidden min-w-0 flex-1",
+        "text-xs leading-snug line-clamp-2 break-all overflow-hidden min-w-0 flex-1",
         isActive ? "font-medium text-foreground" : "text-foreground/85",
         !disabled && "cursor-text",
       )}
@@ -264,7 +264,7 @@ export function AppSidebar({
             key={item.id}
             onClick={() => onTabChange(item.id)}
             className={cn(
-              "flex items-center gap-2.5 px-3 py-2 rounded-lg text-[13px] transition-colors",
+              "flex items-center gap-2 px-2.5 py-1.5 rounded-md text-xs transition-colors",
               activeTab === item.id
                 ? "text-foreground font-semibold bg-muted"
                 : "text-muted-foreground font-medium hover:bg-muted/50 hover:text-foreground"
@@ -278,7 +278,7 @@ export function AppSidebar({
 
       {/* Experiments list */}
       <div className="mt-5 px-5 flex items-center justify-between">
-        <span className="text-[10px] font-semibold text-muted-foreground/60 uppercase tracking-widest">Recent</span>
+        <span className="text-overline font-semibold text-muted-foreground/60 uppercase tracking-widest">Recent</span>
         <Button
           variant="ghost"
           size="sm"
@@ -345,12 +345,12 @@ export function AppSidebar({
                         isActive={isActive}
                         disabled={isSwitching || !isBackendConnected}
                       />
-                      <span className="text-[10px] text-muted-foreground/50 shrink-0 tabular-nums pt-0.5">
+                      <span className="text-overline text-muted-foreground/50 shrink-0 tabular-nums pt-0.5">
                         {relativeTime(exp.updated_at || exp.created_at)}
                       </span>
                     </div>
                     {preview ? (
-                      <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground/70 line-clamp-2 break-all overflow-hidden">
+                      <p className="mt-1 text-caption leading-relaxed text-muted-foreground/70 line-clamp-2 break-all overflow-hidden">
                         {preview}
                       </p>
                     ) : null}

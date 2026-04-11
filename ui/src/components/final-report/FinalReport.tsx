@@ -8,7 +8,6 @@ import type { TrainingAgentState, StepInfo } from "@/types/agent"
 import { SummaryTab } from "./SummaryTab"
 import { MetricsTab } from "./MetricsTab"
 import { AnalysisTab } from "./AnalysisTab"
-import { TraceTab } from "./TraceTab"
 import { generateTextReport, generateJsonReport } from "./utils"
 
 interface FinalReportProps {
@@ -52,8 +51,8 @@ export function FinalReport({ agentState, steps, onClose, datasets }: FinalRepor
   }
 
   return (
-    <div className="fixed inset-0 z-50 bg-background/80 backdrop-blur-sm flex items-center justify-center p-6">
-      <div className="w-full max-w-4xl h-[85vh] bg-background rounded-2xl border shadow-2xl flex flex-col overflow-hidden">
+    <div className="fixed inset-0 z-50 bg-background/80 backdrop-blur-sm flex items-center justify-center p-4 sm:p-6">
+      <div className="w-full max-w-6xl h-[min(90vh,960px)] bg-background rounded-2xl border shadow-2xl flex flex-col overflow-hidden">
         {/* Header */}
         <ReportHeader
           modelName={metrics?.model_name || agentState.model_weights_path || "Model training complete"}
@@ -65,28 +64,26 @@ export function FinalReport({ agentState, steps, onClose, datasets }: FinalRepor
 
         {/* Tabs */}
         <Tabs value={activeTab} onValueChange={setActiveTab} className="flex-1 flex flex-col min-h-0">
-          <div className="px-6 pt-2 border-b">
-            <TabsList className="bg-transparent p-0 h-auto gap-6">
+          <div className="px-5 sm:px-8 pt-2 border-b">
+            <TabsList className="bg-transparent p-0 h-auto gap-5 sm:gap-8">
               <ReportTabTrigger value="summary">Summary</ReportTabTrigger>
-              <ReportTabTrigger value="metrics">Metrics</ReportTabTrigger>
               <ReportTabTrigger value="analysis">Analysis</ReportTabTrigger>
-              <ReportTabTrigger value="trace">Trace</ReportTabTrigger>
+              <ReportTabTrigger value="metrics">Metrics</ReportTabTrigger>
             </TabsList>
           </div>
 
           <ScrollArea className="flex-1">
-            <div className="p-6">
+            <div className="px-5 py-5 sm:px-10 sm:py-6">
               <TabsContent value="summary" className="mt-0">
                 <SummaryTab agentState={agentState} datasets={datasets} />
               </TabsContent>
+              <TabsContent value="analysis" className="mt-0">
+                <div className="text-xs leading-relaxed">
+                  <AnalysisTab agentState={agentState} />
+                </div>
+              </TabsContent>
               <TabsContent value="metrics" className="mt-0">
                 <MetricsTab agentState={agentState} />
-              </TabsContent>
-              <TabsContent value="analysis" className="mt-0">
-                <AnalysisTab agentState={agentState} />
-              </TabsContent>
-              <TabsContent value="trace" className="mt-0">
-                <TraceTab steps={steps} agentState={agentState} />
               </TabsContent>
             </div>
           </ScrollArea>
@@ -113,10 +110,10 @@ function ReportHeader({
   onClose: () => void
 }) {
   return (
-    <div className="flex items-center justify-between px-6 py-4 border-b">
-      <div>
-        <h2 className="text-xl font-semibold tracking-tight">Training Report</h2>
-        <p className="text-sm text-muted-foreground mt-0.5 break-words [overflow-wrap:anywhere] max-w-full">
+    <div className="flex items-center justify-between px-5 sm:px-8 py-3.5 border-b gap-4">
+      <div className="min-w-0">
+        <h2 className="text-xl font-semibold tracking-tight font-headline">Training Report</h2>
+        <p className="text-caption sm:text-sm text-muted-foreground mt-0.5 break-words [overflow-wrap:anywhere] max-w-full">
           {modelName}
         </p>
       </div>

@@ -184,7 +184,7 @@ export function getValidationTestRows(
   }
 }
 
-/** Compact iteration summary for inline lists (Metrics tab, Trace tab) */
+/** Compact iteration summary for inline lists (Metrics tab) */
 export function getIterationInlineParts(
   iter: Record<string, unknown>,
   family: ModelFamily,

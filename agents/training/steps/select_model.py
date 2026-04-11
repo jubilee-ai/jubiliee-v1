@@ -139,7 +139,11 @@ class ModelFamilySelectionOutput(BaseModel):
         description="The selected model family for training"
     )
     explanation: str = Field(
-        description="Brief (2–4 sentences) explanation of why this model family fits the goal"
+        description=(
+            "2–4 short sentences for a non-technical reader: what kind of problem this is, "
+            "what the trained model will be used for, and why this broad approach fits. "
+            "No estimator names, hyperparameters, formulas, or implementation detail."
+        )
     )
     confidence: Literal["high", "medium", "low"] = Field(
         description="Confidence level in the model family selection"
@@ -170,7 +174,7 @@ Your job is NOT to pick a specific algorithm — only to narrow the approach dow
 
 1. **If the user explicitly names a model family** (e.g. "use supervised learning", "cluster my customers", "deep learning"), you MUST select that family. The user's explicit request overrides your own preference.
 2. Otherwise, analyze the goal to understand what kind of problem this is and select the most appropriate family.
-3. Explain your reasoning in **2–4 short sentences** — tight and direct; skip preamble; do not paste long “alternative families” essays into the explanation (use the structured alternative_families field for those).
+3. In **`explanation`**, write for a **product or business reader**, not an ML engineer: what outcome they care about, what the model will support (e.g. prioritizing cases, forecasting demand), and why this **family** of methods fits — in plain language. **Do not** name specific libraries or estimators (no XGBoost, PyTorch, parameter names, formulas, or class-weight math). Keep **2–4 short sentences**; skip preamble; do not paste long “alternative families” essays (use **`alternative_families`** for those).
 4. List any alternative families that could also work.
 """
 
@@ -294,7 +298,7 @@ def select_model(state: "TrainingAgentState") -> "TrainingAgentState":
         **state,
         "selected_model": result.selected_family,
         "task_type": task_type,
-        "model_explanation": "Configured for your task.",
+        "model_explanation": result.explanation.strip() or "Configured for your task.",
         "model_regen_count": state.get("model_regen_count", 0),
         "audit_trace": [
             *state.get("audit_trace", []),

@@ -3,14 +3,22 @@ import type { Ref, MutableRefObject } from "react"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import { cn } from "@/lib/utils"
-import { Box, FileText, ChevronRight, Check, RotateCcw, Info, Database } from "lucide-react"
+import { Box, FileText, ChevronRight, Check, RotateCcw, Database } from "lucide-react"
 import type { Dataset as ApiDataset } from "@/lib/api"
-import type { ChatMessage, ChatTaskPlanPayload, TaskPlanSummary } from "@/types/agent"
+import type { ChatMessage, ChatTaskPlanPayload, TaskPlanSummary, TrainingAgentState } from "@/types/agent"
+import { FeatureAnalysisChatCard } from "@/components/chat/FeatureAnalysisChatCard"
 import { looksLikeLeakedPlanJson, stripLeakedPlanJson } from "@/lib/planDisplay"
 import { TaskPlanCard } from "@/components/TaskPlanCard"
 
 /** Long follow-up explanations from the model; keep readable without walls of text. */
 const MAX_AGENT_BODY = 380
+
+/** Pipeline steps whose chat line should include the EDA digest when `key_stats` is present. */
+const FEATURE_ANALYSIS_STEP_IDS = new Set([
+  "feature_engineering_executor",
+  "feature_specification_and_engineering",
+  "feature_selection_specification",
+])
 
 function sanitizeAgentContent(content: string): string {
   const trimmed = stripLeakedPlanJson(content).trim()
@@ -73,6 +81,8 @@ interface MessageBubbleProps {
   isRunning?: boolean
   onApproveTrainingPlan?: (messageId: string, plan: TaskPlanSummary, refs: string[]) => void
   datasets?: ApiDataset[]
+  /** Latest experiment state — used to render the training metrics card on the training step message. */
+  agentState?: TrainingAgentState | null
 }
 
 function assignRef<T>(r: Ref<T> | undefined, value: T | null) {
@@ -95,6 +105,7 @@ export const MessageBubble = forwardRef<HTMLDivElement, MessageBubbleProps>(
       isRunning,
       onApproveTrainingPlan,
       datasets,
+      agentState,
     },
     ref,
   ) {
@@ -102,7 +113,14 @@ export const MessageBubble = forwardRef<HTMLDivElement, MessageBubbleProps>(
     const rootRef = useRef<HTMLDivElement | null>(null) as MutableRefObject<HTMLDivElement | null>
     const isUser = message.role === "user"
     const isSystem = message.role === "system"
-    
+    const effectiveStepId = message.stepId ?? stepId ?? null
+    const showFeatureAnalysisCard =
+      !isUser &&
+      !isSystem &&
+      Boolean(agentState) &&
+      effectiveStepId != null &&
+      FEATURE_ANALYSIS_STEP_IDS.has(effectiveStepId)
+
     const showReportCta =
       !isUser &&
       !isSystem &&
@@ -165,7 +183,6 @@ export const MessageBubble = forwardRef<HTMLDivElement, MessageBubbleProps>(
         )}>
           {isStepAccepted && <Check className="h-3 w-3" />}
           {isRedo && <RotateCcw className="h-3 w-3" />}
-          {!isStepAccepted && !isRedo && <Info className="h-3 w-3" />}
           {message.content}
         </div>
       )
@@ -197,7 +214,7 @@ export const MessageBubble = forwardRef<HTMLDivElement, MessageBubbleProps>(
         <div
           onClick={handleBubbleClick}
           className={cn(
-            message.apiPayload ? "w-full max-w-3xl mx-auto px-1" : bubbleBase,
+            message.apiPayload ? "w-full max-w-4xl mx-auto px-1" : bubbleBase,
             isUser && !message.apiPayload ? userBubble : !isUser ? agentBubble : "",
             isHighlighted && "ring-2 ring-foreground/20 shadow-lg",
             isClickable && "cursor-pointer hover:bg-muted/50 hover:shadow-md group"
@@ -206,7 +223,7 @@ export const MessageBubble = forwardRef<HTMLDivElement, MessageBubbleProps>(
           {isUser ? (
             message.apiPayload ? (
               <div className="rounded-xl border border-border/45 bg-muted/20 px-4 py-3 text-left w-full">
-                <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-1.5">
+                <p className="text-overline font-semibold uppercase tracking-wider text-muted-foreground mb-1.5">
                   Topic
                 </p>
                 <p className="text-sm text-foreground leading-snug">{message.content}</p>
@@ -215,7 +232,7 @@ export const MessageBubble = forwardRef<HTMLDivElement, MessageBubbleProps>(
                     {userLinkedKeys.map((key) => (
                       <span
                         key={key}
-                        className="inline-flex items-center gap-1 rounded-full bg-background/60 border border-border/40 px-2.5 py-0.5 text-[11px] text-muted-foreground"
+                        className="inline-flex items-center gap-1 rounded-full bg-background/60 border border-border/40 px-2.5 py-0.5 text-caption text-muted-foreground"
                       >
                         <Database className="h-3 w-3 shrink-0 opacity-70" aria-hidden />
                         <span className="truncate max-w-[220px]">{datasetChipLabel(key)}</span>
@@ -226,13 +243,13 @@ export const MessageBubble = forwardRef<HTMLDivElement, MessageBubbleProps>(
               </div>
             ) : (
               <>
-                <p className="text-[14px] leading-6 whitespace-pre-wrap">{message.content}</p>
+                <p className="text-sm leading-6 whitespace-pre-wrap">{message.content}</p>
                 {userLinkedKeys.length > 0 && (
                   <div className="flex flex-wrap gap-1.5 mt-2 justify-start w-full">
                     {userLinkedKeys.map((key) => (
                       <span
                         key={key}
-                        className="inline-flex items-center gap-1 rounded-full bg-background/50 border border-border/35 px-2.5 py-0.5 text-[11px] text-muted-foreground"
+                        className="inline-flex items-center gap-1 rounded-full bg-background/50 border border-border/35 px-2.5 py-0.5 text-caption text-muted-foreground"
                       >
                         <Database className="h-3 w-3 shrink-0 opacity-70" aria-hidden />
                         <span className="truncate max-w-[220px]">{datasetChipLabel(key)}</span>
@@ -245,10 +262,11 @@ export const MessageBubble = forwardRef<HTMLDivElement, MessageBubbleProps>(
           ) : (
             <>
               {hasTaskPlan ? null : displayAgentBody ? (
-                <div className="text-[14px] leading-relaxed prose prose-sm dark:prose-invert max-w-none prose-p:my-1 prose-p:leading-relaxed prose-headings:my-2 prose-headings:font-medium prose-ul:my-1 prose-ol:my-1 prose-li:my-0 prose-a:text-primary prose-a:no-underline hover:prose-a:underline prose-code:bg-primary/10 prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded-md prose-code:text-[13px] prose-code:font-normal prose-code:before:content-none prose-code:after:content-none prose-strong:font-semibold">
+                <div className="text-sm leading-relaxed prose prose-sm dark:prose-invert max-w-none prose-p:my-1 prose-p:leading-relaxed prose-headings:my-2 prose-headings:font-medium prose-ul:my-1 prose-ol:my-1 prose-li:my-0 prose-a:text-primary prose-a:no-underline hover:prose-a:underline prose-code:bg-primary/10 prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded-md prose-code:text-ui prose-code:font-normal prose-code:before:content-none prose-code:after:content-none prose-strong:font-semibold">
                   <ReactMarkdown remarkPlugins={[remarkGfm]}>{displayAgentBody}</ReactMarkdown>
                 </div>
               ) : null}
+              {showFeatureAnalysisCard && agentState ? <FeatureAnalysisChatCard agentState={agentState} /> : null}
               {message.taskPlan && onApproveTrainingPlan && (
                 <TaskPlanCard
                   payload={message.taskPlan as ChatTaskPlanPayload}

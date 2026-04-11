@@ -46,7 +46,7 @@ export function ThinkingBlock({ content, isActive = false, label }: ThinkingBloc
               ))}
             </div>
           ) : (
-            <pre className="whitespace-pre-wrap font-mono text-[11px] leading-relaxed">{content}</pre>
+            <pre className="whitespace-pre-wrap font-mono text-caption leading-relaxed">{content}</pre>
           )}
         </div>
       )}

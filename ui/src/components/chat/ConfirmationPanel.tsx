@@ -47,7 +47,7 @@ export function ConfirmationPanel({
               : "Review and approve to continue, or provide feedback to redo."}
           </p>
           
-          <div className="text-[14px] leading-relaxed prose prose-sm dark:prose-invert max-w-none prose-p:my-1 prose-headings:my-2 max-h-48 overflow-y-auto">
+          <div className="text-sm leading-relaxed prose prose-sm dark:prose-invert max-w-none prose-p:my-1 prose-headings:my-2 max-h-48 overflow-y-auto">
             <ReactMarkdown>{confirmationRequest.summary}</ReactMarkdown>
           </div>
           

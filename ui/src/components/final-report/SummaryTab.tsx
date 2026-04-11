@@ -56,10 +56,19 @@ export function SummaryTab({ agentState, datasets }: SummaryTabProps) {
     return resolveDatasetDisplayNames(tp.datasetLabels, refs, datasets ?? []).join(", ")
   }, [agentState.task_plan, agentState.linked_datasets, datasets])
 
+  const goalText = agentState.goal?.trim()
+
   return (
-    <div className="space-y-8">
+    <div className="space-y-6">
+      {goalText ? (
+        <div className="rounded-xl border border-border/50 bg-muted/15 px-4 py-3 sm:px-5">
+          <p className="text-caption font-semibold uppercase tracking-wide text-muted-foreground mb-1.5">Goal</p>
+          <p className="text-sm text-foreground leading-relaxed [overflow-wrap:anywhere]">{goalText}</p>
+        </div>
+      ) : null}
+
       {/* Hero metrics — test headline scores + run shape; model type once (or feature count when model is already in slot 2) */}
-      <div className="flex flex-wrap gap-4 [&>div]:flex-[1_1_11rem] [&>div]:min-w-0 [&>div]:max-w-full [&>div>div:first-child]:text-[11px] [&>div>div:last-child]:text-md">
+      <div className="flex flex-wrap gap-3 sm:gap-4 [&>div]:flex-[1_1_10rem] [&>div]:min-w-0 [&>div]:max-w-full [&>div>div:first-child]:text-caption [&>div>div:last-child]:text-sm">
         {heroMetrics.map((h) => (
           <MetricBox key={h.label} label={h.label} value={h.value} highlight={h.highlight} />
         ))}
@@ -70,34 +79,6 @@ export function SummaryTab({ agentState, datasets }: SummaryTabProps) {
           <MetricBox label="Features" value={featureCount > 0 ? String(featureCount) : "—"} />
         )}
       </div>
-      {hasPrimaryMetrics && metrics?.model_name ? (
-        <p className="text-xs text-muted-foreground -mt-4">
-          {modelFamily === "unsupervised" ? (
-            <>
-              Metrics above describe the saved model{" "}
-              <span className="text-foreground font-medium">{metrics.model_name}</span>
-              {metrics.summary ? (
-                <> — the summary may mention other runs that were tried but not kept.</>
-              ) : (
-                "."
-              )}
-            </>
-          ) : (
-            <>
-              Test scores above are for the saved model{" "}
-              <span className="text-foreground font-medium">{metrics.model_name}</span>
-              {metrics.summary ? (
-                <>
-                  . The summary may mention other runs that were tried but not kept.
-                </>
-              ) : (
-                "."
-              )}
-            </>
-          )}
-        </p>
-      ) : null}
-
       {/* Background task recap (assign-task flow) */}
       {agentState.task_plan && typeof agentState.task_plan === "object" && (
         <Section title="Assigned task recap">
@@ -126,7 +107,6 @@ export function SummaryTab({ agentState, datasets }: SummaryTabProps) {
       {/* Overview */}
       <Section title="Overview">
         <div className="space-y-3">
-          <InfoRow label="Goal" value={agentState.goal} />
           <InfoRow label="Dataset" value={agentState.collected_dataset_ref} />
           {!isUnsupervisedFlow ? (
             <InfoRow label="Target Column" value={agentState.label_definition?.target_column || "—"} />
@@ -182,7 +162,7 @@ export function SummaryTab({ agentState, datasets }: SummaryTabProps) {
             <li className="flex gap-2">
               <span className="text-muted-foreground/50 shrink-0">→</span>
               <span>
-                <span className="text-foreground font-medium">Trace</span> → <strong>Features</strong> lists all{" "}
+                <span className="text-foreground font-medium">Features</span> in step details lists all{" "}
                 {featureCount} engineered feature{featureCount !== 1 ? "s" : ""}, engineering details, and any feature
                 experiments.
               </span>

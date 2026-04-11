@@ -66,37 +66,37 @@ export function TrainingProgressCard({
         <div className="grid grid-cols-3 gap-3">
           {metrics.accuracy != null && (
             <div>
-              <div className="text-[10px] uppercase tracking-wider text-muted-foreground">Accuracy</div>
+              <div className="text-overline uppercase tracking-wider text-muted-foreground">Accuracy</div>
               <div className="text-lg font-bold font-mono">{(metrics.accuracy * 100).toFixed(1)}%</div>
             </div>
           )}
           {metrics.roc_auc != null && (
             <div>
-              <div className="text-[10px] uppercase tracking-wider text-muted-foreground">ROC-AUC</div>
+              <div className="text-overline uppercase tracking-wider text-muted-foreground">ROC-AUC</div>
               <div className="text-lg font-bold font-mono">{metrics.roc_auc.toFixed(3)}</div>
             </div>
           )}
           {metrics.r2 != null && (
             <div>
-              <div className="text-[10px] uppercase tracking-wider text-muted-foreground">R²</div>
+              <div className="text-overline uppercase tracking-wider text-muted-foreground">R²</div>
               <div className="text-lg font-bold font-mono">{metrics.r2.toFixed(4)}</div>
             </div>
           )}
           {metrics.rmse != null && (
             <div>
-              <div className="text-[10px] uppercase tracking-wider text-muted-foreground">RMSE</div>
+              <div className="text-overline uppercase tracking-wider text-muted-foreground">RMSE</div>
               <div className="text-lg font-bold font-mono">{metrics.rmse.toFixed(2)}</div>
             </div>
           )}
           {metrics.iterations != null && (
             <div>
-              <div className="text-[10px] uppercase tracking-wider text-muted-foreground">Iterations</div>
+              <div className="text-overline uppercase tracking-wider text-muted-foreground">Iterations</div>
               <div className="text-lg font-bold font-mono">{metrics.iterations}</div>
             </div>
           )}
           {metrics.model_name && (
             <div>
-              <div className="text-[10px] uppercase tracking-wider text-muted-foreground">Model</div>
+              <div className="text-overline uppercase tracking-wider text-muted-foreground">Model</div>
               <div className="text-sm font-medium truncate">{metrics.model_name}</div>
             </div>
           )}
@@ -145,7 +145,7 @@ export function TrainingProgressCard({
               {step.name}
             </span>
             {step.subtitle && (
-              <span className="text-[10px] text-muted-foreground/70 truncate max-w-[140px]">
+              <span className="text-overline text-muted-foreground/70 truncate max-w-[140px]">
                 {step.subtitle}
               </span>
             )}

@@ -29,8 +29,8 @@ export function TaskStatusView({ agentState, onViewReport, datasets }: TaskStatu
 
   return (
     <div className="flex-1 min-h-0 overflow-y-auto">
-      <div className="max-w-3xl mx-auto px-6 sm:px-10 py-10">
-        <span className="text-[10px] font-bold text-muted-foreground/60 tracking-[0.2em] uppercase block mb-2">
+      <div className="max-w-4xl mx-auto px-6 sm:px-10 py-10">
+        <span className="text-overline font-bold text-muted-foreground/60 tracking-[0.2em] uppercase block mb-2">
           Background task
         </span>
         <h2 className="font-headline text-xl sm:text-2xl font-semibold tracking-tight mb-1 leading-snug">

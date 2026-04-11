@@ -829,12 +829,16 @@ Propose a training configuration. Respond with a JSON object containing:
     "hyperparameters": {{}},
     "class_weight": "balanced" or null,
     "max_iterations": 7,
-    "strategy_notes": "Brief explanation of why these hyperparameters were chosen",
+    "strategy_notes": "2–4 sentences for a stakeholder: what this training setup is meant to achieve and why it fits the problem — plain language, no formulas, no hyperparameter dumps or library-specific kwargs (those belong in hyperparameters only)",
     "expected_metrics": "What metrics to optimize and expected performance range"
 }}
 ```
 
-Be specific with hyperparameter values. Consider:
+Be specific with **hyperparameter** values in the `hyperparameters` object (that is the right place for technical detail).
+
+For **`strategy_notes`** only: explain in **high-level terms** what this configuration is for (e.g. handling rare events, controlling overfitting on tabular data) and why it matches the goal — as if briefing someone who will use the model but does not tune it. Do **not** paste numeric settings, `scale_pos_weight` arithmetic, or long lists of kwargs into `strategy_notes`.
+
+Also consider when choosing values:
 - Dataset size ({n_rows} rows) - larger datasets can support more complex models
 - Number of features ({n_features}) - may need regularization if many features
 - Class imbalance - use class_weight="balanced" if imbalanced (skip for unsupervised)

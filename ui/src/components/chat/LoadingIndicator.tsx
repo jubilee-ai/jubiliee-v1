@@ -19,7 +19,7 @@ export function LoadingIndicator({ label }: LoadingIndicatorProps) {
         ))}
       </div>
       {label ? (
-        <p className="text-[13px] text-muted-foreground leading-snug flex-1">{label}</p>
+        <p className="text-ui text-muted-foreground leading-snug flex-1">{label}</p>
       ) : null}
     </div>
   )

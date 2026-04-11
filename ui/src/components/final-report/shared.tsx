@@ -15,9 +15,9 @@ export function Section({
 }) {
   return (
     <div>
-      <h3 className="text-sm font-medium mb-2">{title}</h3>
+      <h3 className="text-xs font-medium text-muted-foreground tracking-tight mb-2.5">{title}</h3>
       {description != null ? (
-        <div className="text-xs text-muted-foreground mb-4 leading-relaxed">{description}</div>
+        <div className="text-xs text-muted-foreground mb-3 leading-relaxed">{description}</div>
       ) : null}
       {children}
     </div>
@@ -41,13 +41,13 @@ export function MetricBox({
   return (
     <div
       className={cn(
-        "rounded-xl p-4 min-w-0 max-w-full flex flex-col",
+        "rounded-lg p-3 min-w-0 max-w-full flex flex-col",
         highlight ? "bg-foreground/5" : "bg-muted/30",
         className
       )}
     >
-      <div className="text-xs text-muted-foreground mb-1 shrink-0">{label}</div>
-      <div className="text-sm font-semibold leading-snug break-words [overflow-wrap:anywhere]">
+      <div className="text-caption text-muted-foreground mb-0.5 shrink-0">{label}</div>
+      <div className="text-sm font-semibold leading-snug break-words [overflow-wrap:anywhere] tabular-nums">
         {value}
       </div>
     </div>
@@ -67,10 +67,10 @@ export function MetricRow({
   highlight?: boolean
 }) {
   return (
-    <div className="flex justify-between items-center gap-3 min-w-0">
-      <span className="text-muted-foreground shrink-0">{label}</span>
+    <div className="flex justify-between items-center gap-3 min-w-0 py-0.5">
+      <span className="text-sm text-muted-foreground shrink-0">{label}</span>
       <span
-        className={`text-xl font-semibold text-right min-w-0 break-words [overflow-wrap:anywhere] ${highlight ? "text-success" : ""}`}
+        className={`text-base font-semibold tabular-nums text-right min-w-0 break-words [overflow-wrap:anywhere] ${highlight ? "text-success" : ""}`}
       >
         {value}
       </span>

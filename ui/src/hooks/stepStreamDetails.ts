@@ -127,6 +127,10 @@ export function buildStepDetailMarkdown(nodeName: string, event: AgentStreamEven
         if (it.val_accuracy != null) bits.push(`val acc ${(Number(it.val_accuracy) * 100).toFixed(1)}%`)
         if (it.val_roc_auc != null) bits.push(`val AUC ${Number(it.val_roc_auc).toFixed(3)}`)
         if (it.val_r2 != null) bits.push(`val R² ${Number(it.val_r2).toFixed(4)}`)
+        const sil = it.silhouette_score
+        const dbRaw = it.davies_bouldin ?? (it as Record<string, unknown>).davies_bouldin_score
+        if (sil != null) bits.push(`silhouette ${Number(sil).toFixed(3)}`)
+        if (typeof dbRaw === "number") bits.push(`D–B ${Number(dbRaw).toFixed(3)}`)
         blocks.push(`${i + 1}. ${ok} **${String(name)}**${bits.length ? ` — ${bits.join(", ")}` : ""}`)
       })
     }

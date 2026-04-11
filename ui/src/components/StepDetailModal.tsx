@@ -1,7 +1,7 @@
 import { useState } from "react"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
-import type { TrainingAgentState, StepInfo, KeyStats, FeatureCorrelation } from "@/types/agent"
+import type { TrainingAgentState, StepInfo, KeyStats, FeatureCorrelation, ExperimentScoutRow } from "@/types/agent"
 import { X, CheckCircle2, AlertTriangle } from "lucide-react"
 import { formatCleaningTransformationParts } from "@/lib/cleaningTransformDisplay"
 import { TRACE_EXCLUDE_IDS } from "@/lib/trainingSteps"
@@ -9,6 +9,18 @@ import { formatNumber, formatPercent } from "@/lib/utils"
 import { getHeroMetrics, getValidationTestRows } from "@/components/final-report/metricDefs"
 import { mergeTrainingMetricSources, pickNumber, resolveModelFamily } from "@/components/final-report/metricModelFamily"
 import { getIterationMetrics } from "@/components/final-report/utils"
+import {
+  FeatureAnalysisPanels,
+  getFeatureSelectionKeyStats,
+  hasFeatureAnalysisContent,
+} from "@/components/final-report/FeatureAnalysisPanels"
+import {
+  featureRankingEntries,
+  formatModelFamily,
+  pickPrimaryMetricKey,
+  primaryMetricLabel,
+  sortScoutsByPrimary,
+} from "@/lib/featureExperimentDisplay"
 
 interface StepDetailModalProps {
   stepId: string
@@ -118,7 +130,7 @@ export function StepDetailModal({ stepId, agentState, steps, onClose }: StepDeta
   return (
     <div className="fixed inset-0 z-50 bg-background/80 backdrop-blur-sm flex items-center justify-center p-4" onClick={onClose}>
       <div 
-        className="w-full max-w-2xl bg-background rounded-2xl border shadow-2xl flex flex-col"
+        className="w-full max-w-3xl bg-background rounded-2xl border shadow-2xl flex flex-col"
         style={{ maxHeight: "80vh" }}
         onClick={(e) => e.stopPropagation()}
       >
@@ -310,6 +322,24 @@ function LabelSplitDetail({ agentState }: { agentState: TrainingAgentState; audi
           </div>
         </div>
       )}
+    </div>
+  )
+}
+
+/** Full EDA (distributions, categories, concentration, full tables) — same data as Report → Analysis. */
+function ExploratoryAnalysisModalSection({ agentState }: { agentState: TrainingAgentState }) {
+  const keyStats = getFeatureSelectionKeyStats(agentState)
+  if (!hasFeatureAnalysisContent(keyStats)) return null
+  return (
+    <div className="space-y-4 border-t border-border/40 pt-6">
+      <div>
+        <h3 className="text-sm font-semibold text-foreground">Exploratory analysis</h3>
+        <p className="text-xs text-muted-foreground mt-1 leading-relaxed">
+          Numeric summaries, correlations, distributions, categorical target rates, and concentration — aligned with
+          the Analysis tab in the report.
+        </p>
+      </div>
+      <FeatureAnalysisPanels keyStats={keyStats} density="full" />
     </div>
   )
 }
@@ -610,22 +640,12 @@ function FeatureEngineeringDetail({ agentState, audit }: { agentState: TrainingA
 
   return (
     <div className="space-y-6">
-      {/* Validation Status */}
-      <div className={`rounded-xl p-4 ${agentState.feature_validation_passed ? 'bg-success/8 dark:bg-success/12' : 'bg-yellow-50 dark:bg-yellow-950/30'}`}>
-        <div className="flex items-center gap-2">
-          <CheckCircle2 className={`h-5 w-5 ${agentState.feature_validation_passed ? 'text-success' : 'text-yellow-600'}`} />
-          <span className={`font-medium ${agentState.feature_validation_passed ? 'text-foreground dark:text-success' : 'text-yellow-700 dark:text-yellow-300'}`}>
-            {agentState.feature_validation_passed ? "Feature Validation Passed" : "Validation Issues Found"}
-          </span>
-        </div>
-      </div>
-
-      {/* Initial encoded columns (pre–feature-experiments if those run later) */}
+      {/* Matrix columns after exploratory analysis + encoding (before any later feature experiments) */}
       {audit?.features_created != null && Array.isArray(audit.features_created) && (
         <div>
-          <div className="text-sm font-medium mb-1">Initial encoded columns ({(audit.features_created as string[]).length})</div>
+          <div className="text-sm font-medium mb-1">Feature matrix from first-pass analysis ({(audit.features_created as string[]).length} columns)</div>
           <p className="text-xs text-muted-foreground mb-2">
-            Physical columns after this build. Categorical encodings are expanded; counts here are not the same as “logical features” in the report.
+            Physical columns after the initial exploratory review and transforms. Encodings expand categoricals; this count differs from “logical features” in the report.
           </p>
           <div className="flex flex-wrap gap-1.5">
             {(audit.features_created as string[]).map((f, i) => (
@@ -696,6 +716,8 @@ function FeatureEngineeringDetail({ agentState, audit }: { agentState: TrainingA
           </ul>
         </div>
       )}
+
+      <ExploratoryAnalysisModalSection agentState={agentState} />
     </div>
   )
 }
@@ -769,7 +791,7 @@ function NestedHyperparameterSection({ name, value }: { name: string; value: unk
           <dl className="grid grid-cols-1 sm:grid-cols-2 gap-2">
             {Object.entries(value as Record<string, unknown>).map(([k, v]) => (
               <div key={k} className="rounded-lg border border-border/35 bg-background/60 px-3 py-2.5">
-                <dt className="text-[11px] text-muted-foreground mb-1">{humanizeConfigKey(k)}</dt>
+                <dt className="text-caption text-muted-foreground mb-1">{humanizeConfigKey(k)}</dt>
                 <dd className="text-sm font-mono text-foreground/95 break-words">{renderValue(v)}</dd>
               </div>
             ))}
@@ -803,6 +825,15 @@ export function FeatureExperimentDetail({
   const signal = (audit?.signal_features as string[] | undefined) ?? (exp?.signal_features as string[] | undefined)
   const dropped = (audit?.dropped_features as string[] | undefined) ?? (exp?.dropped_features as string[] | undefined)
 
+  const gridRaw = (agentState.experiment_grid_summary as ExperimentScoutRow[] | undefined) ?? []
+  const rankings = agentState.feature_rankings as Record<string, number> | undefined
+  const rankingList = featureRankingEntries(rankings, 40)
+  const maxRank = rankingList.length ? Math.max(...rankingList.map((r) => r.score), 1e-9) : 1
+
+  const sampleMetric = gridRaw.find((g) => g.success && g.metrics && Object.keys(g.metrics).length > 0)?.metrics
+  const primaryKey = pickPrimaryMetricKey(sampleMetric) ?? "roc_auc"
+  const sortedGrid = sortScoutsByPrimary(gridRaw)
+
   const ran = variant || totalVariants > 0 || totalScouts > 0
 
   if (!ran) {
@@ -821,45 +852,133 @@ export function FeatureExperimentDetail({
       <div className="bg-foreground/5 rounded-xl p-4 space-y-2">
         <div className="text-xs text-muted-foreground">What we did</div>
         <p className="text-foreground/90">
-          Jubilee trained several <span className="font-medium">lightweight scout models</span> on different
-          feature-set variants in parallel. The goal is to see which columns add real signal before committing
-          to the expensive full training step — not to pick a final production score.
+          Jubilee trained several <span className="font-medium">lightweight scout models</span> (HistGradientBoosting
+          and Random Forest) on each feature-set variant and scored them on the validation split. That surfaces which
+          variant and which columns carry signal before the main training step — these are diagnostic scores, not
+          production benchmarks.
         </p>
         <p className="text-foreground/80 text-xs leading-relaxed pt-1">
-          The winning variant can remove or keep whole groups of features. Scout rankings below describe signal strength, not a guarantee that a column was dropped from the final matrix.
+          Feature importances below are aggregated across scouts, weighted by each scout’s validation metric so
+          better-fitting runs count more.
         </p>
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         {variant ? (
           <div className="bg-muted/30 rounded-lg p-3">
-            <div className="text-[11px] text-muted-foreground">Variant used for final training</div>
+            <div className="text-caption text-muted-foreground">Variant used for final training</div>
             <div className="text-base font-semibold mt-0.5">{variant}</div>
           </div>
         ) : null}
         {totalVariants > 0 ? (
           <div className="bg-muted/30 rounded-lg p-3">
-            <div className="text-[11px] text-muted-foreground">Feature setups compared</div>
+            <div className="text-caption text-muted-foreground">Feature setups compared</div>
             <div className="text-base font-semibold mt-0.5 tabular-nums">{totalVariants}</div>
           </div>
         ) : null}
         {totalScouts > 0 ? (
           <div className="bg-muted/30 rounded-lg p-3">
-            <div className="text-[11px] text-muted-foreground">Scout training runs</div>
+            <div className="text-caption text-muted-foreground">Scout runs (variants × 2 models)</div>
             <div className="text-base font-semibold mt-0.5 tabular-nums">{totalScouts}</div>
           </div>
         ) : null}
         {wall != null ? (
           <div className="bg-muted/30 rounded-lg p-3">
-            <div className="text-[11px] text-muted-foreground">Wall time</div>
+            <div className="text-caption text-muted-foreground">Wall time</div>
             <div className="text-base font-semibold mt-0.5 tabular-nums">{wall.toFixed(1)}s</div>
           </div>
         ) : null}
       </div>
 
+      {sortedGrid.length > 0 ? (
+        <div>
+          <div className="text-sm font-semibold text-foreground mb-1">Scout grid (all runs)</div>
+          <p className="text-xs text-muted-foreground mb-3">
+            Sorted by {primaryMetricLabel(primaryKey)} on validation. HGB = HistGradientBoosting, RF = Random Forest.
+          </p>
+          <div className="overflow-x-auto rounded-lg border border-border/50">
+            <table className="w-full text-xs">
+              <thead className="bg-muted/50">
+                <tr>
+                  <th className="text-left py-2 px-2 font-medium">#</th>
+                  <th className="text-left py-2 px-2 font-medium">Variant</th>
+                  <th className="text-left py-2 px-2 font-medium">Model</th>
+                  <th className="text-center py-2 px-2 font-medium">OK</th>
+                  <th className="text-right py-2 px-2 font-medium">{primaryMetricLabel(primaryKey)}</th>
+                  <th className="text-left py-2 px-2 font-medium min-w-[140px]">Other metrics</th>
+                </tr>
+              </thead>
+              <tbody>
+                {sortedGrid.map((row, i) => {
+                  const pk = pickPrimaryMetricKey(row.metrics) ?? primaryKey
+                  const pv = row.metrics?.[pk]
+                  const rest =
+                    row.metrics &&
+                    Object.entries(row.metrics).filter(([k]) => k !== pk)
+                  return (
+                    <tr key={`${row.variant}-${row.model_family}-${i}`} className="border-t border-border/40">
+                      <td className="py-1.5 px-2 text-muted-foreground">{i + 1}</td>
+                      <td className="py-1.5 px-2 font-mono max-w-[160px] truncate" title={row.variant}>
+                        {row.variant ?? "—"}
+                      </td>
+                      <td className="py-1.5 px-2">{formatModelFamily(row.model_family)}</td>
+                      <td className="py-1.5 px-2 text-center">
+                        {row.success ? (
+                          <span className="text-success">Yes</span>
+                        ) : (
+                          <span className="text-destructive" title={row.error ?? ""}>
+                            No
+                          </span>
+                        )}
+                      </td>
+                      <td className="py-1.5 px-2 text-right tabular-nums font-medium">
+                        {typeof pv === "number" ? pv.toFixed(4) : "—"}
+                      </td>
+                      <td className="py-1.5 px-2 text-muted-foreground font-mono text-overline">
+                        {rest && rest.length > 0
+                          ? rest.map(([k, v]) => `${k}=${typeof v === "number" ? v.toFixed(3) : v}`).join(" · ")
+                          : row.error ?? "—"}
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : null}
+
+      {rankingList.length > 0 ? (
+        <div>
+          <div className="text-sm font-semibold text-foreground mb-1">Aggregated feature importance</div>
+          <p className="text-xs text-muted-foreground mb-3">
+            Weighted average of tree feature importances across successful scouts (weights = validation score). Higher
+            = more consistently useful across variants and models.
+          </p>
+          <div className="space-y-2 max-h-[320px] overflow-y-auto pr-1">
+            {rankingList.map(({ feature, score }) => (
+              <div key={feature} className="flex items-center gap-2">
+                <div className="w-36 sm:w-44 shrink-0 font-mono text-caption truncate" title={feature}>
+                  {feature}
+                </div>
+                <div className="flex-1 h-5 bg-muted/40 rounded overflow-hidden min-w-0">
+                  <div
+                    className="h-full bg-primary/55 rounded"
+                    style={{ width: `${Math.min(100, (score / maxRank) * 100)}%` }}
+                  />
+                </div>
+                <div className="w-14 text-right text-caption tabular-nums text-muted-foreground shrink-0">
+                  {score.toFixed(4)}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : null}
+
       {signal && signal.length > 0 ? (
         <div>
-          <div className="text-sm font-medium mb-2">Columns that looked strongest in scouts</div>
+          <div className="text-sm font-medium mb-2">High-signal features (importance ≥ 0.02)</div>
           <div className="flex flex-wrap gap-1.5">
             {signal.map((f) => (
               <Badge key={f} variant="secondary" className="text-xs font-mono font-normal">
@@ -872,9 +991,10 @@ export function FeatureExperimentDetail({
 
       {dropped && dropped.length > 0 ? (
         <div>
-          <div className="text-sm font-medium mb-1">Low-signal columns in scout rankings</div>
+          <div className="text-sm font-medium mb-1">Low-signal features (importance &lt; 0.005)</div>
           <p className="text-xs text-muted-foreground mb-2">
-            These ranked weakly across scouts; they may still appear in final training if the winning variant did not remove them.
+            These ranked weakly in the aggregate; they may still appear in final training if the winning variant kept
+            them.
           </p>
           <div className="flex flex-wrap gap-1.5">
             {dropped.map((f) => (
@@ -946,14 +1066,14 @@ function TrainingConfigDetail({ agentState, audit }: { agentState: TrainingAgent
       {/* Model & Task header */}
       <div className="flex flex-col sm:flex-row gap-3">
         <div className="flex-1 rounded-xl border border-border/50 bg-gradient-to-br from-muted/50 to-muted/15 p-4">
-          <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground mb-1">
+          <div className="text-caption font-medium uppercase tracking-wide text-muted-foreground mb-1">
             Estimator
           </div>
           <div className="text-lg font-semibold tracking-tight">{modelType}</div>
         </div>
         {taskType ? (
           <div className="flex-1 rounded-xl border border-border/50 bg-gradient-to-br from-muted/50 to-muted/15 p-4">
-            <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground mb-1">
+            <div className="text-caption font-medium uppercase tracking-wide text-muted-foreground mb-1">
               Problem type
             </div>
             <div className="text-lg font-semibold tracking-tight capitalize">{taskType}</div>
@@ -970,7 +1090,7 @@ function TrainingConfigDetail({ agentState, audit }: { agentState: TrainingAgent
               <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
                 {scalars.map(([key, value]) => (
                   <div key={key} className="rounded-lg border border-border/40 bg-muted/20 px-3 py-2.5">
-                    <div className="text-[11px] text-muted-foreground">{humanizeConfigKey(key)}</div>
+                    <div className="text-caption text-muted-foreground">{humanizeConfigKey(key)}</div>
                     <div className="text-sm font-semibold font-mono mt-0.5 break-all">{renderValue(value)}</div>
                   </div>
                 ))}
@@ -995,7 +1115,7 @@ function TrainingConfigDetail({ agentState, audit }: { agentState: TrainingAgent
         <div className="flex gap-4">
           {classWeight ? (
             <div className="bg-blue-50 dark:bg-blue-950/30 rounded-lg px-3 py-2">
-              <div className="text-[11px] text-blue-600 dark:text-blue-400">Class Weight</div>
+              <div className="text-caption text-blue-600 dark:text-blue-400">Class Weight</div>
               <div className="text-sm font-medium">{String(classWeight)}</div>
             </div>
           ) : null}
@@ -1036,7 +1156,7 @@ function TrainingConfigDetail({ agentState, audit }: { agentState: TrainingAgent
                     className="w-full flex items-center justify-between px-4 py-2.5 text-left hover:bg-muted/30 transition-colors"
                   >
                     <div className="flex items-center gap-2">
-                      <span className="w-5 h-5 rounded-full bg-foreground/10 flex items-center justify-center text-[11px] font-medium text-muted-foreground">
+                      <span className="w-5 h-5 rounded-full bg-foreground/10 flex items-center justify-center text-caption font-medium text-muted-foreground">
                         {i + 1}
                       </span>
                       <span className="text-sm font-medium">{title}</span>
