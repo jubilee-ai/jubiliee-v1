@@ -212,15 +212,19 @@ def ensure_training_job(
 
 
 def get_training_status(job_id: str) -> Optional[dict[str, object]]:
-    # Check in-memory first (hot path for SSE polling)
-    if job_id in training_jobs:
-        return training_jobs[job_id]
-
+    """Return job status, preferring persisted DB state so any API replica sees worker updates."""
+    mem = training_jobs.get(job_id)
     with get_db_session() as session:
         job = session.get(TrainingJob, job_id)
-        if job is None:
+        if job is None and mem is None:
             return None
-        return _job_to_dict(job)
+        db_dict = _job_to_dict(job) if job is not None else None
+    if db_dict is not None:
+        if mem:
+            merged = {**mem, **db_dict}
+            return merged
+        return db_dict
+    return mem
 
 
 def update_training_status(job_id: str, updates: dict[str, object]) -> None:
@@ -366,6 +370,7 @@ def _build_context_dict(shared_state: dict[str, object]) -> dict[str, object]:
         "summary": metrics.get("summary"),
         "num_iterations": metrics.get("num_iterations"),
         "report_path": shared_state.get("report_path"),
+        "report_storage_key": shared_state.get("report_storage_key"),
     }
 
 
@@ -389,7 +394,7 @@ def save_training_context(
         for k in [
             "val_accuracy", "val_roc_auc", "test_accuracy", "test_roc_auc",
             "val_r2", "test_r2", "test_rmse", "test_mae",
-            "summary", "num_iterations",
+            "summary", "num_iterations", "report_storage_key",
         ]
         if ctx.get(k) is not None
     }
@@ -622,8 +627,31 @@ def update_experiment(experiment_id: str, updates: dict[str, object]) -> bool:
         return True
 
 
+def _compact_experiment_training_patch(patch: dict[str, object]) -> dict[str, object]:
+    """Avoid huge JSONB rows: trim long lists and oversized string values."""
+    out: dict[str, object] = {}
+    max_list = 24
+    max_str = 120_000
+    for k, v in patch.items():
+        if k == "task_step_events" and isinstance(v, list) and len(v) > max_list:
+            out[k] = v[-max_list:]
+            out["task_step_events_truncated"] = True
+        elif k == "experiment_grid_summary" and isinstance(v, list) and len(v) > max_list:
+            out[k] = v[:max_list]
+            out["experiment_grid_summary_truncated"] = True
+        elif k == "audit_trace" and isinstance(v, list) and len(v) > max_list:
+            out[k] = v[-max_list:]
+            out["audit_trace_truncated"] = True
+        elif isinstance(v, str) and len(v) > max_str:
+            out[k] = v[:max_str] + "…(truncated for DB)"
+        else:
+            out[k] = v
+    return out
+
+
 def merge_experiment_training_state(experiment_id: str, patch: dict[str, object]) -> bool:
     """Deep-shallow merge JSON `training_state` on an experiment (patch wins for top-level keys)."""
+    patch = _compact_experiment_training_patch(dict(patch))
     with get_db_session() as session:
         exp = session.get(Experiment, experiment_id)
         if exp is None:

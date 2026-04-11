@@ -686,7 +686,8 @@ def feature_experiment_runner(state: TrainingAgentState) -> TrainingAgentState:
                 "dropped_features": exp_result.dropped_features,
             },
             "feature_rankings": exp_result.feature_rankings,
-            "experiment_grid_summary": exp_result.experiment_grid,
+            # Keep only a bounded summary in state to limit memory and JSONB size
+            "experiment_grid_summary": (exp_result.experiment_grid or [])[:12],
         }
 
         if exp_result.best_variant_name != "full":
@@ -1075,10 +1076,23 @@ def generate_report(state: TrainingAgentState) -> TrainingAgentState:
             json.dump(report, f, indent=2, default=str)
         print(f"\n[generate_report] Report saved to: {report_path}")
 
+        report_storage_key: Optional[str] = None
+        try:
+            from backend.shared.artifact_store import get_artifact_store
+
+            store = get_artifact_store()
+            safe_name = re.sub(r"[^\w\-.]", "_", str(training_metrics.get("model_name", "unknown")))
+            storage_key = f"reports/{safe_name}_report.json"
+            report_storage_key = store.upload(report_path, storage_key)
+            print(f"[generate_report] Report uploaded to object storage: {report_storage_key}")
+        except Exception as ex:
+            print(f"[generate_report] Object storage upload skipped: {ex}")
+
         return {
             **s,
             "report_path": str(report_path),
-            "audit_trace": s.get("audit_trace", []) + [{"step": "generate_report", "path": str(report_path)}],
+            "report_storage_key": report_storage_key,
+            "audit_trace": s.get("audit_trace", []) + [{"step": "generate_report", "path": str(report_path), "storage_key": report_storage_key}],
         }
 
     def get_summary(r: TrainingAgentState) -> str:

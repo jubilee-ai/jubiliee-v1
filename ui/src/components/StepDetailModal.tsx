@@ -718,7 +718,7 @@ function FeatureEngineeringDetail({ agentState, audit }: { agentState: TrainingA
       </div> */}
 
       {/* Errors */}
-      {hasAuditErrors && (
+      {/* {hasAuditErrors && (
         <div className="bg-destructive/10 rounded-lg p-4">
           <div className="text-sm font-medium text-destructive mb-1">Errors Encountered</div>
           <ul className="text-sm text-destructive/80 space-y-1">
@@ -727,7 +727,7 @@ function FeatureEngineeringDetail({ agentState, audit }: { agentState: TrainingA
             ))}
           </ul>
         </div>
-      )}
+      )} */}
 
       <ExploratoryAnalysisModalSection agentState={agentState} showTopSeparator={hasAuditErrors} />
     </div>

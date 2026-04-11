@@ -42,7 +42,12 @@ def test_batch_train_runs_multiple_workers_concurrently():
         training_mod.BatchTrainConfig(estimator="C", model_name="m3", hyperparams={}),
     ]
 
-    with patch.object(training_mod, "_run_skill", side_effect=slow_run_skill):
+    _mock_settings = MagicMock()
+    _mock_settings.MAX_PARALLEL_BATCH_TRAIN = 3
+
+    with patch.object(training_mod, "_run_skill", side_effect=slow_run_skill), patch(
+        "backend.shared.settings.get_settings", return_value=_mock_settings
+    ):
         out = training_mod.batch_train_with_skill_tool.invoke(
             {
                 "skill_name": "supervised",
@@ -145,6 +150,9 @@ def test_evaluate_models_runs_three_fits_with_peak_concurrency():
     import sklearn.ensemble as ensemble_mod
     import sklearn.linear_model as linear_mod
 
+    _mock_settings = MagicMock()
+    _mock_settings.MAX_PARALLEL_MODEL_EVAL = 3
+
     with (
         patch.object(
             ensemble_mod,
@@ -161,6 +169,7 @@ def test_evaluate_models_runs_three_fits_with_peak_concurrency():
             "LogisticRegression",
             wrap(linear_mod.LogisticRegression),
         ),
+        patch("backend.shared.settings.get_settings", return_value=_mock_settings),
     ):
 
         def cap_create(**kw):

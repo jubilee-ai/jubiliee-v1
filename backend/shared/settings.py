@@ -60,6 +60,57 @@ class Settings(BaseSettings):
         description="R2 bucket name for model weights",
     )
 
+    # Training / scaling (Railway and production workers)
+    TRAINING_REQUIRE_CELERY: bool = Field(
+        default=False,
+        description="When True, /api/train requires Redis+Celery; no in-process thread fallback.",
+    )
+    FEATURE_EXPERIMENT_ENABLED: bool = Field(
+        default=True,
+        description="Enable parallel feature scout grid; disable under memory pressure.",
+    )
+    FEATURE_SCOUT_MAX_WORKERS: int = Field(
+        default=2,
+        ge=1,
+        le=32,
+        description="Max process pool workers for feature scout jobs.",
+    )
+    FEATURE_SCOUT_MAX_VARIANTS: int = Field(
+        default=4,
+        ge=1,
+        le=12,
+        description="Cap feature variants in the scout grid (reduces memory).",
+    )
+    FEATURE_SCOUT_RF_N_JOBS: int = Field(
+        default=1,
+        ge=1,
+        le=64,
+        description="RandomForest n_jobs inside scout workers (use 1 to avoid nested oversubscription).",
+    )
+    FEATURE_EXPERIMENT_SKIP_ABOVE_ROWS: int = Field(
+        default=200_000,
+        ge=0,
+        description="Skip scout grid when raw training rows exceed this (0 disables this skip).",
+    )
+    MAX_PARALLEL_BATCH_TRAIN: int = Field(
+        default=1,
+        ge=1,
+        le=4,
+        description="ThreadPool max workers for batch_train_with_skill.",
+    )
+    MAX_PARALLEL_MODEL_EVAL: int = Field(
+        default=1,
+        ge=1,
+        le=4,
+        description="ThreadPool max workers for tool_evaluate_models in the simple agent.",
+    )
+    TRAINING_STATE_BLOB_MIN_BYTES: int = Field(
+        default=65536,
+        ge=4096,
+        description="When object storage is enabled, persist full training state snapshots "
+        "larger than this threshold and keep only compact data plus a storage key in Postgres.",
+    )
+
     # App config
     CORS_ORIGINS: list[str] = Field(
         default_factory=lambda: [
@@ -120,6 +171,16 @@ class Settings(BaseSettings):
     @property
     def trained_models_dir(self) -> Path:
         return self.project_root / "trained_models"
+
+    @property
+    def training_require_celery_effective(self) -> bool:
+        """True if thread fallback for training must not be used."""
+        if self.TRAINING_REQUIRE_CELERY:
+            return True
+        return bool(
+            os.environ.get("RAILWAY_ENVIRONMENT")
+            or os.environ.get("RAILWAY_PROJECT_ID")
+        )
 
 
 @lru_cache(maxsize=1)

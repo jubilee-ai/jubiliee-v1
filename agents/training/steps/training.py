@@ -246,8 +246,17 @@ def batch_train_with_skill_tool(
         except Exception as e:
             return {"model_name": cfg.model_name, "estimator": cfg.estimator, "success": False, "error": str(e)}
 
+    def _max_parallel_batch() -> int:
+        try:
+            from backend.shared.settings import get_settings
+
+            return max(1, int(get_settings().MAX_PARALLEL_BATCH_TRAIN))
+        except Exception:
+            return 1
+
     results: list[dict] = []
-    with ThreadPoolExecutor(max_workers=min(len(configs), 3)) as pool:
+    mw = min(len(configs), _max_parallel_batch())
+    with ThreadPoolExecutor(max_workers=mw) as pool:
         futures = {pool.submit(_run_one, cfg): cfg for cfg in configs}
         for future in as_completed(futures):
             results.append(future.result())

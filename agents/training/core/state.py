@@ -30,6 +30,7 @@ STATE_SNAPSHOT_KEYS = [
     "training_plan",
     "training_metrics",
     "report_path",
+    "report_storage_key",
     "error",
     "plan",
     "plan_index",

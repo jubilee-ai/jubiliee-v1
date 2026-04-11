@@ -22,6 +22,8 @@ services:
       - .env
     environment:
       - REDIS_URL=redis://redis:6379/0
+      # Local dev: thread fallback for /api/train if worker unavailable. Production:
+      # set TRAINING_REQUIRE_CELERY=true and run the celery-worker service below.
     ports:
       - "8000:8000"
     volumes:

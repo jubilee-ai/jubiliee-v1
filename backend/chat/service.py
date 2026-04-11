@@ -54,6 +54,8 @@ def _build_training_context_message(ctx: dict) -> str:
         lines.append(f"  Iterations  : {ctx['num_iterations']}")
     if ctx.get("report_path"):
         lines.append(f"  Report      : {ctx['report_path']}")
+    if ctx.get("report_storage_key"):
+        lines.append(f"  Report key  : {ctx['report_storage_key']}")
     lines.extend([
         "  This is background context only.",
         "  Do not assume the user's new message is fully answered by this prior run.",

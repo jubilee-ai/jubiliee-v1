@@ -1,4 +1,5 @@
 import json
+import re
 from typing import Any
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
@@ -11,6 +12,7 @@ from backend.catalog.repository import _trained_model_report_path
 from backend.catalog.service import (DatasetUploadConflictError,
                                      DatasetUploadValidationError)
 from backend.shared.artifact_store import get_artifact_store
+from backend.shared.training_artifacts import download_json_artifact
 from backend.shared.database import get_db_session
 from backend.shared.models import Dataset, Model, ModelVersion
 
@@ -77,12 +79,22 @@ async def get_trained_models(
 @router.get("/api/trained-models/{model_name}/report")
 async def get_trained_model_report(model_name: str):
     report_path = _trained_model_report_path(model_name)
-    if not report_path.is_file():
-        raise HTTPException(status_code=404, detail="Report not found")
+    if report_path.is_file():
+        try:
+            return json.loads(report_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as e:
+            raise HTTPException(status_code=500, detail="Invalid report JSON") from e
+
+    safe = re.sub(r"[^\w\-.]", "_", model_name)
+    storage_key = f"reports/{safe}_report.json"
     try:
-        return json.loads(report_path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as e:
-        raise HTTPException(status_code=500, detail="Invalid report JSON") from e
+        store = get_artifact_store()
+        if store.exists(storage_key):
+            return download_json_artifact(storage_key)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+    raise HTTPException(status_code=404, detail="Report not found")
 
 
 @router.get("/api/trained-models/{model_name}/download")

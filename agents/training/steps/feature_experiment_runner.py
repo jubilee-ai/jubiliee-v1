@@ -29,6 +29,34 @@ if str(_DATA_TOOLS_DIR) not in sys.path:
 from utils import get_registered_dataset, register_dataset
 
 from ..utils.graph_stream_hooks import emit_graph_stream
+
+
+def _feature_experiment_config() -> dict[str, Any]:
+    """Load caps from app settings when available (worker or API process)."""
+    try:
+        from backend.shared.settings import get_settings
+
+        s = get_settings()
+        return {
+            "enabled": s.FEATURE_EXPERIMENT_ENABLED,
+            "max_workers": s.FEATURE_SCOUT_MAX_WORKERS,
+            "max_variants": s.FEATURE_SCOUT_MAX_VARIANTS,
+            "rf_n_jobs": s.FEATURE_SCOUT_RF_N_JOBS,
+            "skip_above_rows": s.FEATURE_EXPERIMENT_SKIP_ABOVE_ROWS,
+        }
+    except Exception:
+        return {
+            "enabled": os.getenv("FEATURE_EXPERIMENT_ENABLED", "true").lower()
+            in ("1", "true", "yes"),
+            "max_workers": max(1, int(os.getenv("FEATURE_SCOUT_MAX_WORKERS", "2"))),
+            "max_variants": max(1, int(os.getenv("FEATURE_SCOUT_MAX_VARIANTS", "4"))),
+            "rf_n_jobs": max(1, int(os.getenv("FEATURE_SCOUT_RF_N_JOBS", "1"))),
+            "skip_above_rows": int(os.getenv("FEATURE_EXPERIMENT_SKIP_ABOVE_ROWS", "200000")),
+        }
+
+
+def _scout_rf_n_jobs() -> int:
+    return int(_feature_experiment_config()["rf_n_jobs"])
 from .feature_engineering import _extract_columns_from_formula
 from .feature_engineering_executor import execute_feature_spec_split
 
@@ -193,10 +221,11 @@ def generate_feature_variants(
                         f"Ablation: dropped all '{op}' features ({len(group_feats)})",
                     ))
 
-    # Cap total variants to keep runtime reasonable
-    MAX_VARIANTS = 6
-    if len(variants) > MAX_VARIANTS:
-        variants = variants[:MAX_VARIANTS]
+    # Cap total variants (configurable; default lower than historical 6 for memory)
+    cfg = _feature_experiment_config()
+    max_v = max(1, int(cfg.get("max_variants", 4)))
+    if len(variants) > max_v:
+        variants = variants[:max_v]
 
     return variants
 
@@ -253,11 +282,16 @@ def _train_scout(
     X_train = X_train.fillna(0)
     X_val = X_val.fillna(0)
 
+    rf_nj = _scout_rf_n_jobs()
     models = {
         ("classification", "hgb"): HistGradientBoostingClassifier(max_iter=200, max_depth=6, random_state=42),
-        ("classification", "rf"): RandomForestClassifier(n_estimators=200, max_depth=10, random_state=42, n_jobs=-1),
+        ("classification", "rf"): RandomForestClassifier(
+            n_estimators=200, max_depth=10, random_state=42, n_jobs=rf_nj
+        ),
         ("regression", "hgb"): HistGradientBoostingRegressor(max_iter=200, max_depth=6, random_state=42),
-        ("regression", "rf"): RandomForestRegressor(n_estimators=200, max_depth=10, random_state=42, n_jobs=-1),
+        ("regression", "rf"): RandomForestRegressor(
+            n_estimators=200, max_depth=10, random_state=42, n_jobs=rf_nj
+        ),
     }
 
     model = models.get((task_type, model_family))
@@ -306,14 +340,14 @@ def _scout_worker(args: tuple) -> ScoutResult:
     """Top-level function for ProcessPoolExecutor (must be picklable)."""
     (
         variant_name, model_family, task_type,
-        X_train_dict, y_train_list, X_val_dict, y_val_list,
+        X_tr_arr, y_tr_arr, X_va_arr, y_va_arr,
         feature_cols,
     ) = args
     try:
-        X_train = pd.DataFrame(X_train_dict, columns=feature_cols)
-        y_train = pd.Series(y_train_list, name="target")
-        X_val = pd.DataFrame(X_val_dict, columns=feature_cols)
-        y_val = pd.Series(y_val_list, name="target")
+        X_train = pd.DataFrame(np.asarray(X_tr_arr), columns=feature_cols)
+        y_train = pd.Series(np.asarray(y_tr_arr), name="target")
+        X_val = pd.DataFrame(np.asarray(X_va_arr), columns=feature_cols)
+        y_val = pd.Series(np.asarray(y_va_arr), name="target")
 
         result = _train_scout(X_train, y_train, X_val, y_val, task_type, model_family)
         return ScoutResult(
@@ -403,6 +437,7 @@ def run_experiment_grid(
 ) -> ExperimentResult:
     """Run the parallel feature-experiment grid and return the best variant."""
     t0 = time.time()
+    cfg = _feature_experiment_config()
 
     emit_graph_stream({"type": "progress", "message": "Starting feature experiment grid...", "phase": "feature_experiment_runner"})
 
@@ -413,6 +448,44 @@ def run_experiment_grid(
         raise ValueError(f"Training dataset not found: {train_ref}")
     if val_df is None:
         raise ValueError(f"Validation dataset not found: {val_ref}")
+
+    skip_above = int(cfg.get("skip_above_rows") or 0)
+    if not cfg.get("enabled", True):
+        print("[experiment_runner] Feature experiment grid disabled by config — skipping scouts")
+        return ExperimentResult(
+            best_variant_name="full",
+            best_metric=0.0,
+            best_feature_spec=feature_spec,
+            transformed_train_ref=f"{train_ref}_features",
+            transformed_val_ref=f"{val_ref}_features" if val_ref else None,
+            transformed_test_ref=f"{test_ref}_features" if test_ref else None,
+            experiment_grid=[],
+            feature_rankings={},
+            dropped_features=[],
+            signal_features=[],
+            total_variants=1,
+            total_scouts=0,
+            wall_time_seconds=round(time.time() - t0, 2),
+        )
+    if skip_above > 0 and len(train_df) > skip_above:
+        print(
+            f"[experiment_runner] Train rows {len(train_df)} > skip threshold {skip_above} — skipping scout grid"
+        )
+        return ExperimentResult(
+            best_variant_name="full",
+            best_metric=0.0,
+            best_feature_spec=feature_spec,
+            transformed_train_ref=f"{train_ref}_features",
+            transformed_val_ref=f"{val_ref}_features" if val_ref else None,
+            transformed_test_ref=f"{test_ref}_features" if test_ref else None,
+            experiment_grid=[],
+            feature_rankings={},
+            dropped_features=[],
+            signal_features=[],
+            total_variants=1,
+            total_scouts=0,
+            wall_time_seconds=round(time.time() - t0, 2),
+        )
 
     MAX_SCOUT_ROWS = 10_000
     if len(train_df) > MAX_SCOUT_ROWS:
@@ -509,12 +582,16 @@ def run_experiment_grid(
         for mf in model_families:
             jobs.append((
                 v_name, mf, task_type,
-                X_tr.values.tolist(), y_tr.tolist(),
-                X_va.values.tolist(), y_va.tolist(),
+                np.ascontiguousarray(X_tr.to_numpy(copy=True)),
+                np.asarray(y_tr.to_numpy(copy=True)),
+                np.ascontiguousarray(X_va.to_numpy(copy=True)),
+                np.asarray(y_va.to_numpy(copy=True)),
                 fcols,
             ))
 
-    n_workers = max_workers or min(len(jobs), os.cpu_count() or 4, 8)
+    cap_w = int(cfg.get("max_workers") or 2)
+    n_workers = max_workers or min(len(jobs), cap_w, os.cpu_count() or 1)
+    n_workers = max(1, n_workers)
     print(f"[experiment_runner] Running {len(jobs)} scout jobs with {n_workers} workers...")
 
     TOTAL_TIMEOUT = 300
