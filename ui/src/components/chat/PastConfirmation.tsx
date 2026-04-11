@@ -50,7 +50,7 @@ export function PastConfirmation({
             )}
           </div>
           
-          <div className="text-[15px] leading-relaxed prose prose-sm dark:prose-invert max-w-none prose-p:my-1 prose-headings:my-2">
+          <div className="text-lead leading-relaxed prose prose-sm dark:prose-invert max-w-none prose-p:my-1 prose-headings:my-2">
             <ReactMarkdown>{confirmation.summary}</ReactMarkdown>
           </div>
           

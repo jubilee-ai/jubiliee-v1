@@ -40,7 +40,7 @@ export function TaskPlanCard({
         resolved && "opacity-60",
       )}
     >
-      <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-2">
+      <p className="text-overline font-semibold uppercase tracking-wider text-muted-foreground mb-2">
         Review plan
       </p>
       <p className="text-sm font-medium text-foreground leading-snug mb-2 whitespace-pre-wrap break-words">

@@ -64,7 +64,6 @@ interface ChatPanelProps {
   onViewModelInRegistry?: () => void
   agentState?: TrainingAgentState
   steps?: StepInfo[]
-  hasExperimentChecklist?: boolean
   experimentId?: string | null
   /** Current pipeline activity label (shown beside the loading wave) */
   runningStepHint?: string | null
@@ -98,7 +97,6 @@ export const ChatPanel = forwardRef<ChatPanelRef, ChatPanelProps>(function ChatP
   onViewModelInRegistry,
   agentState,
   steps,
-  hasExperimentChecklist,
   experimentId,
   runningStepHint,
   hideComposer,
@@ -282,8 +280,8 @@ export const ChatPanel = forwardRef<ChatPanelRef, ChatPanelProps>(function ChatP
         onClick={handleContainerClick}
       >
         <div className="flex-1 min-h-0 overflow-y-auto flex flex-col">
-          <div className="max-w-3xl mx-auto px-6 sm:px-10 py-10 flex-1 flex flex-col items-center justify-center gap-4 min-h-[min(420px,70vh)]">
-            <span className="text-[10px] font-bold text-muted-foreground/60 tracking-[0.2em] uppercase">
+          <div className="max-w-4xl mx-auto px-6 sm:px-10 py-10 flex-1 flex flex-col items-center justify-center gap-4 min-h-[min(420px,70vh)]">
+            <span className="text-overline font-bold text-muted-foreground/60 tracking-[0.2em] uppercase">
               Background task
             </span>
             <Loader2 className="h-9 w-9 animate-spin text-primary" aria-hidden />
@@ -321,7 +319,7 @@ export const ChatPanel = forwardRef<ChatPanelRef, ChatPanelProps>(function ChatP
         ref={scrollContainerRef}
         className="flex-1 min-h-0 overflow-y-auto overscroll-y-contain"
       >
-        <div className={`space-y-5 max-w-3xl mx-auto px-6 py-8 ${hasExperimentChecklist ? "pt-14" : ""}`}>
+        <div className="space-y-5 max-w-4xl mx-auto px-6 py-8">
           {backgroundIntakeActive && (
             <div className="rounded-xl border border-primary/20 bg-primary/[0.06] px-4 py-3 text-left shadow-sm">
               <div className="flex items-start gap-3">
@@ -372,6 +370,7 @@ export const ChatPanel = forwardRef<ChatPanelRef, ChatPanelProps>(function ChatP
                     isRunning={isRunning}
                     onApproveTrainingPlan={onApproveTrainingPlan}
                     datasets={availableDatasets}
+                    agentState={agentState}
                     ref={setMessageRef(msg.id)}
                   />
                 )}
@@ -466,7 +465,7 @@ function PhaseMarker({ phase }: { phase: string }) {
   return (
     <div className="flex items-center gap-3 py-2 animate-phase-in">
       <div className="flex-1 h-px bg-gradient-to-r from-transparent via-border/40 to-transparent" />
-      <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-[0.15em] text-muted-foreground/50 font-semibold select-none">
+      <div className="flex items-center gap-1.5 text-overline uppercase tracking-[0.15em] text-muted-foreground/50 font-semibold select-none">
         {Icon && <Icon className="h-3 w-3 text-primary/40 animate-spin-in" />}
         <span>{phase}</span>
       </div>

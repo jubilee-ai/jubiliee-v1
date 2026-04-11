@@ -6,7 +6,6 @@ export { SummaryTab } from "./SummaryTab"
 export { MetricsTab } from "./MetricsTab"
 export { AnalysisTab } from "./AnalysisTab"
 export { FeaturesTab } from "./FeaturesTab"
-export { TraceTab } from "./TraceTab"
 
 // Chart components
 export { CorrelationBar } from "./CorrelationBar"

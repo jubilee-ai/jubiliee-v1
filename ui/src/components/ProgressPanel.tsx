@@ -84,7 +84,7 @@ export function ProgressPanel({
 
         {/* Goal */}
         {agentState.goal && (
-          <p className="mt-3 text-[13px] text-muted-foreground line-clamp-2 leading-relaxed">
+          <p className="mt-3 text-ui text-muted-foreground line-clamp-2 leading-relaxed">
             {agentState.goal}
           </p>
         )}
@@ -109,7 +109,7 @@ export function ProgressPanel({
                 merged.status === "awaiting_confirmation"
               return (
                 <div key={group.label} className={gi > 0 ? "mt-3" : ""}>
-                  <div className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground/60 px-2.5 mb-1">
+                  <div className="text-overline font-semibold uppercase tracking-widest text-muted-foreground/60 px-2.5 mb-1">
                     {group.label}
                   </div>
                   <div className="space-y-0.5">
@@ -132,7 +132,7 @@ export function ProgressPanel({
 
             return (
               <div key={group.label} className={gi > 0 ? "mt-3" : ""}>
-                <div className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground/60 px-2.5 mb-1">
+                <div className="text-overline font-semibold uppercase tracking-widest text-muted-foreground/60 px-2.5 mb-1">
                   {group.label}
                 </div>
                 <div className="space-y-0.5">

@@ -138,7 +138,7 @@ Report all iterations, final metrics, and your chosen best model. Include:
 ### `summary` (critical)
 The pipeline may re-select the winning run by validation metrics after you respond. User-facing test scores always refer to **`best_model_name`**.
 
-- **`summary`**: Experiment arc (what you tried, outcomes), why **`best_model_name`** won, and headline metrics once each. **Be concise** — no repeated metrics, no filler. If the last iteration is not the best, say so; do not frame the last run as the deliverable when an earlier run won. Do not add generic deployment or ops advice.
+- **`summary`**: Start with **1–3 sentences** a **non-engineer** can read: what the **delivered model is for** (the decision or quantity it supports), why that matters, and only if helpful the **broad model type** (e.g. gradient-boosted trees) — **not** library names, hyperparameter values, `scale_pos_weight` math, or tuning jargon. Then: experiment arc (what you tried, outcomes), why **`best_model_name`** won, headline metrics once each. **Be concise** — no repeated metrics, no filler. If the last iteration is not the best, say so; do not frame the last run as the deliverable when an earlier run won. Do not add generic deployment or ops advice.
 """
 
 FEATURE_ENGINEERING_SIMPLE_SYSTEM_PROMPT = """You are a senior data scientist selecting and engineering features for a machine learning model.

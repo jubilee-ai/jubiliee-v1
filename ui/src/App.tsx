@@ -1,23 +1,15 @@
-import { useState, useEffect, useRef, useCallback, useMemo, type CSSProperties, type MouseEvent as ReactMouseEvent } from "react"
+import { useState, useEffect, useCallback, useMemo, type CSSProperties, type MouseEvent as ReactMouseEvent } from "react"
 import { useRealAgent } from "@/hooks/useRealAgent"
-import { ProgressPanel } from "@/components/ProgressPanel"
-import { ChatPanel, ChatPanelRef } from "@/components/ChatPanel"
+import { ChatPanel } from "@/components/ChatPanel"
 import { AppSidebar, type AppTab } from "@/components/AppSidebar"
 import { RegistryFinalReport } from "@/components/TrainingReportJsonDialog"
 import { FinalReport } from "@/components/FinalReport"
 import { trainingReportModelLabel } from "@/lib/trainingReport"
 import { Button } from "@/components/ui/button"
 import { TooltipProvider } from "@/components/ui/tooltip"
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from "@/components/ui/dialog"
 import { RotateCcw, Search, Bell, ArrowLeft } from "lucide-react"
-import type { StepInfo, TrainingAgentState, ConfirmationAction, TaskPlanSummary } from "@/types/agent"
-import { CHECKLIST_EXCLUDE_IDS, filterVisiblePipelineSteps } from "@/lib/trainingSteps"
+import type { ConfirmationAction, TaskPlanSummary } from "@/types/agent"
+import { filterVisiblePipelineSteps } from "@/lib/trainingSteps"
 import { cn } from "@/lib/utils"
 import { useExperimentDetailQuery } from "@/lib/queries"
 import { DatasetsPage } from "@/components/DatasetsPage"
@@ -61,16 +53,16 @@ function SignInGate() {
         <div className="mx-auto w-full max-w-[440px]">
           <div className="overflow-hidden rounded-[28px] border border-border/60 bg-card/95 shadow-[0_24px_80px_-12px_rgba(18,86,210,0.18),0_8px_40px_rgba(10,26,54,0.06)] backdrop-blur-xl">
             <div className="px-6 pt-8 pb-2 text-center">
-              <p className="text-[11px] font-medium uppercase tracking-[0.24em] text-muted-foreground">
+              <p className="text-caption font-medium uppercase tracking-[0.24em] text-muted-foreground">
                 Sign in / Sign up
               </p>
               <div className="mt-3 flex items-center justify-center gap-2.5">
                 <img src="/jubilee-logo.svg" alt="" className="h-9 w-9 shrink-0" width={36} height={36} />
-                <h1 className="text-[1.95rem] font-semibold tracking-tight text-foreground">
+                <h1 className="font-headline text-3xl font-semibold tracking-tight text-foreground">
                   Jubilee
                 </h1>
               </div>
-              <p className="mt-2 text-sm text-muted-foreground">
+              <p className="mt-2 text-sm text-muted-foreground leading-relaxed">
                 Access your training workspace.
               </p>
             </div>
@@ -117,7 +109,7 @@ function SignInGate() {
                     "h-11 rounded-xl border border-border bg-muted/70 text-foreground shadow-none hover:bg-accent hover:text-foreground",
                   socialButtonsBlockButtonText: "font-medium",
                   dividerLine: "bg-border",
-                  dividerText: "text-muted-foreground text-[10px] uppercase tracking-[0.22em]",
+                  dividerText: "text-muted-foreground text-overline uppercase tracking-[0.22em]",
                   formFieldLabel: "text-foreground/90 text-sm font-medium",
                   formFieldInput:
                     "h-11 rounded-xl border border-input bg-muted/60 px-4 text-foreground shadow-none placeholder:text-muted-foreground focus:border-primary focus:bg-card",
@@ -161,13 +153,11 @@ function AuthenticatedApp() {
   const [experimentDetailQueryId, setExperimentDetailQueryId] = useState<string | null>(null)
   /** When set, Models tab scrolls to and briefly highlights this trained model row. */
   const [modelsScrollToModelName, setModelsScrollToModelName] = useState<string | null>(null)
-  const chatPanelRef = useRef<ChatPanelRef>(null)
-
   const realAgent = useRealAgent()
 
   const experimentDetailQuery = useExperimentDetailQuery(experimentDetailQueryId)
 
-  /** Full step state stays in the hook for SSE; checklist/chat hide feature steps for unsupervised. */
+  /** Full step state stays in the hook for SSE; chat hides feature steps for unsupervised. */
   const visiblePipelineSteps = useMemo(
     () => filterVisiblePipelineSteps(realAgent.steps, realAgent.agentState),
     [realAgent.steps, realAgent.agentState],
@@ -282,16 +272,6 @@ function AuthenticatedApp() {
     realAgent.isRunning,
     realAgent.applyExperimentDetail,
   ])
-
-  const handleStepClick = useCallback((stepId: string) => {
-    if (chatPanelRef.current) {
-      const messageId = chatPanelRef.current.findMessageByStepName(stepId)
-      if (messageId) {
-        setHighlightedMessageId(messageId)
-        chatPanelRef.current.scrollToMessage(messageId)
-      }
-    }
-  }, [])
 
   const handleClearHighlight = useCallback(() => {
     setHighlightedMessageId(null)
@@ -451,30 +431,6 @@ function AuthenticatedApp() {
     }
   }, [isResizingSidebar, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH])
 
-  const checklistSteps = agent.steps.filter((s) => !CHECKLIST_EXCLUDE_IDS.has(s.id))
-  const completedSteps = checklistSteps.filter((s) => s.status === "completed").length
-  const totalSteps = checklistSteps.length
-  const currentStep = visiblePipelineSteps.find(
-    (s) => s.status === "running" || s.status === "awaiting_confirmation",
-  )
-  const displayCurrentStep =
-    currentStep?.id === "select_model"
-      ? null
-      : currentStep?.id === "generate_report"
-        ? { ...currentStep, name: "Finishing up" }
-        : currentStep?.id === "training_approval" || currentStep?.id === "training"
-          ? { ...currentStep, name: "Training" }
-          : currentStep
-  const trainingPhaseStepIds = ["training_approval", "training", "generate_report"] as const
-  const isInTrainingPhase = realAgent.steps.some(
-    (s) =>
-      trainingPhaseStepIds.includes(s.id as (typeof trainingPhaseStepIds)[number]) &&
-      s.status !== "pending",
-  )
-  const hasExperimentChecklist =
-    !!realAgent.experimentId &&
-    isInTrainingPhase &&
-    agent.agentState.lab_mode !== "task"
   const layoutStyle = { "--sidebar-width": `${sidebarWidth}px` } as CSSProperties
 
   return (
@@ -575,22 +531,8 @@ function AuthenticatedApp() {
                   </div>
                 ) : null}
                 <div className="relative flex flex-1 min-h-0 flex-col overflow-hidden">
-                  {hasExperimentChecklist && (
-                    <div className="absolute top-3 left-1/2 -translate-x-1/2 z-10">
-                      <ExperimentChecklistIndicator
-                        steps={checklistSteps}
-                        currentStep={displayCurrentStep ?? null}
-                        completedSteps={completedSteps}
-                        totalSteps={totalSteps}
-                        agentState={agent.agentState}
-                        isRunning={agent.isRunning}
-                        onStepClick={handleStepClick}
-                      />
-                    </div>
-                  )}
                   <ChatPanel
                     key={realAgent.experimentId ?? experimentDetailQueryId ?? "draft"}
-                    ref={chatPanelRef}
                     messages={agent.messages}
                     confirmationRequest={agent.confirmationRequest}
                     isRunning={agent.isRunning}
@@ -610,7 +552,6 @@ function AuthenticatedApp() {
                     }
                     agentState={agent.agentState}
                     steps={agent.steps}
-                    hasExperimentChecklist={hasExperimentChecklist}
                     experimentId={realAgent.experimentId}
                     runningStepHint={realAgent.runningStepHint}
                     hideComposer={agent.agentState.lab_mode === "task"}
@@ -638,9 +579,10 @@ function AuthenticatedApp() {
                 onScrollToModelConsumed={() => setModelsScrollToModelName(null)}
               />
             </div>
+            {/* Settings tab (commented out)
             <div className={cn("flex-1 overflow-auto", activeTab !== "settings" && "hidden")}>
               <div className="max-w-5xl mx-auto px-8 py-10">
-                  <span className="text-[10px] font-bold text-muted-foreground tracking-widest uppercase">Configuration</span>
+                  <span className="text-overline font-bold text-muted-foreground tracking-widest uppercase">Configuration</span>
                   <h1 className="font-headline text-3xl font-semibold text-foreground tracking-tight mt-1">Settings & API</h1>
                   <p className="mt-3 text-muted-foreground text-sm leading-relaxed max-w-lg">Account management, API keys, and MCP access configuration.</p>
                   <div className="mt-10 rounded-xl bg-card p-8 text-center text-muted-foreground text-sm">
@@ -648,6 +590,7 @@ function AuthenticatedApp() {
                   </div>
               </div>
             </div>
+            */}
           </main>
         </div>
 
@@ -667,72 +610,5 @@ function AuthenticatedApp() {
         )}
       </div>
     </TooltipProvider>
-  )
-}
-
-function ExperimentChecklistIndicator({
-  steps,
-  currentStep,
-  completedSteps,
-  totalSteps,
-  agentState,
-  isRunning,
-  onStepClick,
-}: {
-  steps: StepInfo[]
-  currentStep: StepInfo | null
-  completedSteps: number
-  totalSteps: number
-  agentState: TrainingAgentState
-  isRunning: boolean
-  onStepClick: (stepId: string) => void
-}) {
-  return (
-    <Dialog>
-      <DialogTrigger asChild>
-        <button className="inline-flex items-center gap-2.5 h-8 px-3.5 rounded-full bg-card/95 backdrop-blur-md shadow-[0_2px_8px_rgba(0,0,0,0.06)] border border-border/40 hover:shadow-[0_4px_12px_rgba(0,0,0,0.1)] hover:border-border/60 transition-all cursor-pointer group">
-          <div className="flex items-center gap-[3px]">
-            {steps.map((s, i) => (
-              <div
-                key={i}
-                className={cn(
-                  "w-[5px] h-[5px] rounded-full transition-colors",
-                  s.status === "completed" && "bg-[hsl(var(--step-complete))]",
-                  (s.status === "running" || s.status === "awaiting_confirmation") && "bg-primary animate-pulse",
-                  (s.status === "pending" || s.status === "skipped") && "bg-muted-foreground/20",
-                  s.status === "error" && "bg-destructive",
-                  s.status === "stale" && "bg-amber-400",
-                )}
-              />
-            ))}
-          </div>
-          <span className="text-[11px] text-muted-foreground font-medium tabular-nums">
-            {completedSteps}/{totalSteps}
-          </span>
-          {currentStep && (
-            <>
-              <div className="w-px h-3 bg-border/40" />
-              <span className="text-[11px] text-muted-foreground truncate max-w-[140px] group-hover:text-foreground transition-colors">
-                {currentStep.name}
-              </span>
-            </>
-          )}
-        </button>
-      </DialogTrigger>
-      <DialogContent className="max-w-md max-h-[80vh] overflow-hidden flex flex-col">
-        <DialogHeader>
-          <DialogTitle className="font-headline">Experiment checklist</DialogTitle>
-        </DialogHeader>
-        <div className="flex-1 overflow-auto -mx-6 px-6">
-          <ProgressPanel
-            steps={steps}
-            currentStepId={currentStep?.id ?? null}
-            agentState={agentState}
-            isRunning={isRunning}
-            onStepClick={onStepClick}
-          />
-        </div>
-      </DialogContent>
-    </Dialog>
   )
 }

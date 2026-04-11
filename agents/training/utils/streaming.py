@@ -340,10 +340,24 @@ def build_node_update(node_name: str, node_output: dict[str, Any]) -> dict[str, 
                 f"**Unsupervised:** using cleaned features (`{short_ref}`) — no encoded matrix step"
             )
         else:
-            description = f"Initial encoded matrix: {len(created)} columns"
-            if len(created) != len(spec_features):
-                description += f" from {len(spec_features)} feature definitions (one-hot expands categoricals)"
-            description += "."
+            trace = node_output.get("analysis_trace") or []
+            ks = (trace[0].get("key_stats") or {}) if trace and isinstance(trace[0], dict) else {}
+            overview = ks.get("dataset_overview") or {}
+            n_rows, n_cols = overview.get("rows"), overview.get("columns")
+            n_corr = len(ks.get("feature_correlations") or [])
+            has_num = bool(ks.get("numeric_summaries"))
+            analysis_bits = []
+            if n_rows is not None and n_cols is not None:
+                analysis_bits.append(f"profiled **{int(n_rows):,}** rows × **{n_cols}** columns")
+            if n_corr:
+                analysis_bits.append("ranked correlations with the target")
+            if has_num:
+                analysis_bits.append("numeric summaries")
+            analysis_phrase = ", ".join(analysis_bits[:3]) if analysis_bits else "reviewed exploratory statistics"
+            description = (
+                f"Exploratory analysis ({analysis_phrase}) informed the feature matrix. "
+                f"After encoding, **{len(created)}** model-input columns are ready for training."
+            )
             update["details"] = {
                 "title": "Feature Engineering Complete", "description": description,
                 "features_created": created, "num_spec_features": len(spec_features),
@@ -351,11 +365,9 @@ def build_node_update(node_name: str, node_output: dict[str, Any]) -> dict[str, 
                 "errors": audit.get("errors", []),
             }
             _passed = node_output.get("feature_validation_passed")
-            _spec_n = len(spec_features)
-            _created_n = len(created)
+            _ready = "**Ready to train**" if _passed else "**Matrix built** — check validation notes"
             update["headline"] = (
-                f"Initial build: **{_spec_n}** definitions → **{_created_n}** encoded columns "
-                f"({'validation passed' if _passed else 'validation issues'})"
+                f"**Exploratory analysis complete** — {analysis_phrase}; {_ready}"
             )
 
     elif node_name == "feature_specification_and_engineering":
@@ -419,9 +431,24 @@ def build_node_update(node_name: str, node_output: dict[str, Any]) -> dict[str, 
                 "**Unsupervised:** cleaned features ready — skipped encoded matrix build"
             )
         else:
+            overview_m = ks.get("dataset_overview") or {}
+            n_rows_m, n_cols_m = overview_m.get("rows"), overview_m.get("columns")
+            n_corr_m = len(ks.get("feature_correlations") or [])
+            has_num_m = bool(ks.get("numeric_summaries"))
+            merged_bits = []
+            if n_rows_m is not None and n_cols_m is not None:
+                merged_bits.append(f"**{int(n_rows_m):,}**×**{n_cols_m}** data profile")
+            if n_corr_m:
+                merged_bits.append("target correlations")
+            if has_num_m:
+                merged_bits.append("numeric EDA")
+            eda_phrase = ", ".join(merged_bits) if merged_bits else "exploratory review"
             update["details"] = {
                 "title": "Features Specified & Engineered",
-                "description": f"Specified {len(features)} features; created {len(created)} columns after transforms.",
+                "description": (
+                    f"Exploratory analysis ({eda_phrase}) supported **{len(features)}** model features; "
+                    f"**{len(created)}** columns in the matrix after transforms."
+                ),
                 "features": [{"name": f.get("name"), "encoding": f.get("encoding"), "formula": str(f.get("formula")) if f.get("formula") else None} for f in features],
                 "key_stats": ks, "analysis_trace": trace,
                 "features_created": created, "num_spec_features": len(spec_features),
@@ -430,9 +457,9 @@ def build_node_update(node_name: str, node_output: dict[str, Any]) -> dict[str, 
                 "experiment_grid": exp_details if exp_details else None,
             }
             _passed = node_output.get("feature_validation_passed")
+            _tail = "ready for training ✓" if _passed else "review validation"
             update["headline"] = (
-                f"Selected **{len(features)} features**, built **{len(created)} columns** "
-                f"— validation {'passed' if _passed else 'failed'}"
+                f"**Features & analysis** — {eda_phrase}; matrix built · {_tail}"
             )
 
     elif node_name == "evaluate_models":
@@ -526,6 +553,8 @@ def build_node_update(node_name: str, node_output: dict[str, Any]) -> dict[str, 
             "success": m.get("success"), "model_name": m.get("model_name"), "model_type": m.get("model_type"), "num_iterations": m.get("num_iterations"),
             "val_accuracy": m.get("val_accuracy"), "val_roc_auc": m.get("val_roc_auc"), "test_accuracy": m.get("test_accuracy"), "test_roc_auc": m.get("test_roc_auc"),
             "val_r2": m.get("val_r2"), "val_rmse": m.get("val_rmse"), "test_r2": m.get("test_r2"), "test_rmse": m.get("test_rmse"), "test_mae": m.get("test_mae"),
+            "silhouette_score": m.get("silhouette_score"), "davies_bouldin": m.get("davies_bouldin") or m.get("davies_bouldin_score"),
+            "val_silhouette_score": m.get("val_silhouette_score"), "val_davies_bouldin_score": m.get("val_davies_bouldin_score"),
         }
         update["details"] = {
             "title": "Training Complete",
@@ -553,6 +582,10 @@ def build_node_update(node_name: str, node_output: dict[str, Any]) -> dict[str, 
         _t_auc = m.get("test_roc_auc")
         _t_r2 = m.get("test_r2")
         _t_rmse = m.get("test_rmse")
+        _sil = m.get("silhouette_score")
+        _db = m.get("davies_bouldin") if m.get("davies_bouldin") is not None else m.get("davies_bouldin_score")
+        _val_sil = m.get("val_silhouette_score")
+        _val_db = m.get("val_davies_bouldin_score")
         if _t_acc is not None or _t_auc is not None:
             _parts = []
             if _t_acc is not None:
@@ -567,6 +600,19 @@ def build_node_update(node_name: str, node_output: dict[str, Any]) -> dict[str, 
             if _t_rmse is not None:
                 _parts.append(f"RMSE {_t_rmse:.0f}")
             update["headline"] = f"Trained **{_mname}** — {', '.join(_parts)}"
+        elif _val_sil is not None or _val_db is not None or _sil is not None or _db is not None:
+            _parts = []
+            if _val_sil is not None:
+                _parts.append(f"holdout silhouette {_val_sil:.3f}")
+            elif _sil is not None:
+                _parts.append(f"silhouette {_sil:.3f}")
+            if _val_db is not None:
+                _parts.append(f"holdout D–B {_val_db:.3f}")
+            elif _db is not None:
+                _parts.append(f"D–B {_db:.3f}")
+            update["headline"] = (
+                f"Trained **{_mname}** — {', '.join(_parts)}" if _parts else f"Trained **{_mname}** successfully"
+            )
         else:
             update["headline"] = f"Trained **{_mname}** successfully"
 

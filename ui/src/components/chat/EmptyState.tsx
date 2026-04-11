@@ -12,8 +12,8 @@ export function EmptyState({ onAssignTask }: EmptyStateProps) {
         <div className="w-80 h-80 bg-primary/[0.04] rounded-full blur-3xl" />
       </div>
 
-      <div className="relative max-w-3xl mx-auto">
-        <p className="text-center text-[10px] font-bold uppercase tracking-[0.2em] text-muted-foreground/45 mb-6">
+      <div className="relative max-w-4xl mx-auto">
+        <p className="text-center text-overline font-bold uppercase tracking-[0.2em] text-muted-foreground/45 mb-6">
           Experimental Lab
         </p>
 
@@ -27,8 +27,8 @@ export function EmptyState({ onAssignTask }: EmptyStateProps) {
             <div className="rounded-xl bg-muted/30 w-11 h-11 flex items-center justify-center mb-4">
               <MessageSquare className="h-5 w-5 text-primary/70" />
             </div>
-            <h3 className="font-headline font-semibold text-lg tracking-tight text-foreground mb-1">Chat</h3>
-            <p className="text-sm text-muted-foreground leading-snug">Use the chat below.</p>
+            <h3 className="font-headline font-semibold text-base sm:text-lg tracking-tight text-foreground mb-1">Chat</h3>
+            <p className="text-sm text-muted-foreground leading-relaxed">Use the chat below.</p>
           </div>
 
           <button
@@ -46,8 +46,8 @@ export function EmptyState({ onAssignTask }: EmptyStateProps) {
             <div className="rounded-xl bg-primary/10 w-11 h-11 flex items-center justify-center mb-4">
               <Moon className="h-5 w-5 text-primary" />
             </div>
-            <h3 className="font-headline font-semibold text-lg tracking-tight mb-1">Assign a task</h3>
-            <p className="text-sm text-muted-foreground leading-snug mb-4">
+            <h3 className="font-headline font-semibold text-base sm:text-lg tracking-tight mb-1">Assign a task</h3>
+            <p className="text-sm text-muted-foreground leading-relaxed mb-4">
               Background training — Jubilee confirms the plan, then runs for you.
             </p>
             <span className="inline-flex items-center gap-1 text-sm font-medium text-primary">

@@ -305,7 +305,11 @@ class TrainingResult(BaseModel):
     iterations: list[TrainingIteration] = Field(default_factory=list)
     num_iterations: int
     summary: str = Field(
-        description="Concise narrative: experiment arc, why best_model_name won, key metrics stated once (no duplicate numbers).",
+        description=(
+            "User-facing narrative: open with plain-language 'what this model is for' and why it's useful; "
+            "then concise experiment arc, why best_model_name won, key metrics once each. "
+            "Avoid hyperparameter dumps, formulas, and implementation detail."
+        ),
     )
     feature_redo_requested: bool = False
 

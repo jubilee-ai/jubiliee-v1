@@ -54,6 +54,13 @@ export default {
         body: ['Inter', 'system-ui', 'sans-serif'],
         label: ['Inter', 'system-ui', 'sans-serif'],
       },
+      /** Semantic sizes — prefer these over arbitrary text-[10px] / text-[13px] for a consistent hierarchy. */
+      fontSize: {
+        overline: ["0.625rem", { lineHeight: "0.875rem" }], // 10px — uppercase section / micro labels
+        caption: ["0.6875rem", { lineHeight: "1rem" }], // 11px — secondary labels, compact meta
+        ui: ["0.8125rem", { lineHeight: "1.25rem" }], // 13px — sidebar, step rows, dense UI
+        lead: ["0.9375rem", { lineHeight: "1.55rem" }], // 15px — comfortable reading (confirmations, prose)
+      },
       borderRadius: {
         lg: "var(--radius)",
         md: "calc(var(--radius) - 2px)",

@@ -733,23 +733,10 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
         return summary.num_features
           ? `${summary.num_features} features`
           : ""
-      case "feature_engineering_executor": {
-        const spec = summary.num_spec_features
-        const created = Array.isArray(summary.features_created) ? summary.features_created.length : 0
-        if (spec && created) return `Initial: ${spec} defs → ${created} encoded cols`
-        if (created) return `${created} encoded cols`
-        return ""
-      }
-      case "feature_specification_and_engineering": {
-        const n = summary.num_features
-        const created = Array.isArray(summary.features_created) ? summary.features_created.length : 0
-        const passed = summary.validation_passed
-        const parts: string[] = []
-        if (n) parts.push(`${n} specified`)
-        if (created) parts.push(`${created} columns`)
-        if (passed !== undefined) parts.push(passed ? "ok" : "issues")
-        return parts.join(" · ")
-      }
+      case "feature_engineering_executor":
+        return "Exploratory analysis · matrix ready"
+      case "feature_specification_and_engineering":
+        return "Features & EDA · matrix built"
       case "feature_experiment_runner": {
         if (summary.skipped) return "skipped"
         const bv = summary.best_variant_name

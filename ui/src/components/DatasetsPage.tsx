@@ -75,7 +75,7 @@ function ColumnList({ columns }: { columns: string[] }) {
           {columns.map((col) => (
             <span
               key={col}
-              className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-mono text-muted-foreground"
+              className="rounded bg-muted px-1.5 py-0.5 text-overline font-mono text-muted-foreground"
             >
               {col}
             </span>
@@ -304,15 +304,15 @@ export function DatasetsPage({ enabled, onDatasetsChanged }: DatasetsPageProps) 
       </Dialog>
 
       <div className="max-w-5xl mx-auto px-8 py-10">
-        <span className="text-[10px] font-bold text-muted-foreground tracking-widest uppercase">
+        <span className="text-overline font-bold text-muted-foreground tracking-widest uppercase">
           Data Management
         </span>
         <div className="flex items-end justify-between mt-1 gap-4">
           <div>
-            <h1 className="font-headline text-3xl font-semibold text-foreground tracking-tight">
+            <h1 className="font-headline text-2xl sm:text-3xl font-semibold text-foreground tracking-tight">
               Data Assets
             </h1>
-            <p className="mt-2 text-muted-foreground text-sm leading-relaxed max-w-lg">
+            <p className="mt-2 text-muted-foreground text-base leading-relaxed max-w-lg">
               Manage and explore your datasets for training and evaluation.
             </p>
           </div>

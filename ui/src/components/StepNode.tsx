@@ -95,7 +95,7 @@ export function StepNode({ step, isActive: _isActive, onSelect }: StepNodeProps)
         {/* Name and subtitle */}
         <div className="flex-1 min-w-0">
           <div className={cn(
-            "text-[13px] leading-tight",
+            "text-ui leading-tight",
             (isCompleted || isRunning || isAwaiting) && "font-medium",
             isPending && "text-muted-foreground",
             isStale && "text-amber-700",
@@ -103,23 +103,23 @@ export function StepNode({ step, isActive: _isActive, onSelect }: StepNodeProps)
             {step.name}
           </div>
           {isRunning && (
-            <div className="text-[11px] text-muted-foreground mt-0.5">Processing...</div>
+            <div className="text-caption text-muted-foreground mt-0.5">Processing...</div>
           )}
           {isAwaiting && (
-            <div className="text-[11px] text-amber-600 mt-0.5">Awaiting review</div>
+            <div className="text-caption text-amber-600 mt-0.5">Awaiting review</div>
           )}
           {isStale && (
-            <div className="text-[11px] text-amber-600 mt-0.5">Needs re-run</div>
+            <div className="text-caption text-amber-600 mt-0.5">Needs re-run</div>
           )}
           {isCompleted && step.subtitle && !expanded && (
-            <div className="text-[11px] text-muted-foreground mt-0.5 truncate">{step.subtitle}</div>
+            <div className="text-caption text-muted-foreground mt-0.5 truncate">{step.subtitle}</div>
           )}
         </div>
 
         {/* Right side: badges and status */}
         <div className="flex items-center gap-1.5 flex-shrink-0">
           {(step.runCount || 0) > 1 && (
-            <span className="text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-muted text-muted-foreground">
+            <span className="text-overline font-medium px-1.5 py-0.5 rounded-full bg-muted text-muted-foreground">
               {step.runCount}x
             </span>
           )}
@@ -166,7 +166,7 @@ export function StepNode({ step, isActive: _isActive, onSelect }: StepNodeProps)
       {/* Expandable details */}
       {expanded && hasDetails && (
         <div className="px-2.5 pb-2.5 pt-0">
-          <div className="ml-[38px] text-[12px] text-muted-foreground leading-relaxed border-l-2 border-border/60 pl-3 py-1">
+          <div className="ml-[38px] text-xs text-muted-foreground leading-relaxed border-l-2 border-border/60 pl-3 py-1">
             {step.subtitle && (
               <div className="font-medium text-foreground/80 mb-1">{step.subtitle}</div>
             )}

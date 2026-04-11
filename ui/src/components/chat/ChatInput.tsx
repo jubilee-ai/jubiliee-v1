@@ -86,7 +86,7 @@ export function ChatInput({
   }
 
   return (
-    <div className="flex-shrink-0 z-10 border-t border-border/20 bg-background/95 backdrop-blur-md px-5 pt-3 pb-5 max-w-3xl mx-auto w-full supports-[backdrop-filter]:bg-background/80">
+    <div className="flex-shrink-0 z-10 border-t border-border/20 bg-background/95 backdrop-blur-md px-5 pt-3 pb-5 max-w-4xl mx-auto w-full supports-[backdrop-filter]:bg-background/80">
       <div className="rounded-2xl bg-card/95 backdrop-blur-sm border border-border/25 shadow-[0_2px_20px_-4px_rgba(0,0,0,0.06),0_0_0_1px_hsl(var(--border)/0.25)] transition-shadow duration-300 ease-out focus-within:border-border/40 focus-within:shadow-[0_0_0_1px_hsl(var(--primary)/0.18),0_0_24px_-4px_hsl(var(--primary)/0.14),0_12px_40px_-12px_rgba(0,0,0,0.08)]">
         {selectedDatasets.length > 0 && (
           <div className="flex items-center gap-2 px-4 py-2 flex-wrap border-b border-border/20 bg-muted/5">
@@ -116,7 +116,7 @@ export function ChatInput({
           onChange={(e) => onDraftChange(e.target.value)}
           onKeyDown={handleKeyDown}
           placeholder={placeholder}
-          className="composer-textarea min-h-[60px] max-h-[180px] resize-none border-0 shadow-none px-4 py-3 text-[14px] leading-6 placeholder:text-muted-foreground/40 bg-transparent"
+          className="composer-textarea min-h-[60px] max-h-[180px] resize-none border-0 shadow-none px-4 py-3 text-sm leading-6 placeholder:text-muted-foreground/40 bg-transparent"
           disabled={isDisabled}
         />
 
@@ -141,10 +141,10 @@ export function ChatInput({
                 <div className="space-y-1 max-h-[400px] overflow-y-auto -mx-2">
                   <div className="flex items-center gap-2 px-4 pt-1 pb-1.5">
                     <Database className="h-3.5 w-3.5 text-primary/50" />
-                    <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+                    <span className="text-caption font-semibold uppercase tracking-wider text-muted-foreground">
                       Source Datasets
                     </span>
-                    <span className="ml-auto text-[10px] tabular-nums text-muted-foreground/50">
+                    <span className="ml-auto text-overline tabular-nums text-muted-foreground/50">
                       {availableDatasets.filter((ds) => ds.trainable !== false).length}
                     </span>
                   </div>
@@ -184,7 +184,7 @@ export function ChatInput({
                               <div className="flex items-center gap-2">
                                 <span className="font-medium text-sm">{d.name || d.ref}</span>
                                 {d.role && (
-                                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground">
+                                  <span className="text-overline px-1.5 py-0.5 rounded bg-muted text-muted-foreground">
                                     {d.role}
                                   </span>
                                 )}

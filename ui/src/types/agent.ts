@@ -248,6 +248,15 @@ export interface AuditTraceItem {
   [key: string]: unknown
 }
 
+/** One scout run: a feature-set variant × one lightweight model (HGB or RF) */
+export interface ExperimentScoutRow {
+  variant?: string
+  model_family?: string
+  success?: boolean
+  metrics?: Record<string, number>
+  error?: string | null
+}
+
 export interface TrainingAgentState {
   // Inputs
   goal: string
@@ -296,6 +305,10 @@ export interface TrainingAgentState {
   training_plan?: Record<string, unknown> | null
   /** Result summary from feature_experiment_runner */
   experiment_result?: Record<string, unknown> | null
+  /** Per-scout rows (variant × HGB/RF) with validation metrics — from `experiment_grid` on the server */
+  experiment_grid_summary?: ExperimentScoutRow[] | null
+  /** Cross-scout weighted mean feature importances (higher = more signal) */
+  feature_rankings?: Record<string, number> | null
   model_weights_path: string | null
   training_metrics: TrainingMetrics | null
   training_iteration: number
