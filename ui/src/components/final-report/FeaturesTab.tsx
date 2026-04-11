@@ -9,6 +9,9 @@ interface FeaturesTabProps {
 
 export function FeaturesTab({ agentState }: FeaturesTabProps) {
   const features = agentState.feature_spec?.features || []
+  const isUnsupervisedFlow =
+    agentState.selected_model === "unsupervised" ||
+    agentState.label_definition?.split_strategy === "none"
   const dataSummary = agentState.training_plan?.data_summary as
     | { n_features?: number; train_rows?: number }
     | undefined
@@ -81,8 +84,16 @@ export function FeaturesTab({ agentState }: FeaturesTabProps) {
       {agentState.label_definition && (
         <Section title="Label Definition">
           <div className="grid grid-cols-2 gap-4">
-            <InfoBox label="Target Column" value={agentState.label_definition.target_column} />
-            <InfoBox label="Split Strategy" value={agentState.label_definition.split_strategy} />
+            <InfoBox
+              label="Target Column"
+              value={isUnsupervisedFlow ? "None (unsupervised)" : agentState.label_definition.target_column}
+            />
+            <InfoBox
+              label="Split Strategy"
+              value={
+                isUnsupervisedFlow ? "None — full dataset for training" : agentState.label_definition.split_strategy
+              }
+            />
             <InfoBox label="Grain" value={agentState.label_definition.grain || "N/A"} />
             {agentState.label_definition.forbidden_columns &&
               agentState.label_definition.forbidden_columns.length > 0 && (

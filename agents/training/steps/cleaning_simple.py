@@ -14,6 +14,7 @@ from typing import Optional
 
 from dotenv import load_dotenv
 from langchain.agents import create_agent
+from langchain.agents.middleware import ClearToolUsesEdit, ContextEditingMiddleware
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 
@@ -36,6 +37,17 @@ from transformations.tool_utils import resolve_dataset
 from utils import generate_unique_id, get_registered_dataset, register_dataset
 
 from ..utils.graph_stream_hooks import emit_graph_stream
+
+# Bounded EDA for cleaning: smaller upstream work + shorter tool output to the model.
+_EDA_CAPS_CLEANING = {
+    "top_k_categories": 5,
+    "max_corr_pairs": 10,
+    "max_columns": 40,
+}
+
+# When approximate token count exceeds this, clear older tool results (keep recent).
+_CONTEXT_EDIT_TRIGGER_TOKENS = 12_000
+_CONTEXT_EDIT_KEEP_TOOL_RESULTS = 3
 
 # =============================================================================
 # TOOLS
@@ -65,9 +77,11 @@ def _build_run_clean_tests(
                 dataset_ref=dataset_ref,
                 target_col=target_col,
                 task_type=task_type,
+                sample_n=50_000,
+                caps=_EDA_CAPS_CLEANING,
             )
 
-            all_columns = [col["column"] for col in eda["schema"][:15]]
+            all_columns = [col["column"] for col in eda["schema"][:12]]
             validatable_columns = [c for c in all_columns if c not in _protected]
 
             validation = validate_dataset(
@@ -90,32 +104,41 @@ def _build_run_clean_tests(
 
             if "target_analysis" in eda:
                 ta = eda["target_analysis"]
-                lines.append("## Target Analysis (informational — do not act on target column)")
+                lines.append("## Target (informational — do not modify)")
                 lines.append(f"**Target:** `{ta['column']}` ({ta['task']})")
                 if ta["task"] == "classification":
-                    lines.append(f"**Class counts:** {ta.get('class_counts', {})}")
+                    cc = ta.get("class_counts") or {}
+                    if len(cc) > 5:
+                        top5 = sorted(cc.items(), key=lambda x: -x[1])[:5]
+                        lines.append(
+                            f"**Class counts (top 5):** {dict(top5)} "
+                            f"(+{len(cc) - 5} more classes)"
+                        )
+                    else:
+                        lines.append(f"**Class counts:** {cc}")
                     if ta.get("imbalance_ratio", 1) > 3:
                         lines.append(f"**Imbalanced:** {ta['imbalance_ratio']:.1f}:1")
                 else:
                     lines.append(f"**Mean:** {ta.get('mean', 0):,.2f}, Skew: {ta.get('skew', 0):.2f}")
                 if ta.get("recommendation"):
-                    lines.append(f"**Note:** {ta['recommendation']}")
+                    rec = str(ta["recommendation"])
+                    lines.append(f"**Note:** {rec[:200]}{'…' if len(rec) > 200 else ''}")
                 lines.append("")
 
             if eda.get("target_associations"):
                 lines.append("## Top Feature-Target Associations")
-                for assoc in eda["target_associations"][:8]:
+                for assoc in eda["target_associations"][:4]:
                     direction = f" ({assoc.get('direction', '')})" if "direction" in assoc else ""
                     lines.append(f"- `{assoc['column']}`: {assoc['metric']}={assoc['value']:.3f}{direction}")
                 lines.append("")
 
-            lines.append("## Columns")
-            for col in eda["schema"][:15]:
+            lines.append("## Columns (sample)")
+            for col in eda["schema"][:8]:
                 null_str = f" ({col['null_pct']:.0%} null)" if col["null_pct"] > 0 else ""
                 protected_marker = " [PROTECTED]" if col["column"] in _protected else ""
                 lines.append(f"- `{col['column']}`: {col['dtype']}{null_str}{protected_marker}")
-            if len(eda["schema"]) > 15:
-                lines.append(f"- ... +{len(eda['schema']) - 15} more")
+            if len(eda["schema"]) > 8:
+                lines.append(f"- ... +{len(eda['schema']) - 8} more")
             lines.append("")
 
             actionable_alerts = [
@@ -125,7 +148,7 @@ def _build_run_clean_tests(
             ]
             if actionable_alerts:
                 lines.append("## Issues Found")
-                for alert in actionable_alerts[:8]:
+                for alert in actionable_alerts[:5]:
                     if alert["type"] == "high_skew":
                         lines.append(f"- High skew on `{alert['column']}` (skew={alert['skew']})")
                     elif alert["type"] == "high_nulls":
@@ -145,7 +168,7 @@ def _build_run_clean_tests(
                 ]
                 if filtered_violations:
                     lines.append("## Validation Issues")
-                    for v in filtered_violations[:5]:
+                    for v in filtered_violations[:4]:
                         lines.append(f"- {v['rule']} on `{v['column']}`: {v['count']:,} issues ({v['pct']:.1%})")
                         fix = v["suggested_fix"]
                         lines.append(f"  Suggested: `{fix['action']}` {fix.get('params', {})}")
@@ -157,7 +180,7 @@ def _build_run_clean_tests(
             ]
             if filtered_recs:
                 lines.append("## Recommended Actions")
-                for rec in filtered_recs[:5]:
+                for rec in filtered_recs[:3]:
                     lines.append(f"- {rec}")
                 lines.append("")
 
@@ -327,23 +350,7 @@ def _build_system_prompt(
 3. Call `run_clean_tests` again to verify fixes
 4. Call `mark_cleaning_complete` when done, then STOP immediately
 
-## Tools
-- `run_clean_tests` — Analyze dataset (call first + after changes)
-- `impute` — Fill nulls with mean/median/mode
-- `fill_null` — Fill nulls with specific value
-- `drop_nulls` — Remove rows with nulls
-- `clip` — Cap numeric values to a range
-- `replace_values` — Map old values to new
-- `regex_replace` — Regex pattern replacement
-- `drop_columns` — Remove columns
-- `select_columns` — Keep only specified columns
-- `rename_columns` — Rename columns
-- `cast` — Change column type
-- `parse_datetime` — Parse strings to datetime
-- `add_column` — Create column from expression
-- `filter_rows` — Keep rows matching a predicate
-- `dedupe` — Remove duplicate rows
-- `mark_cleaning_complete` — Finalize (validates first)
+Use the tools exposed to you (schemas describe each one).
 
 ## Rules
 - Always use the dataset_ref from the MOST RECENT tool output
@@ -354,13 +361,32 @@ def _build_system_prompt(
 
 CLEANING_SYSTEM_PROMPT = _build_system_prompt()
 
+
+def _cleaning_agent_middleware() -> list:
+    """Drop stale tool I/O from context when the transcript grows (keeps recent tool results)."""
+    return [
+        ContextEditingMiddleware(
+            edits=[
+                ClearToolUsesEdit(
+                    trigger=_CONTEXT_EDIT_TRIGGER_TOKENS,
+                    keep=_CONTEXT_EDIT_KEEP_TOOL_RESULTS,
+                    clear_tool_inputs=True,
+                    placeholder=(
+                        "[cleared — use the most recent tool output for dataset_ref]"
+                    ),
+                ),
+            ],
+        ),
+    ]
+
+
 # =============================================================================
 # AGENT CREATION
 # =============================================================================
 
 
 def create_cleaning_agent(
-    model: str = "openai:gpt-5.1",
+    model: str = "openai:gpt-5.4",
     goal: str = "",
     target_col: Optional[str] = None,
     task_type: Optional[str] = None,
@@ -390,7 +416,12 @@ def create_cleaning_agent(
         tools = CLEANING_TOOLS
         system_prompt = CLEANING_SYSTEM_PROMPT
 
-    return create_agent(model=model, tools=tools, system_prompt=system_prompt)
+    return create_agent(
+        model=model,
+        tools=tools,
+        system_prompt=system_prompt,
+        middleware=_cleaning_agent_middleware(),
+    )
 
 
 # =============================================================================
@@ -401,7 +432,7 @@ def create_cleaning_agent(
 def run_cleaning_simple(
     dataset_ref: str,
     goal: str = "Clean the dataset for machine learning",
-    model: str = "openai:gpt-5.1",
+    model: str = "openai:gpt-5.4",
     max_iterations: int = 10,
     target_col: Optional[str] = None,
     task_type: Optional[str] = None,
@@ -439,9 +470,9 @@ def run_cleaning_simple(
         context_parts.append(f"**Target column:** `{target_col}` ({task_type or 'unknown'})")
 
     initial_message = (
-        f"Clean this dataset for training:\n\n"
+        "Clean for training.\n\n"
         + "\n".join(context_parts)
-        + "\n\nStart by calling `run_clean_tests`."
+        + "\n\nBegin with `run_clean_tests`."
     )
 
     emit_graph_stream({"type": "progress", "message": f"Applying transformations...", "phase": "cleaning"})

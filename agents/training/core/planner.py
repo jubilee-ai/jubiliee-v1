@@ -16,14 +16,12 @@ from dotenv import load_dotenv
 from langchain.chat_models import init_chat_model
 from pydantic import BaseModel, Field
 
-from agents.training.utils.graph_stream_hooks import (
-    GraphTokenStreamHandler,
-    emit_graph_stream,
-)
+from agents.training.utils.graph_stream_hooks import (GraphTokenStreamHandler,
+                                                      emit_graph_stream)
 
 from .conversation_context import transcript_for_planner_prompt
 from .hitl import run_with_hitl
-from .state import canonical_step_name
+from .state import STEP_PREREQUISITES, canonical_step_name
 
 load_dotenv(Path(__file__).parent.parent.parent.parent / ".env")
 
@@ -209,6 +207,8 @@ def _validate_plan(plan: Plan, state: "TrainingAgentState | None" = None) -> Pla
     usually close but occasionally forgets a constraint.
     """
     state = state or {}
+    selected_model = (state.get("selected_model") or "").strip().lower()
+    user_model_preference = (state.get("user_model_preference") or "").strip().lower()
 
     skip_steps: set[str] = set()
     if state.get("resolved_dataset_ref"):
@@ -236,6 +236,36 @@ def _validate_plan(plan: Plan, state: "TrainingAgentState | None" = None) -> Pla
                 plan.steps.insert(idx, PlanStep(step=req, rationale="Auto-inserted: always required"))
             else:
                 plan.steps.append(PlanStep(step=req, rationale="Auto-inserted: always required"))
+
+    step_names = [s.step for s in plan.steps]
+
+    # Auto-insert provider steps that the LLM planner omitted.
+    # Driven by STEP_PREREQUISITES so new dependencies don't need code changes.
+    for prereq in STEP_PREREQUISITES:
+        step_names = [s.step for s in plan.steps]
+        if prereq["provider"] in step_names:
+            continue
+        skip_model = prereq.get("skip_when_model")
+        if skip_model and (
+            selected_model == skip_model
+            or user_model_preference == skip_model
+        ):
+            continue
+        has_dependent = any(s in step_names for s in prereq["dependents"])
+        if not has_dependent:
+            continue
+        insert_after = prereq.get("insert_after", "data_collection")
+        if insert_after in step_names:
+            idx = step_names.index(insert_after) + 1
+        else:
+            idx = 0
+        plan.steps.insert(
+            idx,
+            PlanStep(
+                step=prereq["provider"],
+                rationale=f"Auto-inserted: required for {prereq['state_key']}",
+            ),
+        )
 
     step_names = [s.step for s in plan.steps]
     if "training_approval" in step_names and "training" in step_names:
@@ -347,8 +377,16 @@ def planner_node(state: "TrainingAgentState") -> "TrainingAgentState":
         }
 
     def get_summary(result: "TrainingAgentState") -> str:
-        strategy = result.get("plan_strategy", "N/A")
+        err = result.get("error")
+        if err:
+            return f"**Planning failed:** {err}"
+        strategy = result.get("plan_strategy") or "N/A"
+        plan_steps = result.get("plan") or []
         lines = [f"**Plan:** {strategy}"]
+        for i, step in enumerate(plan_steps, 1):
+            name = step.get("step", "?") if isinstance(step, dict) else getattr(step, "step", "?")
+            rationale = step.get("rationale", "") if isinstance(step, dict) else getattr(step, "rationale", "")
+            lines.append(f"{i}. **{name}** — {rationale}")
         history = result.get("plan_history") or []
         if history:
             lines.append(f"_(Replan #{len(history)})_")

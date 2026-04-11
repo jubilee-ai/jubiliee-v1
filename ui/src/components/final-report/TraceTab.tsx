@@ -7,6 +7,12 @@ import { formatCleaningTransformationParts } from "@/lib/cleaningTransformDispla
 import { FeatureExperimentDetail } from "@/components/StepDetailModal"
 import { Section, InfoBox } from "./shared"
 import { getIterationMetrics, renderValue } from "./utils"
+import {
+  type ModelFamily,
+  getIterationInlinePartsFromIter,
+  getValidationTestRows,
+  resolveModelFamily,
+} from "./metricDefs"
 
 /** Pipeline steps that are shown as a single "Features" row in the execution trace. */
 const FEATURE_TRACE_STEP_IDS = new Set([
@@ -350,6 +356,20 @@ function CleaningStepContent({ agentState }: { agentState: TrainingAgentState })
  */
 function LabelSplitStepContent({ agentState }: { agentState: TrainingAgentState }) {
   const labelDef = agentState.label_definition
+  const unsupervised =
+    agentState.selected_model === "unsupervised" || labelDef?.split_strategy === "none"
+
+  if (unsupervised) {
+    return (
+      <div className="space-y-3">
+        <p className="text-sm text-muted-foreground">
+          Unsupervised run: no target column or holdout splits. All rows from the cleaned dataset are
+          used for training.
+        </p>
+        <InfoBox label="Training data" value={agentState.train_dataset_ref} mono small />
+      </div>
+    )
+  }
 
   return (
     <div className="space-y-3">
@@ -543,9 +563,9 @@ function FeatureEngineeringStepContent({
 function TrainingStepContent({ agentState }: { agentState: TrainingAgentState }) {
   const metrics = agentState.training_metrics
   const iterations = metrics?.iterations || []
-  const hasClassification = metrics?.test_accuracy != null || metrics?.test_roc_auc != null
-  const hasRegression =
-    metrics?.test_r2 != null || metrics?.val_r2 != null || iterations[0]?.test_r2 != null
+  const family = resolveModelFamily(metrics, agentState)
+  const vt = getValidationTestRows(metrics, agentState)
+  const finalMetricRows = [...vt.left.rows, ...vt.right.rows]
 
   return (
     <div className="space-y-4">
@@ -562,64 +582,18 @@ function TrainingStepContent({ agentState }: { agentState: TrainingAgentState })
       </div>
       <InfoBox label="Best Model" value={metrics?.model_name || agentState.model_weights_path} mono />
 
-      {hasClassification && (
+      {finalMetricRows.length > 0 && (
         <div>
-          <div className="text-sm text-muted-foreground mb-2">Final Classification Metrics</div>
-          <div className="grid grid-cols-2 gap-2 text-sm">
-            {metrics?.val_accuracy != null && (
-              <span>
-                Val Accuracy: <strong>{(metrics.val_accuracy * 100).toFixed(2)}%</strong>
-              </span>
-            )}
-            {metrics?.test_accuracy != null && (
-              <span>
-                Test Accuracy: <strong>{(metrics.test_accuracy * 100).toFixed(2)}%</strong>
-              </span>
-            )}
-            {metrics?.val_roc_auc != null && (
-              <span>
-                Val ROC-AUC: <strong>{metrics.val_roc_auc.toFixed(4)}</strong>
-              </span>
-            )}
-            {metrics?.test_roc_auc != null && (
-              <span>
-                Test ROC-AUC: <strong>{metrics.test_roc_auc.toFixed(4)}</strong>
-              </span>
-            )}
+          <div className="text-sm text-muted-foreground mb-2">
+            {family === "unsupervised" ? "Final unsupervised metrics" : "Final metrics"}
           </div>
-        </div>
-      )}
-
-      {hasRegression && (
-        <div>
-          <div className="text-sm text-muted-foreground mb-2">Final Regression Metrics</div>
           <div className="grid grid-cols-2 gap-2 text-sm">
-            {(metrics?.val_r2 ?? iterations[0]?.val_r2) != null && (
-              <span>
-                Val R²: <strong>{(metrics?.val_r2 ?? iterations[0]?.val_r2)?.toFixed(4)}</strong>
+            {finalMetricRows.map((row) => (
+              <span key={row.key}>
+                {row.label}:{" "}
+                <strong className={row.highlight ? "text-success" : ""}>{row.value}</strong>
               </span>
-            )}
-            {(metrics?.test_r2 ?? iterations[0]?.test_r2) != null && (
-              <span>
-                Test R²: <strong>{(metrics?.test_r2 ?? iterations[0]?.test_r2)?.toFixed(4)}</strong>
-              </span>
-            )}
-            {(metrics?.val_rmse ?? iterations[0]?.val_rmse) != null && (
-              <span>
-                Val RMSE: <strong>{(metrics?.val_rmse ?? iterations[0]?.val_rmse)?.toFixed(2)}</strong>
-              </span>
-            )}
-            {(metrics?.test_rmse ?? iterations[0]?.test_rmse) != null && (
-              <span>
-                Test RMSE:{" "}
-                <strong>{(metrics?.test_rmse ?? iterations[0]?.test_rmse)?.toFixed(2)}</strong>
-              </span>
-            )}
-            {(metrics?.test_mae ?? iterations[0]?.test_mae) != null && (
-              <span>
-                Test MAE: <strong>{(metrics?.test_mae ?? iterations[0]?.test_mae)?.toFixed(2)}</strong>
-              </span>
-            )}
+            ))}
           </div>
         </div>
       )}
@@ -630,16 +604,13 @@ function TrainingStepContent({ agentState }: { agentState: TrainingAgentState })
           <div className="text-sm font-medium mb-1">
             All Training Iterations ({iterations.length})
           </div>
-          <p className="text-xs text-muted-foreground mb-2">
-            Best (val) uses validation ranking: ROC-AUC then accuracy (classification); R² (regression);
-            unsupervised metrics as logged.
-          </p>
           <div className="space-y-2 max-h-[400px] overflow-y-auto">
             {iterations.map((iter, i) => (
               <TrainingIterationRow
                 key={i}
                 iteration={iter}
                 index={i}
+                family={family}
                 isBest={
                   metrics?.best_iteration && typeof metrics.best_iteration === "object"
                     ? (metrics.best_iteration as Record<string, unknown>).model_name ===
@@ -670,14 +641,15 @@ function TrainingIterationRow({
   iteration,
   index,
   isBest,
+  family,
 }: {
   iteration: Parameters<typeof getIterationMetrics>[0]
   index: number
   isBest: boolean
+  family: ModelFamily
 }) {
   const iterMetrics = getIterationMetrics(iteration)
-  const hasIterClassification = iterMetrics.val_accuracy != null || iterMetrics.val_roc_auc != null
-  const hasIterRegression = iterMetrics.val_r2 != null || iterMetrics.test_r2 != null
+  const inlineParts = getIterationInlinePartsFromIter(iteration, family)
 
   return (
     <div
@@ -696,7 +668,11 @@ function TrainingIterationRow({
             <Badge
               variant="secondary"
               className="text-xs bg-success/15 text-success dark:bg-success/20"
-              title="Highest validation ROC-AUC then accuracy (classification), or val R² (regression)"
+              title={
+                family === "unsupervised"
+                  ? "Best iteration by silhouette / Davies-Bouldin (as logged)"
+                  : "Highest validation ROC-AUC then accuracy (classification), or val R² (regression)"
+              }
             >
               Best (val)
             </Badge>
@@ -721,44 +697,13 @@ function TrainingIterationRow({
         </div>
       )}
 
-      {/* Metrics */}
-      {hasIterClassification && (
-        <div className="grid grid-cols-2 gap-2 text-xs">
-          {iterMetrics.val_accuracy != null && (
-            <span>
-              Val Accuracy: <strong>{(iterMetrics.val_accuracy * 100).toFixed(2)}%</strong>
-            </span>
-          )}
-          {iterMetrics.val_roc_auc != null && (
-            <span>
-              Val ROC-AUC: <strong>{iterMetrics.val_roc_auc.toFixed(4)}</strong>
-            </span>
-          )}
-        </div>
-      )}
-
-      {hasIterRegression && (
+      {inlineParts.length > 0 && (
         <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
-          {iterMetrics.val_r2 != null && (
-            <span>
-              Val R²: <strong>{iterMetrics.val_r2.toFixed(4)}</strong>
+          {inlineParts.map((p) => (
+            <span key={p.label}>
+              {p.label}: <strong>{p.value}</strong>
             </span>
-          )}
-          {iterMetrics.test_r2 != null && (
-            <span>
-              Test R²: <strong>{iterMetrics.test_r2.toFixed(4)}</strong>
-            </span>
-          )}
-          {iterMetrics.val_rmse != null && (
-            <span>
-              Val RMSE: <strong>{iterMetrics.val_rmse.toFixed(2)}</strong>
-            </span>
-          )}
-          {iterMetrics.test_rmse != null && (
-            <span>
-              Test RMSE: <strong>{iterMetrics.test_rmse.toFixed(2)}</strong>
-            </span>
-          )}
+          ))}
         </div>
       )}
 

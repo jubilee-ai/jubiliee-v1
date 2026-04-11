@@ -5,7 +5,7 @@ export interface LabelDefinition {
   prediction_horizon: string | null
   grain: string
   as_of_cutoff: string | null
-  split_strategy: "random" | "time_based" | "entity_based"
+  split_strategy: "random" | "time_based" | "entity_based" | "none"
   forbidden_columns: string[]
 }
 
@@ -42,6 +42,12 @@ export interface TrainingIteration {
   train_r2?: number
   train_rmse?: number
   train_mae?: number
+  // Unsupervised / clustering
+  silhouette_score?: number
+  davies_bouldin?: number
+  inertia?: number
+  reconstruction_loss?: number
+  tool_used?: string
   success?: boolean
   error?: string | null
 }
@@ -67,11 +73,18 @@ export interface TrainingMetrics {
   train_r2?: number
   train_rmse?: number
   train_mae?: number
+
+  // Unsupervised / clustering (best-of-iteration + full-fit diagnostics)
+  silhouette_score?: number
+  davies_bouldin?: number
+  inertia?: number
+  reconstruction_loss?: number
   
   // Iterations
   iterations?: TrainingIteration[]
   num_iterations?: number
-  best_iteration?: number
+  /** Index or full best-iteration payload from training */
+  best_iteration?: number | Record<string, unknown>
   
   summary?: string
   /** @deprecated Legacy field; no longer produced */

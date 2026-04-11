@@ -6,6 +6,9 @@ import { X, CheckCircle2, AlertTriangle } from "lucide-react"
 import { formatCleaningTransformationParts } from "@/lib/cleaningTransformDisplay"
 import { TRACE_EXCLUDE_IDS } from "@/lib/trainingSteps"
 import { formatNumber, formatPercent } from "@/lib/utils"
+import { getHeroMetrics, getValidationTestRows } from "@/components/final-report/metricDefs"
+import { mergeTrainingMetricSources, pickNumber, resolveModelFamily } from "@/components/final-report/metricModelFamily"
+import { getIterationMetrics } from "@/components/final-report/utils"
 
 interface StepDetailModalProps {
   stepId: string
@@ -39,12 +42,16 @@ export function StepDetailModal({ stepId, agentState, steps, onClose }: StepDeta
     switch (stepId) {
       case "data_collection": return "Data Collection"
       case "cleaning": return "Data Cleaning & Standardization"
-      case "label_split_definition": return "Label & Split Definition"
+      case "label_split_definition":
+        return agentState.selected_model === "unsupervised" ||
+          agentState.label_definition?.split_strategy === "none"
+          ? "Data prep (unsupervised)"
+          : "Label & Split Definition"
       case "feature_selection_specification": return "Feature Selection"
       case "feature_specification_and_engineering": return "Features (spec + build)"
       case "feature_engineering_executor": return "Feature Engineering"
       case "feature_experiment_runner": return "Feature experiments"
-      case "training_approval": return "Training Configuration"
+      case "training_approval": return "Training plan"
       case "training": return "Model Training"
       case "generate_report": return "Report Generation"
       default: return step?.name || stepId
@@ -63,6 +70,16 @@ export function StepDetailModal({ stepId, agentState, steps, onClose }: StepDeta
       case "cleaning":
         return <CleaningDetail agentState={agentState} audit={audit} />
       case "label_split_definition":
+        if (
+          agentState.selected_model === "unsupervised" ||
+          agentState.label_definition?.split_strategy === "none"
+        ) {
+          return (
+            <p className="text-sm text-muted-foreground">
+              No details for this step — dataset and preprocessing are under Cleaning.
+            </p>
+          )
+        }
         return <LabelSplitDetail agentState={agentState} audit={audit} />
       case "feature_selection_specification":
         return <FeatureSelectionDetail agentState={agentState} />
@@ -128,13 +145,6 @@ export function StepDetailModal({ stepId, agentState, steps, onClose }: StepDeta
         {/* Content - scrollable */}
         <div className="flex-1 overflow-y-auto p-6 min-h-0">
           {renderContent()}
-        </div>
-
-        {/* Footer with action hint */}
-        <div className="flex-shrink-0 px-6 py-4 border-t bg-muted/30">
-          <p className="text-xs text-muted-foreground text-center">
-            Review the details above to decide if you should proceed or request changes.
-          </p>
         </div>
       </div>
     </div>
@@ -237,10 +247,10 @@ function CleaningDetail({ agentState }: { agentState: TrainingAgentState; audit?
   )
 }
 
-// Label & Split Detail
+// Label & Split Detail (supervised only — unsupervised is hidden from the checklist; see switch above)
 function LabelSplitDetail({ agentState }: { agentState: TrainingAgentState; audit?: Record<string, unknown> }) {
   const labelDef = agentState.label_definition
-  
+
   return (
     <div className="space-y-6">
       {/* Target Column */}
@@ -700,6 +710,80 @@ function formatTrainingModelLabel(raw: string | null | undefined): string {
     .join(" ")
 }
 
+/** Human-readable labels for hyperparameter keys (snake_case → Title Case). */
+function humanizeConfigKey(key: string): string {
+  return key
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (c) => c.toUpperCase())
+}
+
+function renderValue(value: unknown): string {
+  if (value === null || value === undefined) return "N/A"
+  if (typeof value === "string") return value
+  if (typeof value === "number" || typeof value === "boolean") return String(value)
+  if (typeof value === "object") {
+    try {
+      return JSON.stringify(value)
+    } catch {
+      return String(value)
+    }
+  }
+  return String(value)
+}
+
+const NESTED_HP_SECTION_LABELS: Record<string, string> = {
+  feature_selection: "Feature selection",
+  preprocessing: "Preprocessing",
+  validation: "Validation & splits",
+  early_stopping_like_strategy: "Early stopping",
+}
+
+function partitionHyperparameters(hp: Record<string, unknown>): {
+  scalars: [string, unknown][]
+  nested: [string, unknown][]
+} {
+  const scalars: [string, unknown][] = []
+  const nested: [string, unknown][] = []
+  for (const [k, v] of Object.entries(hp)) {
+    if (v !== null && typeof v === "object") nested.push([k, v])
+    else scalars.push([k, v])
+  }
+  return { scalars, nested }
+}
+
+function NestedHyperparameterSection({ name, value }: { name: string; value: unknown }) {
+  const title = NESTED_HP_SECTION_LABELS[name] ?? humanizeConfigKey(name)
+  const plain =
+    value !== null &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    Object.keys(value as object).length > 0
+
+  return (
+    <div className="rounded-xl border border-border/50 bg-muted/10 overflow-hidden">
+      <div className="px-3 py-2.5 border-b border-border/40 bg-muted/25">
+        <h3 className="text-sm font-semibold text-foreground">{title}</h3>
+      </div>
+      <div className="p-3">
+        {plain ? (
+          <dl className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            {Object.entries(value as Record<string, unknown>).map(([k, v]) => (
+              <div key={k} className="rounded-lg border border-border/35 bg-background/60 px-3 py-2.5">
+                <dt className="text-[11px] text-muted-foreground mb-1">{humanizeConfigKey(k)}</dt>
+                <dd className="text-sm font-mono text-foreground/95 break-words">{renderValue(v)}</dd>
+              </div>
+            ))}
+          </dl>
+        ) : (
+          <pre className="text-xs font-mono leading-relaxed whitespace-pre-wrap break-all rounded-lg bg-muted/30 p-3 text-foreground/90">
+            {renderValue(value)}
+          </pre>
+        )}
+      </div>
+    </div>
+  )
+}
+
 /** Feature-variant sweep summary — shared by step modal and final-report trace. */
 export function FeatureExperimentDetail({
   agentState,
@@ -805,7 +889,7 @@ export function FeatureExperimentDetail({
   )
 }
 
-// Training Config Detail (training_approval step)
+// Training plan detail (training_approval step)
 function TrainingConfigDetail({ agentState, audit }: { agentState: TrainingAgentState; audit?: Record<string, unknown> }) {
   const [expandedSection, setExpandedSection] = useState<number | null>(null)
 
@@ -830,6 +914,7 @@ function TrainingConfigDetail({ agentState, audit }: { agentState: TrainingAgent
   const maxIter = tp.max_iterations || plan.max_iterations
 
   const strategyNotes = Array.isArray(strategy) ? strategy : strategy ? [String(strategy)] : []
+  const { scalars, nested } = partitionHyperparameters(hp)
 
   const sectionTitles = [
     "Objective & Data",
@@ -854,32 +939,54 @@ function TrainingConfigDetail({ agentState, audit }: { agentState: TrainingAgent
 
   return (
     <div className="space-y-6">
+      <p className="text-sm text-muted-foreground leading-relaxed -mt-1">
+        Starting point from your approval—we iterate and keep the best model by validation.
+      </p>
+
       {/* Model & Task header */}
-      <div className="flex gap-4">
-        <div className="flex-1 bg-foreground/5 rounded-xl p-4">
-          <div className="text-xs text-muted-foreground mb-1">Model</div>
-          <div className="text-xl font-semibold">{modelType}</div>
-        </div>
-        {taskType && (
-          <div className="flex-1 bg-foreground/5 rounded-xl p-4">
-            <div className="text-xs text-muted-foreground mb-1">Task</div>
-            <div className="text-xl font-semibold">{taskType}</div>
+      <div className="flex flex-col sm:flex-row gap-3">
+        <div className="flex-1 rounded-xl border border-border/50 bg-gradient-to-br from-muted/50 to-muted/15 p-4">
+          <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground mb-1">
+            Estimator
           </div>
-        )}
+          <div className="text-lg font-semibold tracking-tight">{modelType}</div>
+        </div>
+        {taskType ? (
+          <div className="flex-1 rounded-xl border border-border/50 bg-gradient-to-br from-muted/50 to-muted/15 p-4">
+            <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground mb-1">
+              Problem type
+            </div>
+            <div className="text-lg font-semibold tracking-tight capitalize">{taskType}</div>
+          </div>
+        ) : null}
       </div>
 
-      {/* Hyperparameters grid */}
+      {/* Hyperparameters: scalars + nested objects */}
       {Object.keys(hp).length > 0 ? (
-        <div>
-          <div className="text-sm font-medium mb-3">Hyperparameters</div>
-          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-            {Object.entries(hp).map(([key, value]) => (
-              <div key={key} className="bg-muted/30 rounded-lg px-3 py-2">
-                <div className="text-[11px] text-muted-foreground font-mono truncate">{key}</div>
-                <div className="text-sm font-semibold font-mono mt-0.5">{String(value)}</div>
+        <div className="space-y-5">
+          {scalars.length > 0 ? (
+            <div>
+              <h3 className="text-sm font-semibold text-foreground mb-3">Initial parameters</h3>
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                {scalars.map(([key, value]) => (
+                  <div key={key} className="rounded-lg border border-border/40 bg-muted/20 px-3 py-2.5">
+                    <div className="text-[11px] text-muted-foreground">{humanizeConfigKey(key)}</div>
+                    <div className="text-sm font-semibold font-mono mt-0.5 break-all">{renderValue(value)}</div>
+                  </div>
+                ))}
               </div>
-            ))}
-          </div>
+            </div>
+          ) : null}
+          {nested.length > 0 ? (
+            <div>
+              <h3 className="text-sm font-semibold text-foreground mb-3">Pipeline &amp; validation</h3>
+              <div className="space-y-3">
+                {nested.map(([key, value]) => (
+                  <NestedHyperparameterSection key={key} name={key} value={value} />
+                ))}
+              </div>
+            </div>
+          ) : null}
         </div>
       ) : null}
 
@@ -892,24 +999,20 @@ function TrainingConfigDetail({ agentState, audit }: { agentState: TrainingAgent
               <div className="text-sm font-medium">{String(classWeight)}</div>
             </div>
           ) : null}
-          {maxIter ? (
-            <div className="bg-blue-50 dark:bg-blue-950/30 rounded-lg px-3 py-2">
-              <div className="text-[11px] text-blue-600 dark:text-blue-400">Max Iterations</div>
-              <div className="text-sm font-medium">{String(maxIter)}</div>
-            </div>
-          ) : null}
         </div>
       ) : null}
 
       {/* Data Summary */}
       {Object.keys(dataSummary).length > 0 && (
         <div>
-          <div className="text-sm font-medium mb-2">Data Summary</div>
+          <h3 className="text-sm font-semibold text-foreground mb-2">Data summary</h3>
           <div className="grid grid-cols-2 gap-2 text-sm">
             {Object.entries(dataSummary).map(([key, value]) => (
-              <div key={key} className="flex justify-between bg-muted/20 rounded-lg px-3 py-2">
-                <span className="text-muted-foreground">{key.replace(/_/g, " ")}</span>
-                <span className="font-medium">{typeof value === "number" ? value.toLocaleString() : String(value)}</span>
+              <div key={key} className="flex justify-between gap-2 bg-muted/20 rounded-lg px-3 py-2">
+                <span className="text-muted-foreground shrink-0">{humanizeConfigKey(key)}</span>
+                <span className="font-medium text-right break-all min-w-0">
+                  {typeof value === "number" ? value.toLocaleString() : renderValue(value)}
+                </span>
               </div>
             ))}
           </div>
@@ -919,7 +1022,7 @@ function TrainingConfigDetail({ agentState, audit }: { agentState: TrainingAgent
       {/* Strategy sections */}
       {strategyNotes.length > 0 && (
         <div>
-          <div className="text-sm font-medium mb-3">Training Strategy</div>
+          <h3 className="text-sm font-semibold text-foreground mb-3">Training strategy</h3>
           <div className="space-y-2">
             {strategyNotes.map((note, i) => {
               const title = guessSectionTitle(note, i)
@@ -963,9 +1066,48 @@ function TrainingDetail({ agentState }: { agentState: TrainingAgentState }) {
   
   const metrics = agentState.training_metrics
   const iterations = metrics?.iterations || []
-  const hasClassification = metrics?.test_accuracy != null || metrics?.test_roc_auc != null
-  const hasRegression = metrics?.test_r2 != null || metrics?.val_r2 != null || iterations[0]?.test_r2 != null
-  
+  const family = resolveModelFamily(metrics, agentState)
+  const merged = mergeTrainingMetricSources(metrics)
+  const hasClassification = family === "classification"
+  const hasRegression = family === "regression"
+  const hasUnsupervised = family === "unsupervised"
+  const heroMetrics = getHeroMetrics(metrics, agentState)
+  const validationTest = getValidationTestRows(metrics, agentState)
+
+  const unsupervisedMetricRows = [
+    {
+      label: "Silhouette",
+      full: pickNumber(merged, "silhouette_score"),
+      second: pickNumber(merged, "val_silhouette_score"),
+      decimalsFull: 4,
+    },
+    {
+      label: "Davies-Bouldin",
+      full:
+        pickNumber(merged, "davies_bouldin") ?? pickNumber(merged, "davies_bouldin_score"),
+      second: pickNumber(merged, "val_davies_bouldin_score"),
+      decimalsFull: 4,
+    },
+    {
+      label: "Inertia",
+      full: pickNumber(merged, "inertia"),
+      second: undefined as number | undefined,
+      decimalsFull: 1,
+    },
+    {
+      label: "Reconstruction loss",
+      full: pickNumber(merged, "reconstruction_loss"),
+      second: undefined as number | undefined,
+      decimalsFull: 4,
+    },
+    {
+      label: "Clusters / groups",
+      full: pickNumber(merged, "n_clusters_or_groups"),
+      second: undefined as number | undefined,
+      decimalsFull: 0,
+    },
+  ].filter((row) => row.full != null || row.second != null)
+
   const bestIter = metrics?.best_iteration as Record<string, number | string | null | undefined> | undefined
   const testR2 = metrics?.test_r2 ?? (bestIter?.test_r2 as number | undefined)
   const testRmse = metrics?.test_rmse ?? (bestIter?.test_rmse as number | undefined)
@@ -981,14 +1123,14 @@ function TrainingDetail({ agentState }: { agentState: TrainingAgentState }) {
   return (
     <div className="space-y-6">
       {/* Status */}
-      <div className={`rounded-xl p-4 ${metrics?.success ? 'bg-success/8 dark:bg-success/12' : 'bg-red-50 dark:bg-red-950/30'}`}>
+      {/* <div className={`rounded-xl p-4 ${metrics?.success ? 'bg-success/8 dark:bg-success/12' : 'bg-red-50 dark:bg-red-950/30'}`}>
         <div className="flex items-center gap-2">
           <CheckCircle2 className={`h-5 w-5 ${metrics?.success ? 'text-success' : 'text-destructive'}`} />
           <span className={`font-medium ${metrics?.success ? 'text-foreground dark:text-success' : 'text-red-700 dark:text-red-300'}`}>
             {metrics?.success ? "Training Successful" : "Training Completed"}
           </span>
         </div>
-      </div>
+      </div> */}
 
       {/* Model Information */}
       <div>
@@ -1013,40 +1155,12 @@ function TrainingDetail({ agentState }: { agentState: TrainingAgentState }) {
 
       {/* Key Metrics - Hero */}
       <div className="grid grid-cols-2 gap-4">
-        {hasClassification ? (
-          <>
-            <div className="bg-foreground/5 rounded-xl p-4">
-              <div className="text-xs text-muted-foreground mb-1">Test Accuracy</div>
-              <div className="text-2xl font-semibold">{formatPercent(metrics?.test_accuracy)}</div>
-            </div>
-            <div className="bg-foreground/5 rounded-xl p-4">
-              <div className="text-xs text-muted-foreground mb-1">Test ROC-AUC</div>
-              <div className="text-2xl font-semibold">{formatNumber(metrics?.test_roc_auc, 3)}</div>
-            </div>
-          </>
-        ) : hasRegression ? (
-          <>
-            <div className="bg-foreground/5 rounded-xl p-4">
-              <div className="text-xs text-muted-foreground mb-1">Test R²</div>
-              <div className="text-2xl font-semibold">{formatNumber(testR2, 4)}</div>
-            </div>
-            <div className="bg-foreground/5 rounded-xl p-4">
-              <div className="text-xs text-muted-foreground mb-1">Test RMSE</div>
-              <div className="text-2xl font-semibold">{formatNumber(testRmse, 2)}</div>
-            </div>
-          </>
-        ) : (
-          <>
-            <div className="bg-foreground/5 rounded-xl p-4">
-              <div className="text-xs text-muted-foreground mb-1">Status</div>
-              <div className="text-2xl font-semibold">Complete</div>
-            </div>
-            <div className="bg-foreground/5 rounded-xl p-4">
-              <div className="text-xs text-muted-foreground mb-1">Iterations</div>
-              <div className="text-2xl font-semibold">{metrics?.num_iterations || 1}</div>
-            </div>
-          </>
-        )}
+        {heroMetrics.map((h) => (
+          <div key={h.label} className="bg-foreground/5 rounded-xl p-4">
+            <div className="text-xs text-muted-foreground mb-1">{h.label}</div>
+            <div className="text-2xl font-semibold">{h.value}</div>
+          </div>
+        ))}
       </div>
 
       {/* Full Metrics Table */}
@@ -1057,9 +1171,21 @@ function TrainingDetail({ agentState }: { agentState: TrainingAgentState }) {
             <thead className="bg-muted/50">
               <tr>
                 <th className="text-left py-2 px-3 font-medium">Metric</th>
-                <th className="text-right py-2 px-3 font-medium">Train</th>
-                <th className="text-right py-2 px-3 font-medium">Validation</th>
-                <th className="text-right py-2 px-3 font-medium">Test</th>
+                {hasUnsupervised ? (
+                  <>
+                    <th className="text-right py-2 px-3 font-medium">Full fit</th>
+                    <th className="text-right py-2 px-3 font-medium">
+                      {validationTest.right.title}
+                    </th>
+                    <th className="text-right py-2 px-3 font-medium text-muted-foreground">Test</th>
+                  </>
+                ) : (
+                  <>
+                    <th className="text-right py-2 px-3 font-medium">Train</th>
+                    <th className="text-right py-2 px-3 font-medium">Validation</th>
+                    <th className="text-right py-2 px-3 font-medium">Test</th>
+                  </>
+                )}
               </tr>
             </thead>
             <tbody>
@@ -1099,6 +1225,30 @@ function TrainingDetail({ agentState }: { agentState: TrainingAgentState }) {
                     <td className="text-right py-2 px-3 font-mono font-semibold">{formatNumber(testMae, 2)}</td>
                   </tr>
                 </>
+              ) : hasUnsupervised ? (
+                <>
+                  {unsupervisedMetricRows.length > 0 ? (
+                    unsupervisedMetricRows.map((row) => (
+                      <tr key={row.label} className="border-t border-border/50">
+                        <td className="py-2 px-3">{row.label}</td>
+                        <td className="text-right py-2 px-3 font-mono">
+                          {row.full != null ? formatNumber(row.full, row.decimalsFull) : "—"}
+                        </td>
+                        <td className="text-right py-2 px-3 font-mono font-semibold">
+                          {row.second != null ? formatNumber(row.second, 4) : "—"}
+                        </td>
+                        <td className="text-right py-2 px-3 font-mono text-muted-foreground">—</td>
+                      </tr>
+                    ))
+                  ) : (
+                    <tr className="border-t border-border/50">
+                      <td className="py-2 px-3 text-muted-foreground" colSpan={4}>
+                        No detailed metrics in state — open the training report Metrics tab if the run finished
+                        successfully.
+                      </td>
+                    </tr>
+                  )}
+                </>
               ) : (
                 <tr className="border-t border-border/50">
                   <td className="py-2 px-3 text-muted-foreground" colSpan={4}>No detailed metrics available</td>
@@ -1113,12 +1263,10 @@ function TrainingDetail({ agentState }: { agentState: TrainingAgentState }) {
       {iterations.length > 0 && (
         <div>
           <div className="text-sm font-medium mb-1">Training Iterations ({iterations.length})</div>
-          <p className="text-xs text-muted-foreground mb-2">
-            Best (val) ranks by validation metric (ROC-AUC first, then accuracy for classification).
-          </p>
           <div className="space-y-3">
             {displayedIterations.map((iter, i) => {
               const iterNum = iter.iteration ?? i + 1
+              const im = getIterationMetrics(iter)
               const bestIterName = bestIter?.model_name as string | undefined
               const isBest = bestIterName
                 ? iter.model_name === bestIterName
@@ -1136,15 +1284,19 @@ function TrainingDetail({ agentState }: { agentState: TrainingAgentState }) {
                         <Badge
                           variant="secondary"
                           className="text-xs"
-                          title="Highest validation ROC-AUC then accuracy (classification), or val R² (regression)"
+                          title={
+                            hasUnsupervised
+                              ? "Best iteration by silhouette / Davies-Bouldin (as logged)"
+                              : "Highest validation ROC-AUC then accuracy (classification), or val R² (regression)"
+                          }
                         >
                           Best (val)
                         </Badge>
                       )}
                       {iter.success === false && <Badge variant="destructive" className="text-xs">Failed</Badge>}
                     </div>
-                    {iter.tool && (
-                      <span className="text-xs text-muted-foreground font-mono">{iter.tool}</span>
+                    {im.tool && (
+                      <span className="text-xs text-muted-foreground font-mono">{im.tool}</span>
                     )}
                   </div>
                   
@@ -1171,7 +1323,7 @@ function TrainingDetail({ agentState }: { agentState: TrainingAgentState }) {
                           </div>
                         )}
                       </>
-                    ) : (
+                    ) : hasRegression ? (
                       <>
                         {iter.val_r2 != null && (
                           <div>
@@ -1198,7 +1350,34 @@ function TrainingDetail({ agentState }: { agentState: TrainingAgentState }) {
                           </div>
                         )}
                       </>
-                    )}
+                    ) : hasUnsupervised ? (
+                      <>
+                        {im.silhouette_score != null && (
+                          <div>
+                            <span className="text-muted-foreground">Silhouette:</span>{" "}
+                            <span className="font-medium">{im.silhouette_score.toFixed(4)}</span>
+                          </div>
+                        )}
+                        {im.davies_bouldin != null && (
+                          <div>
+                            <span className="text-muted-foreground">Davies-Bouldin:</span>{" "}
+                            <span className="font-medium">{im.davies_bouldin.toFixed(4)}</span>
+                          </div>
+                        )}
+                        {im.inertia != null && (
+                          <div>
+                            <span className="text-muted-foreground">Inertia:</span>{" "}
+                            <span className="font-medium">{im.inertia.toFixed(1)}</span>
+                          </div>
+                        )}
+                        {im.reconstruction_loss != null && (
+                          <div>
+                            <span className="text-muted-foreground">Recon. loss:</span>{" "}
+                            <span className="font-medium">{im.reconstruction_loss.toFixed(4)}</span>
+                          </div>
+                        )}
+                      </>
+                    ) : null}
                   </div>
                   
                   {/* Hyperparameters */}
@@ -1208,7 +1387,8 @@ function TrainingDetail({ agentState }: { agentState: TrainingAgentState }) {
                       <div className="flex flex-wrap gap-1.5">
                         {Object.entries(iter.hyperparams).slice(0, 6).map(([key, value]) => (
                           <span key={key} className="text-xs bg-muted/50 px-2 py-0.5 rounded font-mono">
-                            {key}: {typeof value === 'number' ? value.toFixed(4) : String(value)}
+                            {humanizeConfigKey(key)}:{" "}
+                            {typeof value === "number" ? value.toFixed(4) : renderValue(value)}
                           </span>
                         ))}
                         {Object.keys(iter.hyperparams).length > 6 && (
@@ -1352,14 +1532,4 @@ function ReportDetail({ agentState }: { agentState: TrainingAgentState }) {
       </div>
     </div>
   )
-}
-
-function renderValue(value: unknown): string {
-  if (value === null || value === undefined) return "N/A"
-  if (typeof value === "string") return value
-  if (typeof value === "number" || typeof value === "boolean") return String(value)
-  if (typeof value === "object") {
-    try { return JSON.stringify(value) } catch { return String(value) }
-  }
-  return String(value)
 }

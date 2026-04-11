@@ -4,7 +4,6 @@ State definitions and constants for the ML Training Agent.
 
 from typing import Any, Literal, Optional, TypedDict
 
-
 # =============================================================================
 # CONSTANTS
 # =============================================================================
@@ -54,6 +53,30 @@ STEP_ORDER = [
 STEP_ALIASES = {
     "label_definition": "label_split_definition",
 }
+
+# Declarative prerequisite table for the pipeline.  Each entry says:
+#   "Before running any step in `dependents`, the `state_key` must already
+#    be set.  If it isn't, insert `provider` (after `insert_after` in the
+#    plan).  Skip the check entirely when `selected_model` matches
+#    `skip_when_model`."
+#
+# Both the planner's _validate_plan and the dispatcher's runtime guard
+# iterate this table — adding a new dependency is a single dict here.
+STEP_PREREQUISITES: list[dict[str, Any]] = [
+    {
+        "provider": "label_split_definition",
+        "state_key": "train_dataset_ref",
+        "dependents": {
+            "feature_selection_specification",
+            "feature_engineering_executor",
+            "feature_experiment_runner",
+            "training_approval",
+            "training",
+        },
+        "skip_when_model": "unsupervised",
+        "insert_after": "cleaning",
+    },
+]
 
 
 def canonical_step_name(step_name: str) -> str:

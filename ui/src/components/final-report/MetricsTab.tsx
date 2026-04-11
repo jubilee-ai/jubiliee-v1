@@ -1,8 +1,12 @@
 import { Badge } from "@/components/ui/badge"
 import type { TrainingAgentState } from "@/types/agent"
-import { formatNumber, formatPercent } from "@/lib/utils"
 import { Section, MetricRow } from "./shared"
 import { getIterationMetrics } from "./utils"
+import {
+  getIterationInlinePartsFromIter,
+  getValidationTestRows,
+  resolveModelFamily,
+} from "./metricDefs"
 
 interface MetricsTabProps {
   agentState: TrainingAgentState
@@ -10,57 +14,40 @@ interface MetricsTabProps {
 
 export function MetricsTab({ agentState }: MetricsTabProps) {
   const metrics = agentState.training_metrics
-  const bestIter = metrics?.best_iteration as Record<string, unknown> | undefined
-  const bestIterMetrics = bestIter
-    ? getIterationMetrics(bestIter as Parameters<typeof getIterationMetrics>[0])
-    : null
-  const testR2 = metrics?.test_r2 ?? bestIterMetrics?.test_r2
-  const testRmse = metrics?.test_rmse ?? bestIterMetrics?.test_rmse
-  const testMae = metrics?.test_mae ?? bestIterMetrics?.test_mae
-  const valR2 = metrics?.val_r2 ?? bestIterMetrics?.val_r2
-  const valRmse = metrics?.val_rmse ?? bestIterMetrics?.val_rmse
-  const valMae = metrics?.val_mae ?? bestIterMetrics?.val_mae
-
-  const hasClassificationMetrics = metrics?.test_accuracy != null || metrics?.test_roc_auc != null
-  const hasRegressionMetrics = testR2 != null || valR2 != null
+  const family = resolveModelFamily(metrics, agentState)
+  const { left, right } = getValidationTestRows(metrics, agentState)
+  const bestIter = metrics?.best_iteration
+  const bestIterName =
+    typeof bestIter === "object" && bestIter !== null && !Array.isArray(bestIter)
+      ? (bestIter as Record<string, unknown>).model_name
+      : undefined
 
   return (
     <div className="space-y-8">
-      {/* Validation vs Test comparison */}
       <div className="grid md:grid-cols-2 gap-6 min-w-0 [&>div]:min-w-0">
-        <Section title="Validation Metrics">
+        <Section title={left.title}>
           <div className="space-y-4">
-            {hasClassificationMetrics ? (
-              <>
-                <MetricRow label="Accuracy" value={formatPercent(metrics?.val_accuracy)} />
-                <MetricRow label="ROC-AUC" value={formatNumber(metrics?.val_roc_auc, 3)} />
-              </>
-            ) : hasRegressionMetrics ? (
-              <>
-                <MetricRow label="R² Score" value={formatNumber(valR2, 4)} />
-                <MetricRow label="RMSE" value={formatNumber(valRmse, 2)} />
-                <MetricRow label="MAE" value={formatNumber(valMae, 2)} />
-              </>
+            {left.rows.length > 0 ? (
+              left.rows.map((row) => (
+                <MetricRow key={row.key} label={row.label} value={row.value} highlight={row.highlight} />
+              ))
+            ) : family === "unsupervised" ? (
+              <p className="text-sm text-muted-foreground">
+                No training diagnostics in state. If training finished, check Trace for iteration logs.
+              </p>
             ) : (
               <p className="text-sm text-muted-foreground">No validation metrics available</p>
             )}
           </div>
         </Section>
 
-        <Section title="Test Metrics">
+        <Section title={right.title}>
           <div className="space-y-4">
-            {hasClassificationMetrics ? (
-              <>
-                <MetricRow label="Accuracy" value={formatPercent(metrics?.test_accuracy)} highlight />
-                <MetricRow label="ROC-AUC" value={formatNumber(metrics?.test_roc_auc, 3)} highlight />
-              </>
-            ) : hasRegressionMetrics ? (
-              <>
-                <MetricRow label="R² Score" value={formatNumber(testR2, 4)} highlight />
-                <MetricRow label="RMSE" value={formatNumber(testRmse, 2)} highlight />
-                <MetricRow label="MAE" value={formatNumber(testMae, 2)} highlight />
-              </>
-            ) : (
+            {right.rows.length > 0 ? (
+              right.rows.map((row) => (
+                <MetricRow key={row.key} label={row.label} value={row.value} highlight={row.highlight} />
+              ))
+            ) : family === "unsupervised" ? null : (
               <div className="space-y-2">
                 <MetricRow label="Status" value={metrics?.success ? "Success" : "Completed"} highlight />
                 <MetricRow label="Model" value={metrics?.model_name || "N/A"} />
@@ -70,24 +57,15 @@ export function MetricsTab({ agentState }: MetricsTabProps) {
         </Section>
       </div>
 
-      {/* Iteration History */}
       <Section title="Training Iterations">
-        <p className="text-xs text-muted-foreground -mt-2 mb-3">
-          Best (val) picks the strongest validation score: ROC-AUC, then accuracy for classification;
-          R² for regression; unsupervised metrics as logged.
-        </p>
         <div className="space-y-2">
           {metrics?.iterations && metrics.iterations.length > 0 ? (
             metrics.iterations.map((iter, i) => {
               const iterMetrics = getIterationMetrics(iter)
-              const bestIterName = bestIter?.model_name as string | undefined
               const isBest = bestIterName
                 ? iterMetrics.model_name === bestIterName
                 : i === (metrics.iterations?.length || 1) - 1
-              const hasIterClassificationMetrics =
-                iterMetrics.val_accuracy != null || iterMetrics.val_roc_auc != null
-              const hasIterRegressionMetrics =
-                iterMetrics.val_r2 != null || iterMetrics.test_r2 != null
+              const inlineParts = getIterationInlinePartsFromIter(iter, family)
 
               return (
                 <div
@@ -103,7 +81,11 @@ export function MetricsTab({ agentState }: MetricsTabProps) {
                         <Badge
                           variant="secondary"
                           className="text-xs"
-                          title="Highest validation ROC-AUC then accuracy (classification), or val R² (regression)"
+                          title={
+                            family === "unsupervised"
+                              ? "Best iteration by silhouette / Davies-Bouldin (as logged)"
+                              : "Highest validation ROC-AUC then accuracy (classification), or val R² (regression)"
+                          }
                         >
                           Best (val)
                         </Badge>
@@ -115,36 +97,13 @@ export function MetricsTab({ agentState }: MetricsTabProps) {
                       )}
                     </div>
                     <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm min-w-0 sm:justify-end">
-                      {hasIterClassificationMetrics ? (
-                        <>
-                          <span className="text-muted-foreground">
-                            Accuracy:{" "}
-                            <span className="text-foreground font-medium">
-                              {formatPercent(iterMetrics.val_accuracy)}
-                            </span>
+                      {inlineParts.length > 0 ? (
+                        inlineParts.map((p) => (
+                          <span key={p.label} className="text-muted-foreground">
+                            {p.label}:{" "}
+                            <span className="text-foreground font-medium">{p.value}</span>
                           </span>
-                          <span className="text-muted-foreground">
-                            AUC:{" "}
-                            <span className="text-foreground font-medium">
-                              {formatNumber(iterMetrics.val_roc_auc, 3)}
-                            </span>
-                          </span>
-                        </>
-                      ) : hasIterRegressionMetrics ? (
-                        <>
-                          <span className="text-muted-foreground">
-                            Val R²:{" "}
-                            <span className="text-foreground font-medium">
-                              {formatNumber(iterMetrics.val_r2, 4)}
-                            </span>
-                          </span>
-                          <span className="text-muted-foreground">
-                            Test R²:{" "}
-                            <span className="text-foreground font-medium">
-                              {formatNumber(iterMetrics.test_r2, 4)}
-                            </span>
-                          </span>
-                        </>
+                        ))
                       ) : (
                         <span className="text-muted-foreground">
                           {iterMetrics.success === false ? "Failed" : "Completed"}
@@ -160,7 +119,6 @@ export function MetricsTab({ agentState }: MetricsTabProps) {
                     </div>
                   )}
 
-                  {/* Show error if present */}
                   {iterMetrics.error && (
                     <div className="mt-2 text-xs text-destructive bg-destructive/10 rounded px-2 py-1">
                       {iterMetrics.error}
@@ -176,7 +134,7 @@ export function MetricsTab({ agentState }: MetricsTabProps) {
                 <Badge
                   variant="secondary"
                   className="text-xs"
-                  title="Highest validation ROC-AUC then accuracy (classification), or val R² (regression)"
+                  title="Highest validation score for task type"
                 >
                   Best (val)
                 </Badge>

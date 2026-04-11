@@ -17,7 +17,7 @@ import {
 } from "@/components/ui/dialog"
 import { RotateCcw, Search, Bell, ArrowLeft } from "lucide-react"
 import type { StepInfo, TrainingAgentState, ConfirmationAction, TaskPlanSummary } from "@/types/agent"
-import { CHECKLIST_EXCLUDE_IDS } from "@/lib/trainingSteps"
+import { CHECKLIST_EXCLUDE_IDS, filterVisiblePipelineSteps } from "@/lib/trainingSteps"
 import { cn } from "@/lib/utils"
 import { useExperimentDetailQuery } from "@/lib/queries"
 import { DatasetsPage } from "@/components/DatasetsPage"
@@ -167,12 +167,21 @@ function AuthenticatedApp() {
 
   const experimentDetailQuery = useExperimentDetailQuery(experimentDetailQueryId)
 
+  /** Full step state stays in the hook for SSE; checklist/chat hide feature steps for unsupervised. */
+  const visiblePipelineSteps = useMemo(
+    () => filterVisiblePipelineSteps(realAgent.steps, realAgent.agentState),
+    [realAgent.steps, realAgent.agentState],
+  )
+
   const agent = {
     agentState: realAgent.agentState,
-    steps: realAgent.steps,
+    steps: visiblePipelineSteps,
     messages: realAgent.messages,
     isRunning: realAgent.isRunning,
-    currentStepId: realAgent.steps.find(s => s.status === "running" || s.status === "awaiting_confirmation")?.id || null,
+    currentStepId:
+      visiblePipelineSteps.find(
+        (s) => s.status === "running" || s.status === "awaiting_confirmation",
+      )?.id || null,
     confirmationRequest: realAgent.confirmationRequest,
     startAgent: realAgent.startAgent as (goal: string, datasets?: string[], modelPreference?: string, hitl?: boolean) => Promise<void>, // legacy / programmatic
     handleConfirmation: realAgent.handleConfirmation,
@@ -445,15 +454,19 @@ function AuthenticatedApp() {
   const checklistSteps = agent.steps.filter((s) => !CHECKLIST_EXCLUDE_IDS.has(s.id))
   const completedSteps = checklistSteps.filter((s) => s.status === "completed").length
   const totalSteps = checklistSteps.length
-  const currentStep = agent.steps.find(s => s.status === "running" || s.status === "awaiting_confirmation")
+  const currentStep = visiblePipelineSteps.find(
+    (s) => s.status === "running" || s.status === "awaiting_confirmation",
+  )
   const displayCurrentStep =
     currentStep?.id === "select_model"
       ? null
       : currentStep?.id === "generate_report"
         ? { ...currentStep, name: "Finishing up" }
-        : currentStep
+        : currentStep?.id === "training_approval" || currentStep?.id === "training"
+          ? { ...currentStep, name: "Training" }
+          : currentStep
   const trainingPhaseStepIds = ["training_approval", "training", "generate_report"] as const
-  const isInTrainingPhase = agent.steps.some(
+  const isInTrainingPhase = realAgent.steps.some(
     (s) =>
       trainingPhaseStepIds.includes(s.id as (typeof trainingPhaseStepIds)[number]) &&
       s.status !== "pending",

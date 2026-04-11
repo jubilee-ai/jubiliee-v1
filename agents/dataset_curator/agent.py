@@ -31,27 +31,14 @@ from join_merge import join_merge_tool
 from retrieval import list_datasets_tool
 from transformations import apply_transformations_tool
 from transformations.clean_ops import drop_nulls_tool, fill_null_tool
-from transformations.column_ops import (
-    cast_tool,
-    drop_columns_tool,
-    rename_columns_tool,
-    select_columns_tool,
-)
-from transformations.row_ops import (
-    dedupe_tool,
-    filter_rows_tool,
-    limit_rows_tool,
-    sample_rows_tool,
-)
+from transformations.column_ops import (cast_tool, drop_columns_tool,
+                                        rename_columns_tool,
+                                        select_columns_tool)
+from transformations.row_ops import (dedupe_tool, filter_rows_tool,
+                                     limit_rows_tool, sample_rows_tool)
 
-from .tools import (
-    curator_tools,
-    download_hf_dataset,
-    normalize_columns,
-    profile_dataset,
-    suggest_join_keys,
-    validate_target,
-)
+from .tools import (curator_tools, download_hf_dataset, normalize_columns,
+                    profile_dataset, suggest_join_keys, validate_target)
 
 # =============================================================================
 # Configuration
@@ -108,7 +95,7 @@ End with a JSON summary:
 # LLM
 # =============================================================================
 
-llm = ChatOpenAI(model="gpt-5.1", temperature=0)
+llm = ChatOpenAI(model="gpt-5.4", temperature=0)
 
 # =============================================================================
 # Local tools (non-MCP)

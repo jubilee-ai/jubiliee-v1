@@ -1,5 +1,6 @@
 import type { TrainingAgentState, StepInfo, TrainingIteration } from "@/types/agent"
 import { formatNumber, formatPercent } from "@/lib/utils"
+import { mergeTrainingMetricSources, resolveModelFamily } from "./metricModelFamily"
 
 /**
  * Helper to extract iteration metrics from various possible structures
@@ -14,11 +15,20 @@ export function getIterationMetrics(iter: TrainingIteration): {
   test_r2?: number
   test_rmse?: number
   test_mae?: number
+  silhouette_score?: number
+  davies_bouldin?: number
+  inertia?: number
+  reconstruction_loss?: number
   model_name?: string
   tool?: string
   success?: boolean
   error?: string | null
 } {
+  const raw = iter as Record<string, unknown>
+  const db =
+    (iter.davies_bouldin as number | undefined) ??
+    (raw.davies_bouldin_score as number | undefined)
+
   // Check top-level properties first
   const topLevel = {
     train_accuracy: iter.train_accuracy,
@@ -30,8 +40,12 @@ export function getIterationMetrics(iter: TrainingIteration): {
     test_r2: iter.test_r2,
     test_rmse: iter.test_rmse,
     test_mae: iter.test_mae,
+    silhouette_score: iter.silhouette_score ?? (raw.silhouette_score as number | undefined),
+    davies_bouldin: db,
+    inertia: iter.inertia ?? (raw.inertia as number | undefined),
+    reconstruction_loss: iter.reconstruction_loss ?? (raw.reconstruction_loss as number | undefined),
     model_name: iter.model_name,
-    tool: iter.tool,
+    tool: iter.tool ?? (iter.tool_used as string | undefined) ?? (raw.tool_used as string | undefined),
     success: iter.success,
     error: iter.error,
   }
@@ -49,6 +63,15 @@ export function getIterationMetrics(iter: TrainingIteration): {
       test_r2: topLevel.test_r2 ?? (metricsObj.test_r2 as number | undefined),
       test_rmse: topLevel.test_rmse ?? (metricsObj.test_rmse as number | undefined),
       test_mae: topLevel.test_mae ?? (metricsObj.test_mae as number | undefined),
+      silhouette_score:
+        topLevel.silhouette_score ?? (metricsObj.silhouette_score as number | undefined),
+      davies_bouldin:
+        topLevel.davies_bouldin ??
+        (metricsObj.davies_bouldin as number | undefined) ??
+        (metricsObj.davies_bouldin_score as number | undefined),
+      inertia: topLevel.inertia ?? (metricsObj.inertia as number | undefined),
+      reconstruction_loss:
+        topLevel.reconstruction_loss ?? (metricsObj.reconstruction_loss as number | undefined),
       model_name: topLevel.model_name,
       tool: topLevel.tool,
       success: topLevel.success,
@@ -82,6 +105,43 @@ export function renderValue(value: unknown): string {
 export function generateTextReport(state: TrainingAgentState, steps: StepInfo[]): string {
   const metrics = state.training_metrics
   const completedSteps = steps.filter((s) => s.status === "completed").length
+  const isUnsupervisedFlow =
+    state.selected_model === "unsupervised" || state.label_definition?.split_strategy === "none"
+  const family = resolveModelFamily(metrics, state)
+  const merged = mergeTrainingMetricSources(metrics)
+
+  const metricsBlock =
+    family === "unsupervised"
+      ? `
+Silhouette: ${formatNumber(merged.silhouette_score as number | undefined, 4)}
+Davies-Bouldin: ${formatNumber(merged.davies_bouldin as number | undefined, 4)}
+Inertia: ${formatNumber(merged.inertia as number | undefined, 1)}
+Reconstruction loss: ${formatNumber(merged.reconstruction_loss as number | undefined, 4)}
+`
+      : `
+Test Accuracy: ${formatPercent(metrics?.test_accuracy)}
+Test ROC-AUC: ${formatNumber(metrics?.test_roc_auc, 3)}
+Test R²: ${formatNumber(metrics?.test_r2, 4)}
+Test RMSE: ${formatNumber(metrics?.test_rmse, 2)}
+Validation Accuracy: ${formatPercent(metrics?.val_accuracy)}
+Validation ROC-AUC: ${formatNumber(metrics?.val_roc_auc, 3)}
+Validation R²: ${formatNumber(metrics?.val_r2, 4)}
+`
+
+  const iterLines =
+    metrics?.iterations
+      ?.map((it) => {
+        const im = getIterationMetrics(it)
+        if (family === "unsupervised") {
+          return `Iteration ${it.iteration}: Silhouette=${formatNumber(im.silhouette_score, 4)}, D–B=${formatNumber(im.davies_bouldin, 4)}`
+        }
+        if (family === "regression") {
+          return `Iteration ${it.iteration}: Val R²=${formatNumber(im.val_r2, 4)}, Test R²=${formatNumber(im.test_r2, 4)}`
+        }
+        return `Iteration ${it.iteration}: Accuracy=${formatPercent(im.val_accuracy)}, AUC=${formatNumber(im.val_roc_auc, 3)}`
+      })
+      .join("\n") || "None"
+
   return `
 TRAINING REPORT
 ===============
@@ -92,11 +152,8 @@ Report Path: ${state.report_path}
 
 METRICS
 -------
-(Test metrics below are for the saved model "${metrics?.model_name || "N/A"}". The training summary may mention other runs that were not kept.)
-Test Accuracy: ${formatPercent(metrics?.test_accuracy)}
-Test ROC-AUC: ${formatNumber(metrics?.test_roc_auc, 3)}
-Validation Accuracy: ${formatPercent(metrics?.val_accuracy)}
-Validation ROC-AUC: ${formatNumber(metrics?.val_roc_auc, 3)}
+(Scores below refer to the saved model "${metrics?.model_name || "N/A"}" where applicable. The training summary may mention other runs that were not kept.)
+${metricsBlock}
 
 PIPELINE
 --------
@@ -105,8 +162,8 @@ Steps Completed: ${completedSteps}/${steps.length}
 DATA
 ----
 Dataset: ${state.collected_dataset_ref}
-Target Column: ${state.label_definition?.target_column}
-Split Strategy: ${state.label_definition?.split_strategy}
+Target Column: ${isUnsupervisedFlow ? "None (unsupervised)" : state.label_definition?.target_column}
+Split Strategy: ${isUnsupervisedFlow ? "None — full dataset for training" : state.label_definition?.split_strategy}
 
 FEATURE DEFINITIONS (logical, ${state.feature_spec?.features.length || 0})
 One-hot and similar encodings expand to more model input columns than this list. Prefer training approval / data summary n_features when present.
@@ -114,8 +171,8 @@ ${state.feature_spec?.features.map((f) => `- ${f.name}: ${f.formula}`).join("\n"
 
 TRAINING ITERATIONS
 -------------------
-${metrics?.iterations?.map((it) => `Iteration ${it.iteration}: Accuracy=${formatPercent(it.val_accuracy)}, AUC=${formatNumber(it.val_roc_auc, 3)}`).join("\n") || "None"}
-Best Iteration: ${metrics?.best_iteration}
+${iterLines}
+Best iteration payload: ${typeof metrics?.best_iteration === "object" ? "(see JSON)" : String(metrics?.best_iteration ?? "—")}
 
 Generated: ${new Date().toISOString()}
 `.trim()
@@ -147,6 +204,12 @@ export function generateJsonReport(state: TrainingAgentState, steps: StepInfo[])
         r2: state.training_metrics?.val_r2,
         rmse: state.training_metrics?.val_rmse,
         mae: state.training_metrics?.val_mae,
+      },
+      unsupervised: {
+        silhouette_score: state.training_metrics?.silhouette_score,
+        davies_bouldin: state.training_metrics?.davies_bouldin,
+        inertia: state.training_metrics?.inertia,
+        reconstruction_loss: state.training_metrics?.reconstruction_loss,
       },
       iterations: state.training_metrics?.iterations,
       best_iteration: state.training_metrics?.best_iteration,
