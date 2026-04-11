@@ -1827,12 +1827,11 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
     }
 
     const initialSteps = createInitialSteps()
-    setSteps(ts ? mergeTaskProgressIntoSteps(initialSteps, ts) : initialSteps)
+    let resolvedSteps = ts ? mergeTaskProgressIntoSteps(initialSteps, ts) : initialSteps
     setIsRunning(false)
     setStartingHandsOffTask(false)
     setCurrentJobId(null)
     setProgress(0)
-    setConfirmationRequest(null)
     setAcceptAllMode(false)
     emittedStepsRef.current = new Set()
     const rawLd = exp.linked_datasets
@@ -1840,6 +1839,36 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
     backgroundIntakeActiveRef.current = false
     setBackgroundIntakeActive(false)
     suppressPostPlanTokensRef.current = false
+
+    const pending = ts?.pending_interrupt as
+      | { node: string; summary?: string; message?: string; state_snapshot?: Record<string, unknown> }
+      | null
+      | undefined
+    if (pending && typeof pending === "object" && pending.node) {
+      const nodeName = pending.node
+      const stepDef = STEP_DEFINITIONS.find((s) => s.id === nodeName)
+      const interruptIndex = STEP_ORDER_IDS.indexOf(nodeName)
+      resolvedSteps = resolvedSteps.map((step, index) => {
+        if (step.id === nodeName) {
+          return { ...step, status: "awaiting_confirmation" as const, endTime: step.endTime ?? Date.now() }
+        }
+        if (index < interruptIndex && step.status === "pending") {
+          return { ...step, status: "completed" as const }
+        }
+        return step
+      })
+      setConfirmationRequest({
+        step: nodeName,
+        stepName: stepDef?.name || nodeName,
+        summary: typeof pending.summary === "string" ? pending.summary : "",
+        details: (pending.state_snapshot || {}) as Record<string, unknown>,
+      })
+      agentDebug("restored-pending-interrupt", { node: nodeName })
+    } else {
+      setConfirmationRequest(null)
+    }
+
+    setSteps(resolvedSteps)
     agentDebug("apply-experiment-detail-finish", {
       experimentId: exp.id,
       appliedMessagesCount: Array.isArray(exp.chat_history) ? exp.chat_history.length : 0,

@@ -367,11 +367,12 @@ def _iter_graph_sse_lines(agent, config: dict, thread_id: str, stream_input: obj
             merged_snap: dict[str, object] = dict(snap_vals) if snap_vals else {}
             if isinstance(intr_snap, dict) and intr_snap:
                 merged_snap.update(intr_snap)
+            serialized_snap = serialize_state(merged_snap) if merged_snap else {}
             evt = review_required(
                 node=info.get("node", "unknown"),
                 summary=info.get("summary", ""),
                 message=info.get("message", "Approve to continue, or provide feedback to redo."),
-                state_snapshot=serialize_state(merged_snap) if merged_snap else {},
+                state_snapshot=serialized_snap,
                 review_prompt=f"Review {info.get('node', 'unknown')} output and approve or provide feedback",
             )
             for k in ("plan", "plan_strategy", "plan_index"):
@@ -380,6 +381,22 @@ def _iter_graph_sse_lines(agent, config: dict, thread_id: str, stream_input: obj
             store["emitted_steps"] = emitted_steps
             store["emitted_skipped_steps"] = emitted_skipped_steps
             store["_graph_sse_interrupted"] = True
+
+            if experiment_id:
+                interrupt_node = info.get("node", "unknown")
+                repository.merge_experiment_training_state(
+                    experiment_id,
+                    {
+                        "graph_run_status": "awaiting_review",
+                        "pending_interrupt": {
+                            "node": interrupt_node,
+                            "summary": info.get("summary", ""),
+                            "message": info.get("message", ""),
+                            "state_snapshot": serialized_snap,
+                        },
+                    },
+                )
+
             yield format_sse(serialize_state(evt), experiment_id)
             return
 
@@ -818,6 +835,7 @@ def generate_graph_sse_events(
                 "task_started_at": None,
                 "task_completed_at": None,
                 "graph_run_status": "failed" if pipeline_error else "completed",
+                "pending_interrupt": None,
             }
             repository.merge_experiment_training_state(experiment_id, persisted_state)
             repository.update_experiment(
@@ -837,6 +855,7 @@ def generate_graph_sse_events(
                     "error": str(e),
                     "task_error": str(e),
                     "graph_run_status": "failed",
+                    "pending_interrupt": None,
                 },
             )
             repository.update_experiment(experiment_id, {"goal": goal, "status": "failed"})
@@ -884,6 +903,12 @@ def generate_graph_resume_sse_events(
 
     if store.get("emitted_skipped_steps") is None:
         store["emitted_skipped_steps"] = set()
+
+    if experiment_id:
+        repository.merge_experiment_training_state(
+            experiment_id,
+            {"pending_interrupt": None, "graph_run_status": "running"},
+        )
 
     try:
         step_events: list[dict[str, object]] = []
@@ -954,6 +979,7 @@ def generate_graph_resume_sse_events(
                 "task_started_at": None,
                 "task_completed_at": None,
                 "graph_run_status": "failed" if pipeline_error else "completed",
+                "pending_interrupt": None,
             }
             repository.merge_experiment_training_state(experiment_id, persisted_state)
             repository.update_experiment(
@@ -973,6 +999,7 @@ def generate_graph_resume_sse_events(
                     "error": str(e),
                     "task_error": str(e),
                     "graph_run_status": "failed",
+                    "pending_interrupt": None,
                 },
             )
             repository.update_experiment(experiment_id, {"goal": goal, "status": "failed"})
