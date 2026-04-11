@@ -84,6 +84,8 @@ function createInitialSteps(): StepInfo[] {
 
 const STEP_ORDER_IDS = STEP_DEFINITIONS.map((s) => s.id)
 
+const DEFAULT_RUNNING_HINT = "Working"
+
 /** Label & Split step copy: supervised needs target + splits; unsupervised uses full cleaned data only */
 function labelSplitStepDescription(
   selectedModel: string | null | undefined,
@@ -108,6 +110,100 @@ const STEP_LOADING_HINTS: Record<string, string> = {
   training_approval: "Preparing training configuration…",
   training: "Training models and comparing validation metrics…",
   generate_report: "Finishing up…",
+}
+
+const PHASE_LOADING_HINTS: Record<string, string> = {
+  ...STEP_LOADING_HINTS,
+  planner: "Planning your run…",
+  evaluator: "Reviewing options…",
+  dispatch: "Setting things up…",
+}
+
+function normalizeRunningHint(value: unknown): string | null {
+  if (typeof value !== "string") return null
+  const trimmed = value.trim()
+  if (!trimmed) return null
+  return /[.!?…]$/.test(trimmed) ? trimmed : `${trimmed}…`
+}
+
+function compactStatusValue(value: unknown, maxLength = 56): string | null {
+  if (typeof value !== "string") return null
+  const trimmed = value.trim().replace(/\s+/g, " ")
+  if (!trimmed) return null
+  if (trimmed.length <= maxLength) return trimmed
+  return `${trimmed.slice(0, maxLength - 1).trimEnd()}…`
+}
+
+function labelFromPathLikeValue(value: unknown, maxLength = 40): string | null {
+  if (typeof value !== "string") return null
+  const trimmed = value.trim()
+  if (!trimmed) return null
+  const short = trimmed.split("/").filter(Boolean).pop() || trimmed
+  return compactStatusValue(short, maxLength)
+}
+
+function isGenericToolHeadline(headline: string, toolName: string): boolean {
+  const normalized = headline.toLowerCase().replace(/[.…!?]+$/g, "").trim()
+  const raw = toolName.toLowerCase()
+  const humanized = raw.replace(/_/g, " ")
+  return normalized === `running ${raw}` || normalized === `running ${humanized}`
+}
+
+function getToolRunningHint(
+  toolName: string,
+  args?: Record<string, unknown>,
+  headline?: string,
+): string {
+  const query = compactStatusValue(args?.query)
+  const source = compactStatusValue(args?.source, 20)?.toLowerCase()
+  const datasetLabel =
+    labelFromPathLikeValue(args?.dataset_ref) ??
+    labelFromPathLikeValue(args?.identifier) ??
+    labelFromPathLikeValue(args?.dataset) ??
+    labelFromPathLikeValue(args?.ref)
+  const modelLabel =
+    compactStatusValue(args?.model_name, 32) ??
+    compactStatusValue(args?.model, 32) ??
+    compactStatusValue(args?.model_type, 32)
+
+  switch (toolName) {
+    case "search_datasets":
+      if (query) return `Searching datasets for "${query}"`
+      if (source) return `Searching ${source} datasets`
+      return "Searching datasets"
+    case "curate_dataset":
+      if (datasetLabel) return `Preparing dataset ${datasetLabel}`
+      return "Preparing dataset"
+    case "get_dataset_info":
+      if (datasetLabel) return `Loading details for ${datasetLabel}`
+      return "Loading dataset details"
+    case "list_dataset_files":
+      if (datasetLabel) return `Checking files for ${datasetLabel}`
+      return "Checking dataset files"
+    case "propose_training_plan":
+      return "Planning your run"
+    case "analyze_data":
+      if (datasetLabel) return `Analyzing ${datasetLabel}`
+      return "Analyzing your data"
+    case "train_model":
+      if (modelLabel) return `Training ${modelLabel}`
+      return "Training model"
+    case "check_trained_models":
+      return "Checking trained models"
+    case "predict":
+      if (datasetLabel) return `Running predictions for ${datasetLabel}`
+      return "Running predictions"
+    case "get_model_details":
+      if (modelLabel) return `Loading ${modelLabel} details`
+      return "Loading model details"
+    default: {
+      const normalizedHeadline = normalizeRunningHint(headline)
+      if (normalizedHeadline && !isGenericToolHeadline(normalizedHeadline, toolName)) {
+        return normalizedHeadline
+      }
+      return DEFAULT_RUNNING_HINT
+    }
+  }
 }
 
 /**
@@ -260,6 +356,34 @@ function chatTaskPlanFromPlanFields(data: {
     steps: data.recap_steps?.length ? data.recap_steps : [],
   }
   return { plan, datasetRefs: refs }
+}
+
+/** Drops trailing empty/streaming/leaked-plan agent bubbles before attaching a plan message. */
+function pruneAgentMessagesBeforeTaskPlan(prev: ChatMessage[]): ChatMessage[] {
+  const next = [...prev]
+  while (next.length > 0) {
+    const last = next[next.length - 1]
+    if (last.role !== "agent") break
+    if (last.taskPlan) break
+    const c = last.content ?? ""
+    if (
+      last._streaming ||
+      looksLikeLeakedPlanJson(c) ||
+      stripLeakedPlanJson(c).trim() === ""
+    ) {
+      next.pop()
+      continue
+    }
+    break
+  }
+  const lastAfter = next[next.length - 1]
+  if (lastAfter?.role === "agent" && lastAfter.content && !lastAfter.taskPlan) {
+    const stripped = stripLeakedPlanJson(lastAfter.content)
+    if (stripped !== lastAfter.content) {
+      next[next.length - 1] = { ...lastAfter, content: stripped }
+    }
+  }
+  return next
 }
 
 function buildPlanningConversation(
@@ -429,6 +553,9 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
   // Use a ref to track accept-all mode to avoid stale closure issues in callbacks
   const acceptAllModeRef = useRef(acceptAllMode)
   acceptAllModeRef.current = acceptAllMode
+
+  /** Set after `startGuidedTrainingFromPlan` exists — used from stream handler for accept-all + plan. */
+  const startGuidedTrainingFromPlanRef = useRef<(plan: TaskPlanSummary, refs: string[]) => void>(() => {})
   
   const messagesRef = useRef<ChatMessage[]>([])
   messagesRef.current = messages
@@ -451,8 +578,10 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
   const lastTrainingSummaryRef = useRef<Record<string, unknown> | null>(null)
   /** Drop post-tool assistant tokens (e.g. “I’ve set up a plan…”) after propose_training_plan. */
   const suppressPostPlanTokensRef = useRef(false)
+  const activeToolNameRef = useRef<string | null>(null)
 
   const [runningStepHint, setRunningStepHint] = useState<string | null>(null)
+  const [activeToolHint, setActiveToolHint] = useState<string | null>(null)
   /** Overrides checklist hint while the graph emits step.progress (phase matches a pipeline id). */
   const [progressPhaseHint, setProgressPhaseHint] = useState<string | null>(null)
 
@@ -657,6 +786,10 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
       setRunningStepHint("Waiting for your review…")
       return
     }
+    if (activeToolHint) {
+      setRunningStepHint(activeToolHint)
+      return
+    }
     if (progressPhaseHint) {
       setRunningStepHint(progressPhaseHint)
       return
@@ -688,12 +821,9 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
       setRunningStepHint(hint)
       return
     }
-    if (steps.length > 0 && steps.every((s) => s.status === "pending")) {
-      setRunningStepHint("Planning…")
-      return
-    }
-    setRunningStepHint(null)
+    setRunningStepHint(DEFAULT_RUNNING_HINT)
   }, [
+    activeToolHint,
     isRunning,
     steps,
     confirmationRequest,
@@ -813,15 +943,8 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
     }
     if (event.type === "tool_call" || event.type === "tool.start") {
       const toolName = event.tool || "unknown"
-      const toolLabel =
-        toolName === "analyze_data" ? "Running analysis…" :
-        toolName === "train_model" ? "Training model (this may take several minutes)…" :
-        toolName === "check_trained_models" ? "Checking trained models…" :
-        toolName === "predict" ? "Making prediction…" :
-        toolName === "get_model_details" ? "Loading model details…" :
-        toolName === "propose_training_plan" ? "Preparing training plan…" :
-        `Running ${toolName}…`
-      addMessage("system", toolLabel)
+      activeToolNameRef.current = toolName
+      setActiveToolHint(normalizeRunningHint(getToolRunningHint(toolName, event.args, event.headline)) ?? DEFAULT_RUNNING_HINT)
       return
     }
     if (event.type === "task_plan.proposed") {
@@ -834,30 +957,23 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
       })
       if (!payload) return
       suppressPostPlanTokensRef.current = true
+      if (acceptAllModeRef.current) {
+        setMessages((prev) => [
+          ...pruneAgentMessagesBeforeTaskPlan(prev),
+          {
+            id: uid("msg"),
+            role: "agent",
+            content: "Starting your training run…",
+            timestamp: Date.now(),
+          },
+        ])
+        setTimeout(() => {
+          startGuidedTrainingFromPlanRef.current(payload.plan, payload.datasetRefs)
+        }, 0)
+        return
+      }
       setMessages((prev) => {
-        const next = [...prev]
-        while (next.length > 0) {
-          const last = next[next.length - 1]
-          if (last.role !== "agent") break
-          if (last.taskPlan) break
-          const c = last.content ?? ""
-          if (
-            last._streaming ||
-            looksLikeLeakedPlanJson(c) ||
-            stripLeakedPlanJson(c).trim() === ""
-          ) {
-            next.pop()
-            continue
-          }
-          break
-        }
-        const lastAfter = next[next.length - 1]
-        if (lastAfter?.role === "agent" && lastAfter.content && !lastAfter.taskPlan) {
-          const stripped = stripLeakedPlanJson(lastAfter.content)
-          if (stripped !== lastAfter.content) {
-            next[next.length - 1] = { ...lastAfter, content: stripped }
-          }
-        }
+        const next = pruneAgentMessagesBeforeTaskPlan(prev)
         return [
           ...next,
           {
@@ -872,6 +988,10 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
       return
     }
     if (event.type === "tool_result" || event.type === "tool.end") {
+      if (!event.tool || event.tool === activeToolNameRef.current) {
+        activeToolNameRef.current = null
+        setActiveToolHint(null)
+      }
       if (event.tool === "propose_training_plan" && event.result != null) {
         try {
           const raw = typeof event.result === "string" ? event.result : String(event.result)
@@ -889,41 +1009,34 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
           const payload = chatTaskPlanFromPlanFields(data)
           if (!payload) return
           suppressPostPlanTokensRef.current = true
-          setMessages((prev) => {
-            const next = [...prev]
-            while (next.length > 0) {
-              const last = next[next.length - 1]
-              if (last.role !== "agent") break
-              if (last.taskPlan) break
-              const c = last.content ?? ""
-              if (
-                last._streaming ||
-                looksLikeLeakedPlanJson(c) ||
-                stripLeakedPlanJson(c).trim() === ""
-              ) {
-                next.pop()
-                continue
-              }
-              break
-            }
-            const lastAfter = next[next.length - 1]
-            if (lastAfter?.role === "agent" && lastAfter.content && !lastAfter.taskPlan) {
-              const stripped = stripLeakedPlanJson(lastAfter.content)
-              if (stripped !== lastAfter.content) {
-                next[next.length - 1] = { ...lastAfter, content: stripped }
-              }
-            }
-            return [
-              ...next,
+          if (acceptAllModeRef.current) {
+            setMessages((prev) => [
+              ...pruneAgentMessagesBeforeTaskPlan(prev),
               {
                 id: uid("msg"),
                 role: "agent",
-                content: "",
+                content: "Starting your training run…",
                 timestamp: Date.now(),
-                taskPlan: payload,
               },
-            ]
-          })
+            ])
+            setTimeout(() => {
+              startGuidedTrainingFromPlanRef.current(payload.plan, payload.datasetRefs)
+            }, 0)
+          } else {
+            setMessages((prev) => {
+              const next = pruneAgentMessagesBeforeTaskPlan(prev)
+              return [
+                ...next,
+                {
+                  id: uid("msg"),
+                  role: "agent",
+                  content: "",
+                  timestamp: Date.now(),
+                  taskPlan: payload,
+                },
+              ]
+            })
+          }
         } catch {
           // ignore malformed tool JSON
         }
@@ -931,10 +1044,12 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
       return
     }
     if (event.type === "predict.start") {
-      addMessage("system", `Running predictions with **${event.model || "model"}**…`)
+      const modelLabel = compactStatusValue(event.model, 32)
+      setActiveToolHint(modelLabel ? `Running predictions with ${modelLabel}` : "Running predictions")
       return
     }
     if (event.type === "predict.complete") {
+      setActiveToolHint(null)
       setMessages((prev) => [
         ...prev,
         {
@@ -970,6 +1085,8 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
     }
     if (event.type === "end" || (event.type === "stream.end" && !event.pipeline_completed)) {
       suppressPostPlanTokensRef.current = false
+      activeToolNameRef.current = null
+      setActiveToolHint(null)
       setProgressPhaseHint(null)
       setMessages((prev) =>
         prev.map((m) => (m._streaming ? { ...m, _streaming: undefined } : m)),
@@ -984,9 +1101,16 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
     }
     if (event.type === "step.progress") {
       const ph = (event as { phase?: string }).phase
-      if (ph && STEP_LOADING_HINTS[ph]) {
-        setProgressPhaseHint(STEP_LOADING_HINTS[ph])
+      const messageHint = normalizeRunningHint(event.message)
+      if (messageHint) {
+        setProgressPhaseHint(messageHint)
+        return
       }
+      if (ph && PHASE_LOADING_HINTS[ph]) {
+        setProgressPhaseHint(PHASE_LOADING_HINTS[ph])
+        return
+      }
+      setProgressPhaseHint(DEFAULT_RUNNING_HINT)
       return
     }
 
@@ -1181,6 +1305,11 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
         }
       }
 
+      // "Ready to train **…** with N hyperparameters" is redundant when the user already chose auto-accept.
+      if (nodeName === "training_approval" && acceptAllModeRef.current) {
+        return
+      }
+
       const headline =
         typeof event.headline === "string" && event.headline.trim()
           ? event.headline.trim()
@@ -1190,14 +1319,25 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
       const stepIdForMessage =
         nodeName === "cleaning_and_standardization" ? "cleaning" : nodeName
 
-      // Data collection: single chat line; drop placeholder headlines (superseded by merged step.complete).
+      // Data collection: single chat line; placeholder headlines still get a line when we have a ref (See preview CTA).
       if (nodeName === "data_collection") {
+        const evState = event.state as Partial<TrainingAgentState> | undefined
+        const collectedRef =
+          (typeof evState?.collected_dataset_ref === "string" && evState.collected_dataset_ref.trim()) ||
+          (typeof agentStateRef.current.collected_dataset_ref === "string" &&
+            agentStateRef.current.collected_dataset_ref.trim()) ||
+          ""
         const isPlaceholder =
           !headline.trim() ||
           /^dataset ready\.?$/i.test(headline) ||
           /^dataset collected\.?$/i.test(headline)
+        let line = headline
         if (isPlaceholder) {
-          return
+          if (!collectedRef) {
+            return
+          }
+          const short = collectedRef.split("/").filter(Boolean).pop() || collectedRef
+          line = `Loaded dataset **${short}**`
         }
         setMessages((prev) => {
           const base = prev.filter(
@@ -1208,7 +1348,7 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
             {
               id: uid("msg"),
               role: "agent",
-              content: headline,
+              content: line,
               timestamp: Date.now(),
               stepId: "data_collection",
               detailMarkdown: detailMarkdown || undefined,
@@ -1740,6 +1880,7 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
     },
     [sendMessage, setBackgroundIntake],
   )
+  startGuidedTrainingFromPlanRef.current = startGuidedTrainingFromPlan
 
   const startHandsOffTrainingFromPlan = useCallback(
     async (plan: TaskPlanSummary, refs: string[]) => {

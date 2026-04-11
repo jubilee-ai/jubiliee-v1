@@ -828,7 +828,7 @@ Propose a training configuration. Respond with a JSON object containing:
     "task_type": "{task_type}",
     "hyperparameters": {{}},
     "class_weight": "balanced" or null,
-    "max_iterations": 7,
+    "max_iterations": 4,
     "strategy_notes": "2–4 sentences for a stakeholder: what this training setup is meant to achieve and why it fits the problem — plain language, no formulas, no hyperparameter dumps or library-specific kwargs (those belong in hyperparameters only)",
     "expected_metrics": "What metrics to optimize and expected performance range"
 }}
@@ -854,7 +854,7 @@ Also consider when choosing values:
         except json.JSONDecodeError:
             training_plan = {
                 "model_type": selected_model, "task_type": task_type, "hyperparameters": {},
-                "class_weight": "balanced" if is_imbalanced else None, "max_iterations": 7,
+                "class_weight": "balanced" if is_imbalanced else None, "max_iterations": 4,
                 "strategy_notes": "Default configuration - LLM response could not be parsed",
                 "expected_metrics": "Standard metrics for the task type",
             }
@@ -864,7 +864,7 @@ Also consider when choosing values:
         # Ensure required fields and add data summary
         training_plan.setdefault("model_type", selected_model)
         training_plan.setdefault("task_type", task_type)
-        training_plan.setdefault("max_iterations", 7)
+        training_plan.setdefault("max_iterations", 4)
         training_plan["data_summary"] = {
             "train_rows": n_rows, "val_rows": len(val_df) if val_df is not None else None,
             "n_features": n_features, "class_distribution": class_counts, "is_imbalanced": is_imbalanced,
@@ -940,9 +940,7 @@ def training(state: TrainingAgentState) -> TrainingAgentState:
 
         model_name = f"{selected_model}_{int(time.time())}"
         training_plan = s.get("training_plan") or {}
-        plan_max_iters = training_plan.get(
-            "max_iterations", 9 if selected_model == "neural_networks" else 7
-        )
+        plan_max_iters = training_plan.get("max_iterations", 4)
         print(f"[training] Starting training with {selected_model}...")
         print(f"  Train: {train_ref}\n  Val: {val_ref}\n  Test: {test_ref}\n  Target: {target_column}")
 
@@ -957,6 +955,7 @@ def training(state: TrainingAgentState) -> TrainingAgentState:
             experiment_result=s.get("experiment_result"),
             feature_rankings=s.get("feature_rankings"),
             training_plan=plan_for_agent,
+            prior_training_metrics=s.get("training_metrics"),
             explicit_task_type=explicit_tt if isinstance(explicit_tt, str) else None,
         )
 

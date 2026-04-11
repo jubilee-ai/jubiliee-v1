@@ -7,14 +7,13 @@ specialised sub-agents on demand:
   1. Analysis sub-agent  (agents/analysis_agent_v2)
      → statistical analysis, pretrained-model inference, data exploration
 
-  2. Dataset search / curation — local workspace only (Kaggle / HuggingFace disabled
-     via EXTERNAL_DATASET_CATALOG_ENABLED; see dataset curator when re-enabled).
+  2. Dataset search — queries the backend dataset registry (Postgres).
 
 Training is handled by the intent router + training graph (not the orchestrator).
 """
 
-import asyncio
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Optional
@@ -34,8 +33,26 @@ from pydantic import BaseModel, Field
 _ROOT = Path(__file__).parent
 load_dotenv(_ROOT / ".env")
 
-# Kaggle / HuggingFace search uses agents/dataset_curator (MCP). Set True to re-enable.
-EXTERNAL_DATASET_CATALOG_ENABLED = False
+
+def _configure_langsmith_tracing() -> None:
+    """
+    Keep tracing opt-in for local orchestrator runs.
+
+    LangSmith uploads can add long delays when the local dev environment cannot
+    reach the LangSmith API. Set ENABLE_LANGSMITH_TRACING=true to re-enable.
+    """
+    enabled = os.getenv("ENABLE_LANGSMITH_TRACING", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    if not enabled:
+        os.environ["LANGSMITH_TRACING"] = "false"
+        os.environ["LANGCHAIN_TRACING_V2"] = "false"
+
+
+_configure_langsmith_tracing()
 
 _MODEL_TOOLS_DIR = _ROOT / "tools" / "models-tools" / "training"
 if str(_MODEL_TOOLS_DIR) not in sys.path:
@@ -84,380 +101,104 @@ def analyze_data(question: str) -> str:
 
 
 # ============================================================================
-# Tool 2 — Unified Dataset Search (local + Kaggle + HuggingFace)
+# Tool 2 — Dataset Search (queries the backend dataset registry)
 # ============================================================================
 
 class SearchDatasetsInput(BaseModel):
     query: str = Field(
         description=(
-            "Search terms, or use '*' / 'all' / empty string to list every local dataset "
-            "(fast; skips external search unless you set source to kaggle or huggingface)."
+            "Search terms to find relevant datasets, or use '*' / 'all' / empty "
+            "string to list every available dataset."
         )
     )
-    source: Optional[str] = Field(
-        default=None,
-        description="Limit to a source: 'local', 'kaggle', 'huggingface', or None for all",
-    )
 
 
-def _run_async(coro):
-    """Run an async coroutine from sync context, handling nested event loops."""
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        loop = None
+_SEARCH_RESULTS_MAX = 15
 
-    if loop and loop.is_running():
-        import nest_asyncio
-        nest_asyncio.apply()
-
-    return asyncio.run(coro)
+_NOISE_WORDS = frozenset({
+    "find", "search", "look", "for", "me", "data", "dataset", "datasets",
+    "related", "to", "about", "the", "a", "an", "some", "get", "show",
+    "list", "browse", "discover", "recommend", "suggest", "local", "i",
+    "have", "do", "what", "my", "with", "on", "of", "in", "and", "or",
+})
 
 
-_LOCAL_INVENTORY_MAX = 50
+def _extract_search_words(raw_query: str) -> list[str]:
+    """Strip common filler words so only meaningful terms remain."""
+    words = raw_query.lower().split()
+    meaningful = [w for w in words if w not in _NOISE_WORDS]
+    return meaningful if meaningful else words
 
 
-def _is_local_inventory_query(query: str) -> bool:
-    """True when the user wants every local dataset (not a semantic search).
+def _get_backend_datasets() -> list[dict]:
+    """Fetch the full dataset list from the backend catalog (Postgres)."""
+    from backend.catalog import service as catalog_service
+    return catalog_service.get_datasets(include_derived=False)
 
-    Word-overlap search treats '*' as a token that never matches refs, so we
-    must branch to list-all. Skipping external search for these avoids slow
-    Kaggle/HuggingFace agent runs for 'what do I have?' style questions.
+
+def _match_datasets(datasets: list[dict], query: str) -> list[dict]:
+    """Score and filter datasets against search terms.
+
+    Empty/wildcard queries return everything (inventory mode).
     """
     q = (query or "").strip().lower()
-    if not q:
-        return True
-    if q in (
-        "*",
-        "**",
-        "all",
-        "any",
-        "any*",
-        "all datasets",
-        "everything",
-        "list all",
-        "list all datasets",
-        "show all",
-        "show all datasets",
-        "what datasets?",
-        "what datasets do i have",
-        "what data do i have",
-    ):
-        return True
-    # Only wildcards / whitespace (e.g. "*", "**", " * ")
-    if q.replace("*", "").strip() == "":
-        return True
-    return False
+    is_list_all = not q or q in ("*", "**", "all", "any", "everything")
+
+    if is_list_all:
+        return datasets[:_SEARCH_RESULTS_MAX]
+
+    search_words = _extract_search_words(q)
+    scored: list[tuple[int, dict]] = []
+    for ds in datasets:
+        haystack = " ".join([
+            (ds.get("name") or ""),
+            (ds.get("description") or ""),
+            (ds.get("use_case") or ""),
+            " ".join(ds.get("columns") or []) if isinstance(ds.get("columns"), list) else "",
+        ]).lower()
+
+        score = sum(1 for w in search_words if w in haystack)
+        if score > 0:
+            scored.append((score, ds))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [ds for _, ds in scored[:_SEARCH_RESULTS_MAX]]
 
 
-def _search_local_datasets(query: str) -> list[dict]:
-    """Search local registered datasets, SQL tables, and catalog for matches."""
-    _DATA_TOOLS_DIR = _ROOT / "tools" / "data-tools"
-    if str(_DATA_TOOLS_DIR) not in sys.path:
-        sys.path.insert(0, str(_DATA_TOOLS_DIR))
-    from utils import get_all_available_datasets
-
-    all_ds = get_all_available_datasets()
-
-    if _is_local_inventory_query(query):
-        results: list[dict] = []
-        for ds in all_ds.get("registered", []):
-            ref = ds["ref"]
-            results.append({
-                "source": "local",
-                "ref": ref,
-                "name": ref,
-                "rows": ds.get("rows", "?"),
-                "columns": ds.get("columns", "?"),
-                "match_score": 0,
-            })
-        for ds in all_ds.get("sql_tables", []):
-            ref = ds["ref"]
-            results.append({
-                "source": "local (SQL)",
-                "ref": ref,
-                "name": ref,
-                "rows": ds.get("rows", "?"),
-                "columns": ds.get("columns", "?"),
-                "match_score": 0,
-            })
-        for ds in all_ds.get("catalog", []):
-            ref = ds["ref"]
-            name = ds.get("name", ref)
-            cols = ds.get("columns", [])
-            ncol = len(cols) if isinstance(cols, list) else cols
-            results.append({
-                "source": "local (catalog)",
-                "ref": ref,
-                "name": name,
-                "rows": ds.get("rows", "?"),
-                "columns": ncol,
-                "match_score": 0,
-            })
-        results.sort(key=lambda x: (x["source"], str(x["ref"])))
-        return results[:_LOCAL_INVENTORY_MAX]
-
-    query_lower = query.lower()
-    query_words = set(query_lower.split())
-    results = []
-
-    for ds in all_ds.get("registered", []):
-        ref = ds["ref"]
-        ref_lower = ref.lower()
-        ref_words = set(ref_lower.replace("_", " ").split())
-        overlap = query_words & ref_words
-        if overlap or any(w in ref_lower for w in query_words):
-            results.append({
-                "source": "local",
-                "ref": ref,
-                "name": ref,
-                "rows": ds.get("rows", "?"),
-                "columns": ds.get("columns", "?"),
-                "match_score": len(overlap),
-            })
-
-    for ds in all_ds.get("sql_tables", []):
-        ref = ds["ref"]
-        ref_lower = ref.lower()
-        col_text = " ".join(ds.get("column_names", [])).lower()
-        ref_words = set(ref_lower.replace("_", " ").split())
-        overlap = query_words & ref_words
-        col_overlap = any(w in col_text for w in query_words)
-        if overlap or col_overlap:
-            results.append({
-                "source": "local (SQL)",
-                "ref": ref,
-                "name": ref,
-                "rows": ds.get("rows", "?"),
-                "columns": ds.get("columns", "?"),
-                "match_score": len(overlap) + (1 if col_overlap else 0),
-            })
-
-    for ds in all_ds.get("catalog", []):
-        ref = ds["ref"]
-        name = ds.get("name", ref)
-        search_text = f"{ref} {name}".lower()
-        if any(w in search_text for w in query_words):
-            cols = ds.get("columns", [])
-            results.append({
-                "source": "local (catalog)",
-                "ref": ref,
-                "name": name,
-                "rows": ds.get("rows", "?"),
-                "columns": len(cols) if isinstance(cols, list) else cols,
-                "match_score": sum(1 for w in query_words if w in search_text),
-            })
-
-    results.sort(key=lambda x: x["match_score"], reverse=True)
-    return results
-
-
-def _format_local_results(local_results: list[dict], start_num: int = 1) -> str:
-    if not local_results:
+def _format_dataset_results(datasets: list[dict]) -> str:
+    if not datasets:
         return ""
-    lines = ["### Local Datasets\n"]
-    for i, ds in enumerate(local_results[:10], start=start_num):
-        lines.append(
-            f"{i}. **{ds['name']}** — `{ds['ref']}` "
-            f"({ds['rows']} rows, {ds['columns']} cols) "
-            f"[source: {ds['source']}]"
-        )
+    lines = ["### Datasets\n"]
+    for i, ds in enumerate(datasets, start=1):
+        name = ds.get("name") or "Untitled"
+        rows = ds.get("rows") or "?"
+        cols = ds.get("columns")
+        ncols = len(cols) if isinstance(cols, list) else (cols or "?")
+        desc = ds.get("description") or ""
+        desc_part = f" — {desc}" if desc else ""
+        lines.append(f"{i}. **{name}** ({rows} rows, {ncols} cols){desc_part}")
     return "\n".join(lines)
 
 
 @tool(args_schema=SearchDatasetsInput)
-def search_datasets(query: str, source: Optional[str] = None) -> str:
-    """Search for datasets across local storage, Kaggle, and HuggingFace.
+def search_datasets(query: str) -> str:
+    """Search available datasets in the workspace.
 
     MUST be called whenever the user asks to find, search for, discover, or
     get recommendations for datasets. NEVER answer dataset questions from
     your own knowledge — always use this tool to get real results.
 
-    Searches local datasets (registered, SQL tables, catalog). When
-    EXTERNAL_DATASET_CATALOG_ENABLED is True, also searches Kaggle/HuggingFace
-    via the dataset curator.
-
-    After the user picks a local dataset, it's ready to use immediately.
-    For external sources (when enabled), use curate_dataset to download and register.
+    After the user picks a dataset, it's ready to use immediately for
+    training or analysis via its name.
     """
-    sections = []
-    next_num = 1
+    all_datasets = _get_backend_datasets()
+    matched = _match_datasets(all_datasets, query)
 
-    # --- Local search (always runs unless source is explicitly external) ---
-    if source not in ("kaggle", "huggingface"):
-        local_results = _search_local_datasets(query)
-        if local_results:
-            sections.append(_format_local_results(local_results, start_num=next_num))
-            next_num += min(len(local_results), 10)
+    if not matched:
+        return f"No datasets found matching '{query}'."
 
-    # --- External search (Kaggle / HuggingFace) ---
-    if source == "local":
-        if not sections:
-            return f"No local datasets found matching '{query}'."
-        return "\n\n".join(sections)
-
-    # List-all / inventory queries: local only — do not spawn the curator agent (slow).
-    if source is None and _is_local_inventory_query(query):
-        if not sections:
-            return (
-                "No datasets found in this workspace yet (nothing registered, "
-                "no SQL tables, and no catalog assets)."
-            )
-        header = (
-            "For **local** results, you can train on them immediately using the ref name.\n\n"
-        )
-        return header + "\n\n".join(sections)
-
-    if not EXTERNAL_DATASET_CATALOG_ENABLED:
-        if sections:
-            header = (
-                "For **local** results, you can train on them immediately using the ref name.\n\n"
-            )
-            return (
-                header
-                + "\n\n".join(sections)
-                + "\n\n*(Kaggle / HuggingFace catalog search is disabled.)*"
-            )
-        if source in ("kaggle", "huggingface"):
-            return (
-                "Kaggle and HuggingFace dataset search is disabled. "
-                "Use local datasets only (registered refs, SQL tables, catalog), or add data in the workspace."
-            )
-        return (
-            f"No local datasets matched '{query}'. "
-            "Kaggle / HuggingFace search is disabled — try different keywords or register data locally."
-        )
-
-    # External search is intentionally disabled in main chat.
-    if not sections:
-        return f"No local datasets found matching '{query}'."
-    header = (
-        "For **local** results, you can train on them immediately using the ref name.\n\n"
-    )
-    return header + "\n\n".join(sections) + "\n\n*(Kaggle / HuggingFace search is disabled.)*"
-
-
-# ============================================================================
-# Tool 3 — Dataset Curation (download, profile, register)
-# ============================================================================
-
-class CurateDatasetInput(BaseModel):
-    goal: str = Field(
-        description="What the dataset will be used for (e.g. 'customer segmentation clustering')"
-    )
-    source: str = Field(
-        description="'local', 'kaggle', or 'huggingface'"
-    )
-    identifier: str = Field(
-        description="For local: the dataset ref name. For Kaggle: 'owner/slug'. For HuggingFace: 'org/repo'."
-    )
-
-
-@tool(args_schema=CurateDatasetInput)
-def curate_dataset(goal: str, source: str, identifier: str) -> str:
-    """Select and prepare a dataset for training.
-
-    For local datasets: validates the ref exists and profiles it.
-    For external datasets (when enabled): downloads, profiles, and registers them.
-
-    Use this after the user picks a dataset from search_datasets results.
-    Returns the registered dataset reference name that can be used for training.
-    """
-    _DATA_TOOLS_DIR = _ROOT / "tools" / "data-tools"
-    if str(_DATA_TOOLS_DIR) not in sys.path:
-        sys.path.insert(0, str(_DATA_TOOLS_DIR))
-    from utils import get_registered_dataset
-
-    if not EXTERNAL_DATASET_CATALOG_ENABLED and source.lower() in ("kaggle", "huggingface"):
-        return (
-            "Kaggle and HuggingFace dataset import is disabled. "
-            "Use a local dataset ref (profile with source local / local (sql) / local (catalog))."
-        )
-
-    if source.lower() in ("local", "local (sql)", "local (catalog)"):
-        df = get_registered_dataset(identifier)
-        if df is None:
-            return f"Local dataset '{identifier}' not found in registry."
-
-        from agents.dataset_curator.tools import profile_dataset
-        profile_result = profile_dataset.invoke({"dataset_ref": identifier})
-
-        return (
-            f"Dataset **{identifier}** is already available locally ({len(df):,} rows, {len(df.columns)} cols).\n\n"
-            f"Ready to use for training — reference it as `{identifier}`.\n\n"
-            f"### Profile\n{profile_result}"
-        )
-
-    if source.lower() == "kaggle":
-        from agents.dataset_curator.tools import (download_kaggle_dataset,
-                                                  profile_dataset)
-
-        parts = identifier.split("/", 1)
-        if len(parts) != 2:
-            return f"Invalid Kaggle identifier '{identifier}'. Expected format: owner/slug"
-
-        dl_result = download_kaggle_dataset.invoke(
-            {"owner_slug": parts[0], "dataset_slug": parts[1]}
-        )
-
-        if "Error" in dl_result:
-            return dl_result
-
-        import re
-        refs = re.findall(r"`(kaggle_\w+)`", dl_result)
-        if not refs:
-            return f"Download succeeded but no datasets were registered.\n{dl_result}"
-
-        best_ref = refs[0]
-        best_rows = 0
-        for ref in refs:
-            df = get_registered_dataset(ref)
-            if df is not None and len(df) > best_rows:
-                best_rows = len(df)
-                best_ref = ref
-
-        profile_result = profile_dataset.invoke({"dataset_ref": best_ref})
-
-        return (
-            f"Dataset registered as **{best_ref}** ({best_rows:,} rows)\n\n"
-            f"Ready to use for training — reference it as `{best_ref}`.\n\n"
-            f"### Profile\n{profile_result}\n\n"
-            f"### All registered files\n{dl_result}"
-        )
-
-    elif source.lower() == "huggingface":
-        from agents.dataset_curator.tools import (download_hf_dataset,
-                                                  profile_dataset)
-
-        dl_result = download_hf_dataset.invoke({"dataset_id": identifier})
-
-        if "Error" in dl_result:
-            return dl_result
-
-        import re
-        refs = re.findall(r"`(hf_\w+)`", dl_result)
-        if not refs:
-            return f"Download succeeded but no datasets were registered.\n{dl_result}"
-
-        best_ref = refs[0]
-        best_rows = 0
-        for ref in refs:
-            df = get_registered_dataset(ref)
-            if df is not None and len(df) > best_rows:
-                best_rows = len(df)
-                best_ref = ref
-
-        profile_result = profile_dataset.invoke({"dataset_ref": best_ref})
-
-        return (
-            f"Dataset registered as **{best_ref}** ({best_rows:,} rows)\n\n"
-            f"Ready to use for training — reference it as `{best_ref}`.\n\n"
-            f"### Profile\n{profile_result}\n\n"
-            f"### All registered files\n{dl_result}"
-        )
-
-    else:
-        return f"Unknown source '{source}'. Use 'kaggle' or 'huggingface'."
+    header = "You can train on any of these immediately using the dataset name.\n\n"
+    return header + _format_dataset_results(matched)
 
 
 # ============================================================================
@@ -473,11 +214,16 @@ _DEFAULT_TRAINING_RECAP = [
 
 
 class ProposeTrainingPlanInput(BaseModel):
-    goal: str = Field(description="Clear, specific training objective (one or two sentences).")
+    goal: str = Field(
+        description=(
+            "What the model is for in plain language: the user's real decision or outcome "
+            "(e.g. rank default risk for underwriting), not generic 'train a model'. One or two sentences."
+        )
+    )
     dataset_refs: list[str] = Field(
         description=(
-             "Exact local dataset ref strings from search_datasets or the user's selection. "
-            "Must match workspace refs — never invent names."
+            "Exact dataset names from search_datasets results or the user's selection. "
+            "Must match workspace names — never invent them."
         ),
     )
     dataset_labels: list[str] = Field(
@@ -505,11 +251,16 @@ def propose_training_plan(
     preferences: str = "",
     recap_steps: Optional[list[str]] = None,
 ) -> str:
-    """Finalize a training plan once you have workable dataset ref(s) and a goal clear enough to run.
+    """Finalize a training plan once you have workable dataset ref(s) and a goal you could explain to a product owner.
+
+    Do **not** call this tool if you are **unsure** what the user wants the model to accomplish. In that case,
+    reply in normal chat with one or two clarifying questions, then call this tool only after they answer.
 
     Call ONLY when:
     - The user wants to train / build a predictive model, and
-    - You have at least one real local dataset ref (use search_datasets if needed).
+    - You have at least one real local dataset ref (use search_datasets if needed), and
+    - You understand **why** they want the model: what decision, risk, or outcome it supports. Technical
+      details (metrics, exact target column) can stay vague; the **goal** string must not be.
 
     After calling, do not add visible reply text in that turn (app shows the plan). Do NOT paste this JSON.
     The app shows **Run step-by-step** and **Run in background** buttons from the tool result.
@@ -541,13 +292,13 @@ You are **Jubilee**, an AI assistant for data analysis and machine learning.
 
 | Tool | When to use |
 |---|---|
-| `search_datasets` | User wants to find, browse, or discover datasets — **local workspace only** (registered, SQL, catalog); Kaggle/HuggingFace disabled for now |
+| `search_datasets` | User wants to find, browse, or discover datasets in the workspace |
 | `analyze_data` | Analytical questions: statistics, trends, pretrained-model inference, data exploration |
 | `predict_with_model` | Run predictions on a dataset using a trained model |
 | `evaluate_model` | Evaluate a trained model's performance on a labeled dataset |
 | `list_trained_models` | List all trained models with their metrics |
 | `get_model_info` | Get detailed info about a specific trained model |
-| `propose_training_plan` | After a short dialogue (or a `[Background task` message): user wants to **train** and dataset refs are decided |
+| `propose_training_plan` | User wants to **train** and you are **sure** what the goal is (see Decision Flow §4). If the goal is unclear, **ask questions in chat first** — do not call this tool until you understand it. |
 
 ## Prediction & Model Tools
 - **predict_with_model**: Run predictions on a dataset using a trained model. Use when the user wants to make predictions, score new data, or test a model on a dataset. Requires a model name and a registered dataset ref.
@@ -557,33 +308,47 @@ You are **Jubilee**, an AI assistant for data analysis and machine learning.
 
 ## Decision Flow
 
+**Training — ask when unsure:** If you are not confident you understand the user's **goal** (what problem
+the model solves or what decision it supports), **stop and ask** in your normal reply. Do **not** call
+`propose_training_plan` until you could state their goal in one clear sentence you believe they would agree with.
+
 1. **General / conversational question** → answer directly, no tool needed.
 2. **User mentions finding, searching, looking for, or wanting datasets** →
    **ALWAYS call `search_datasets`**. NEVER answer dataset questions from your own
-   knowledge — you MUST use the tool because it searches the **local** workspace
-   for real, usable results. This includes ANY of these patterns:
+   knowledge — you MUST use the tool because it searches the workspace's dataset
+   registry for real, usable results. This includes ANY of these patterns:
    - "find me data for …", "search for datasets …", "look for … data"
    - "what datasets are good for …", "recommend a dataset for …"
    - "I need data for …", "get me some … data", "what data do I have?"
-   Present the results as a numbered list and ask which local dataset ref to use.
+   Present the results as a numbered list and ask which dataset the user wants to use.
 3. **Analytical question** (e.g. "what trends …", "analyze …", "what is the distribution …")
    → `analyze_data`
-4. **User wants to train / build a predictive model** → **Bias to action.** Treat plain-language goals
-   (e.g. underwriting, risk, “high value” decisions, experiments to improve decisions) as **clear enough**
-   to plan a supervised pipeline on workspace data — do **not** interrogate for target column, metric, or
-   constraints unless the user is **explicitly** stuck or contradicts themselves.
-   - If you do not have concrete local dataset **ref** names, call `search_datasets` first, then choose
-     sensible refs from the results.
-   - **Clarifying questions (rare):** You **may** ask **at most one** question **only** when something is
-     **blocking**: e.g. no dataset ref and search returns nothing usable, empty or nonsensical goal, or
-     mutually exclusive instructions. If you can make a reasonable assumption, **do not** ask.
-   - If the user message starts with `[Background task` or says they plan to use **Run on my behalf**,
-     same rule: at most one blocking question, then `propose_training_plan` so the plan card appears.
-   - When refs and goal are workable, call `propose_training_plan` with exact `dataset_refs` and optional
-     `preferences` / `recap_steps` (keep `recap_steps` short and plain-language).
-   - **After** `propose_training_plan`, do **not** add any further assistant text in that turn (no summary,
-     no Markdown). The app shows the plan and approval controls; the user can reply in chat if they need changes.
-   - Do **not** paste the tool's JSON in your reply.
+4. **User wants to train / build a predictive model** → Follow this **order**: (1) understand the **goal**
+   in plain language, (2) lock a **dataset name** from the workspace, (3) call `propose_training_plan`.
+   The **goal** is what real-world decision or outcome the model supports (e.g. rank default risk for
+   underwriting). Technical details (splits, metrics, model family) are for the pipeline unless the user
+   cares—**do not** quiz them on recall vs precision vs AUC unless they ask about tradeoffs or metrics.
+   - **If the goal is unclear:** ask one short clarifying question. **Do not** call `propose_training_plan`
+     until you could write an honest one-sentence `goal` they would agree with.
+   - **If you only have a vague verb** ('underwrite', 'score'): ask what outcome they need until the goal
+     is concrete enough.
+   - **Datasets:** If you do not have a workspace dataset name, call `search_datasets`. After it returns:
+     - **Do not** paste or reformat the entire tool output again, and **do not** add redundant sections
+       (e.g. "## Dataset found" repeating the same table). Say briefly what you found in **one** short
+       paragraph or a tiny list.
+     - If **exactly one** dataset clearly matches and the user **already** stated a concrete goal, either
+       call `propose_training_plan` with that name and goal, **or** ask one yes/no ("Use **name** for this
+       run?")—do **not** ask them to reply with both `1` **and** the dataset name.
+     - If multiple datasets apply, ask which one in **one** line (number **or** name is enough).
+   - **System context** from a prior trained run: terse follow-ups like `train` or `again` are ambiguous—ask
+     what they want to change or train next; do not assume the old run answers the new message.
+   - **Clarifying questions:** one at a time when possible; skip long option menus unless the user asked.
+   - If the user message starts with `[Background task` or **Run on my behalf**, same flow: clarify if
+     needed, then `propose_training_plan`.
+   - When goal + dataset are settled, call `propose_training_plan` with exact `dataset_refs` and optional
+     `preferences` only if the user gave preferences; keep `recap_steps` short.
+   - **After** `propose_training_plan`, **no** further assistant text in that turn (the app shows the plan).
+   - Do **not** paste tool JSON in chat.
 5. **User wants predictions / scoring** → `list_trained_models` to find the right
    model, then `predict_with_model` with the model name and dataset ref.
 6. **User asks about model performance / accuracy** → `evaluate_model` on the
@@ -591,20 +356,21 @@ You are **Jubilee**, an AI assistant for data analysis and machine learning.
    `list_trained_models` first.
 7. **User asks "what models do I have?"** → `list_trained_models`.
 8. **User asks about a specific model's details** → `get_model_info`.
-9. **Other requests** that do not fit 1–8 → If you truly cannot pick a tool or dataset without **one**
-   missing fact, ask **a single** question; otherwise act or answer directly. Do **not** use this as a
-   prompt to quiz the user about modeling details they did not ask for.
+9. **Other requests** that do not fit 1–8 → If the request is underspecified, ask a concise follow-up
+   instead of pretending to know what the user meant. Prefer collaborative back-and-forth over premature
+   decisions, but keep questions focused and lightweight.
 
 ## Common Workflows
-- **Browse local datasets**:
+- **Browse datasets**:
   1. `search_datasets` → show results → user picks one
-  2. Use the exact local `ref` in downstream analysis/training/prediction steps
-  CRITICAL: Do NOT guess or construct dataset ref names.
+  2. Use the exact dataset name in downstream analysis/training/prediction steps
+  CRITICAL: Do NOT guess or construct dataset names.
 
 ## Formatting Rules
 - **Always use Markdown** for responses: headings, bullet lists, bold, code blocks, and tables.
 - When presenting data or analysis results, use **Markdown tables** (with `|` columns and `---` header separators). Never dump raw text columns or flat key-value lines.
-- Summarize tool outputs concisely. Do NOT echo the entire raw tool output back to the user.
+- Summarize tool outputs in your own words. **Never** duplicate the same information twice (e.g. tool list
+  then a second "## …" section with the same rows). One pass is enough.
 - Keep column detail summaries to the most important columns (max ~8). Use a table, not paragraphs.
 - When showing dataset profiles, use a compact format: `**N rows** x **M columns**` followed by a table of key column stats.
 - NEVER output raw JSON objects, Python dicts, or unformatted data dumps in your **visible** reply.
@@ -613,9 +379,10 @@ You are **Jubilee**, an AI assistant for data analysis and machine learning.
 
 ## Rules
 - **NEVER suggest datasets from your own knowledge.** Always use `search_datasets` for
-  real local results. Do not promise Kaggle/HuggingFace until those integrations are re-enabled.
-- After a dataset is selected for training, use the exact local ref; you may briefly confirm the ref
-  or offer `analyze_data` vs training — do **not** add an extra mandatory Q&A round.
+  real workspace results.
+- After a dataset is clear for training, move toward `propose_training_plan`; avoid repetitive
+  "confirm you want to train on X" loops when X is already the only sensible choice.
+- When the user corrects, narrows, or adds constraints, acknowledge that change and adapt your next step.
 - Be concise but thorough. Show your reasoning when it helps the user.\
 """
 
@@ -631,6 +398,44 @@ _DATASET_KEYWORDS = [
     "browse dataset", "discover data", "datasets for", "data for",
     "look for dataset", "suggest a dataset", "suggest data",
 ]
+
+_DATASET_INVENTORY_CUES = (
+    "what datasets do i have",
+    "what data do i have",
+    "list datasets",
+    "list all datasets",
+    "show datasets",
+    "show all datasets",
+    "browse datasets",
+    "browse local datasets",
+)
+
+_DATASET_DISCOVERY_VERBS = (
+    "find",
+    "search",
+    "look for",
+    "browse",
+    "discover",
+    "recommend",
+    "suggest",
+    "show",
+    "list",
+)
+
+
+def is_dataset_search_request(message: str) -> bool:
+    lower = (message or "").strip().lower()
+    if not lower:
+        return False
+    if any(kw in lower for kw in _DATASET_KEYWORDS):
+        return True
+    return "dataset" in lower and any(verb in lower for verb in _DATASET_DISCOVERY_VERBS)
+
+
+def build_dataset_search_args(message: str) -> dict[str, str]:
+    lower = (message or "").strip().lower()
+    query = "" if any(cue in lower for cue in _DATASET_INVENTORY_CUES) else (message or "").strip()
+    return {"query": query}
 
 
 class DatasetSearchEnforcer(AgentMiddleware):
@@ -661,12 +466,10 @@ class DatasetSearchEnforcer(AgentMiddleware):
                 last_human = msg.content if isinstance(msg.content, str) else str(msg.content)
                 break
 
-        if last_human:
-            last_lower = last_human.lower()
-            if any(kw in last_lower for kw in _DATASET_KEYWORDS):
-                request = request.override(
-                    tool_choice={"type": "function", "function": {"name": "search_datasets"}}
-                )
+        if is_dataset_search_request(last_human):
+            request = request.override(
+                tool_choice={"type": "function", "function": {"name": "search_datasets"}}
+            )
 
         return handler(request)
 
@@ -695,4 +498,10 @@ agent = create_agent(
     checkpointer=_checkpointer,
 )
 
-__all__ = ["agent", "TOOLS", "ORCHESTRATOR_SYSTEM_PROMPT"]
+__all__ = [
+    "agent",
+    "TOOLS",
+    "ORCHESTRATOR_SYSTEM_PROMPT",
+    "is_dataset_search_request",
+    "build_dataset_search_args",
+]

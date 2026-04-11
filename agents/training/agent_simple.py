@@ -59,7 +59,7 @@ class TrainingPlan(BaseModel):
         description="Class weighting strategy for imbalanced data. E.g. 'balanced', 'use CrossEntropyLoss weight param', or null.",
     )
     max_iterations: int = Field(
-        default=9,
+        default=4,
         description="Number of experiment iterations the training agent should run",
     )
     strategy_notes: str = Field(description="High-level training strategy and experiment plan")
@@ -583,6 +583,7 @@ def create_simple_training_agent(
                 as_of_cutoff=label_def.get("as_of_cutoff"),
                 prediction_horizon=label_def.get("prediction_horizon"),
                 selected_model=state.get("selected_model"),
+                model=model,
             )
 
             feature_spec = result.get("feature_spec")
@@ -1039,7 +1040,7 @@ def create_simple_training_agent(
             f"{redo_section}"
         )
 
-        structured_llm = init_chat_model("openai:gpt-5.4").with_structured_output(
+        structured_llm = init_chat_model(model).with_structured_output(
             TrainingPlan, method="function_calling"
         )
         training_plan = structured_llm.invoke(prompt).model_dump()
@@ -1093,7 +1094,7 @@ def create_simple_training_agent(
 
         model_name = f"{selected_model}_{int(time.time())}"
         training_plan = state.get("training_plan") or {}
-        plan_max_iters = training_plan.get("max_iterations", 9 if selected_model == "neural_networks" else 7)
+        plan_max_iters = training_plan.get("max_iterations", 4)
         plan_for_agent = training_plan if isinstance(training_plan, dict) and training_plan else None
         tt = state.get("task_type")
         result = _run_training(
@@ -1108,7 +1109,9 @@ def create_simple_training_agent(
             experiment_result=state.get("experiment_result"),
             feature_rankings=state.get("feature_rankings"),
             training_plan=plan_for_agent,
+            prior_training_metrics=state.get("training_metrics"),
             explicit_task_type=tt if isinstance(tt, str) else None,
+            llm_model=model,
         )
 
         feature_redo_requested = result.get("feature_redo_requested", False)

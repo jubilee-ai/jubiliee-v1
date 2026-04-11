@@ -26,7 +26,7 @@ class Settings(BaseSettings):
 
     # POST /api/chat — LLM classifies training graph vs orchestrator when mode is unset
     CHAT_INTENT_ROUTER_MODEL: str = Field(
-        default="openai:gpt-5.4-mini",
+        default="openai:gpt-5.4",
         description="LangChain init_chat_model id for HTTP-layer chat intent (override if unavailable)",
     )
 

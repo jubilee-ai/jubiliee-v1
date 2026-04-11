@@ -7,6 +7,8 @@ interface LoadingIndicatorProps {
 }
 
 export function LoadingIndicator({ label }: LoadingIndicatorProps) {
+  const statusLabel = label?.trim() || "Working"
+
   return (
     <div className="flex items-center gap-3 py-3 px-1 min-h-10 animate-message-in">
       <div className="flex items-end gap-[3px] h-8 shrink-0">
@@ -18,9 +20,7 @@ export function LoadingIndicator({ label }: LoadingIndicatorProps) {
           />
         ))}
       </div>
-      {label ? (
-        <p className="text-ui text-muted-foreground leading-snug flex-1">{label}</p>
-      ) : null}
+      <p className="text-ui text-muted-foreground leading-snug flex-1">{statusLabel}</p>
     </div>
   )
 }

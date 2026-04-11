@@ -279,8 +279,8 @@ _INIT_DEFAULTS: dict[str, dict] = {
     "LogisticRegression": {"max_iter": 1000},
     "MLPClassifier": {"max_iter": 500},
     "MLPRegressor": {"max_iter": 500},
-    "XGBClassifier": {"tree_method": "hist", "n_jobs": -1},
-    "XGBRegressor": {"tree_method": "hist", "n_jobs": -1},
+    "XGBClassifier": {"tree_method": "hist", "n_jobs": 1},
+    "XGBRegressor": {"tree_method": "hist", "n_jobs": 1},
 }
 
 _PARALLELIZABLE = {
@@ -293,6 +293,42 @@ _PARALLELIZABLE = {
 
 # ── Helpers ──────────────────────────────────────────────────────────────
 
+def _xgboost_runtime_is_unstable() -> bool:
+    """Guard known-bad macOS/Python combos that segfault in XGBoost."""
+    return sys.platform == "darwin" and sys.version_info >= (3, 14)
+
+
+def _apply_runtime_stability_guard(
+    estimator_name: str,
+    hyperparameters: dict,
+) -> tuple[str, dict, str | None]:
+    """Swap unstable estimators for stable sklearn equivalents."""
+    fallback_map = {
+        "XGBClassifier": "HistGradientBoostingClassifier",
+        "XGBRegressor": "HistGradientBoostingRegressor",
+    }
+    fallback = fallback_map.get(estimator_name)
+    if fallback is None or not _xgboost_runtime_is_unstable():
+        return estimator_name, hyperparameters, None
+
+    translated: dict = {}
+    param_map = {
+        "n_estimators": "max_iter",
+        "learning_rate": "learning_rate",
+        "max_depth": "max_depth",
+        "reg_lambda": "l2_regularization",
+        "lambda": "l2_regularization",
+    }
+    for src, dst in param_map.items():
+        if src in hyperparameters:
+            translated[dst] = hyperparameters[src]
+
+    note = (
+        f"Requested {estimator_name}, but using {fallback} because XGBoost is unstable "
+        f"on macOS with Python {sys.version_info.major}.{sys.version_info.minor} in this environment."
+    )
+    return fallback, translated, note
+
 def _resolve_estimator(name: str, overrides: dict | None = None):
     """Import and instantiate an sklearn estimator by name."""
     if name not in ESTIMATORS:
@@ -301,7 +337,7 @@ def _resolve_estimator(name: str, overrides: dict | None = None):
     cls = getattr(importlib.import_module(module_path), class_name)
     init_kw = {**_INIT_DEFAULTS.get(name, {})}
     if name in _PARALLELIZABLE:
-        init_kw.setdefault("n_jobs", -1)
+        init_kw.setdefault("n_jobs", 1)
     init_kw.update(overrides or {})
     return cls(**init_kw)
 
@@ -380,8 +416,12 @@ def _resolve_cv(
 
 # ── Main entry point ─────────────────────────────────────────────────────
 
-_SUBSAMPLE_SEARCH = 30_000
-_MAX_TOTAL_FITS = 100
+_SUBSAMPLE_SEARCH = 20_000
+_MAX_TOTAL_FITS = 24
+_DEFAULT_SEARCH_ITER = 8
+_DEFAULT_CV_FOLDS = 3
+_LARGE_DATASET_SEARCH_ITERS = 6
+_FOCUSED_SEARCH_ITERS = 4
 
 _SLOW_ESTIMATORS = {
     "GradientBoostingClassifier", "GradientBoostingRegressor",
@@ -427,16 +467,23 @@ def _get_tunable_params_summary(estimator_name: str) -> str:
 
 def run(params: dict) -> str:
     """Train any sklearn estimator. See SKILL.md for parameters."""
-    estimator_name = params.get("estimator")
+    requested_estimator_name = params.get("estimator")
+    estimator_name = requested_estimator_name
     if not estimator_name:
         return f"TRAINING FAILED\nError: 'estimator' is required. Available: {sorted(ESTIMATORS)}"
 
     dataset_ref = params.get("train_dataset_ref")
     target_column = params.get("target_column")
-    model_name = params.get("model_name", f"{estimator_name.lower()}_model")
     for required, label in [(dataset_ref, "train_dataset_ref"), (target_column, "target_column")]:
         if not required:
             return f"TRAINING FAILED\nError: '{label}' is required."
+
+    raw_hyperparameters = dict(params.get("hyperparameters", {}) or {})
+    estimator_name, raw_hyperparameters, stability_note = _apply_runtime_stability_guard(
+        estimator_name,
+        raw_hyperparameters,
+    )
+    model_name = params.get("model_name", f"{estimator_name.lower()}_model")
 
     # ── Load data ────────────────────────────────────────────────────────
     df = get_registered_dataset(dataset_ref)
@@ -476,9 +523,10 @@ def run(params: dict) -> str:
         y_val = pd.Series(np.asarray(val_df[target_column]), index=val_df.index, name=target_column)
 
     print(f"[sklearn_generic] {estimator_name} | {n_rows} rows × {len(feature_columns)} features")
+    if stability_note:
+        print(f"[sklearn_generic] {stability_note}")
 
     # ── Build pipeline ───────────────────────────────────────────────────
-    raw_hyperparameters = params.get("hyperparameters", {})
     fixed_params: dict = {}
     search_overrides: dict = {}
     for k, v in raw_hyperparameters.items():
@@ -514,9 +562,14 @@ def run(params: dict) -> str:
     ])
 
     # ── Auto-tune or direct fit ──────────────────────────────────────────
-    auto_tune = params.get("auto_tune", True)
-    n_search_iter = params.get("n_search_iter", 20)
-    cv_folds = max(2, min(params.get("cv_folds", 5), len(y)))
+    explicit_auto_tune = params.get("auto_tune")
+    auto_tune = (
+        bool(explicit_auto_tune)
+        if explicit_auto_tune is not None
+        else not (fixed_params and not search_overrides)
+    )
+    n_search_iter = params.get("n_search_iter", _DEFAULT_SEARCH_ITER)
+    cv_folds = max(2, min(params.get("cv_folds", _DEFAULT_CV_FOLDS), len(y)))
     best_params: dict = {}
     cv_score: float | None = None
     tuning_cv_splits: int | None = None
@@ -532,9 +585,18 @@ def run(params: dict) -> str:
     is_slow = estimator_name in _SLOW_ESTIMATORS
     if is_slow:
         cv_folds = min(cv_folds, 3)
-        n_search_iter = min(n_search_iter, 10)
+        n_search_iter = min(n_search_iter, _LARGE_DATASET_SEARCH_ITERS)
     if n_rows > _SUBSAMPLE_SEARCH:
         cv_folds = min(cv_folds, 3)
+        n_search_iter = min(n_search_iter, _LARGE_DATASET_SEARCH_ITERS)
+    if search_overrides:
+        n_search_iter = min(n_search_iter, _FOCUSED_SEARCH_ITERS)
+
+    if not auto_tune and fixed_params and not search_overrides:
+        print(
+            "[sklearn_generic] auto_tune disabled by default because exact hyperparameters "
+            "were provided; doing a direct fit."
+        )
 
     scoring = _select_scoring(is_clf, y)
 
@@ -573,7 +635,7 @@ def run(params: dict) -> str:
             n_iter=actual_iter,
             scoring=scoring,
             cv=cv_resolved,
-            n_jobs=-1,
+            n_jobs=1,
             random_state=rs,
             error_score="raise",
             verbose=1,
@@ -626,6 +688,10 @@ def run(params: dict) -> str:
         f"Features: {len(feature_names_out)}",
         f"Scoring: {scoring}",
     ]
+    if stability_note:
+        lines.append(
+            f"Runtime fallback: requested {requested_estimator_name}, trained {estimator_name}"
+        )
 
     if is_clf:
         train_acc = float(accuracy_score(y, y_pred))

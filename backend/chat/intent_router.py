@@ -19,12 +19,75 @@ from backend.shared.settings import get_settings
 
 logger = logging.getLogger(__name__)
 
+_TRAINING_CUES = (
+    "train",
+    "training",
+    "build a model",
+    "build model",
+    "classifier",
+    "regressor",
+    "predictive model",
+    "predict ",
+)
+
+_CLARIFICATION_CUES = (
+    "help me",
+    "can you help",
+    "not sure",
+    "unsure",
+    "figure out",
+    "what should",
+    "which model",
+    "where do i start",
+)
+
+_EXPLICIT_RUN_CUES = (
+    "run the pipeline",
+    "start training",
+    "run training",
+    "run the experiment",
+    "go ahead",
+    "train on",
+    "using dataset",
+    "use dataset",
+)
+
+_DATASET_DETAIL_CUES = (
+    "dataset",
+    "table",
+    ".csv",
+    "target",
+    "label",
+    "column",
+)
+
 
 class _IntentResult(BaseModel):
     route: Literal["training_graph", "orchestrator_chat"] = Field(
         ...,
         description="training_graph = run the LangGraph training pipeline; orchestrator_chat = Q&A / tools only",
     )
+
+
+def _prefer_orchestrator_for_ambiguous_training_request(message: str) -> bool:
+    """
+    Keep vague training requests in chat so the assistant can clarify first.
+
+    This is intentionally simple: if the user sounds like they want modeling help
+    but has not clearly said "run now on this dataset", prefer the orchestrator.
+    """
+    lower = (message or "").strip().lower()
+    if not lower:
+        return False
+    if not any(cue in lower for cue in _TRAINING_CUES):
+        return False
+    if any(cue in lower for cue in _CLARIFICATION_CUES):
+        return True
+    if any(cue in lower for cue in _EXPLICIT_RUN_CUES):
+        return False
+    if any(cue in lower for cue in _DATASET_DETAIL_CUES):
+        return False
+    return True
 
 
 def should_route_to_training_graph(request: ChatRequest) -> bool:
@@ -42,6 +105,8 @@ def should_route_to_training_graph(request: ChatRequest) -> bool:
 
     message = (request.message or "").strip()
     if not message:
+        return False
+    if _prefer_orchestrator_for_ambiguous_training_request(message):
         return False
 
     settings = get_settings()

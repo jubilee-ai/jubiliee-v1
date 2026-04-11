@@ -164,7 +164,8 @@ export function SummaryTab({ agentState, datasets }: SummaryTabProps) {
               <span>
                 <span className="text-foreground font-medium">Features</span> in step details lists all{" "}
                 {featureCount} engineered feature{featureCount !== 1 ? "s" : ""}, engineering details, and any feature
-                experiments.
+                
+                .
               </span>
             </li>
           )}

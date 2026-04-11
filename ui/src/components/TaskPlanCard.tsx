@@ -1,4 +1,4 @@
-import { Loader2, Moon } from "lucide-react"
+import { Loader2, Moon, Play } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { useMemo } from "react"
 import type { ChatTaskPlanPayload } from "@/types/agent"
@@ -13,7 +13,10 @@ export interface TaskPlanCardProps {
   resolved?: boolean
   disabled?: boolean
   isRunning?: boolean
-  onApproveStart: () => void
+  /** Interactive pipeline in chat (SSE). */
+  onApproveGuided: () => void
+  /** Optional async run (background task mode). */
+  onApproveBackground?: () => void
 }
 
 export function TaskPlanCard({
@@ -22,7 +25,8 @@ export function TaskPlanCard({
   resolved = false,
   disabled = false,
   isRunning = false,
-  onApproveStart,
+  onApproveGuided,
+  onApproveBackground,
 }: TaskPlanCardProps) {
   const { plan } = payload
   const dataLine = useMemo(
@@ -52,7 +56,8 @@ export function TaskPlanCard({
         </p>
       ) : null}
       <p className="text-xs text-muted-foreground leading-relaxed mb-3">
-        Approve to start the run, or reply in the chat if something should change first.
+        Start the step-by-step run in this chat, or run in the background if you prefer. You can also reply
+        first if something should change.
       </p>
 
       {resolved ? (
@@ -61,19 +66,41 @@ export function TaskPlanCard({
           <span>Starting…</span>
         </div>
       ) : (
-        <Button
-          type="button"
-          size="sm"
-          className="gap-1.5 w-full sm:w-auto"
-          disabled={disabled || isRunning}
-          onClick={(e) => {
-            e.stopPropagation()
-            onApproveStart()
-          }}
-        >
-          {isRunning ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Moon className="h-3.5 w-3.5" />}
-          Approve &amp; start
-        </Button>
+        <div className="flex flex-col sm:flex-row sm:flex-wrap gap-2">
+          <Button
+            type="button"
+            size="sm"
+            className="gap-1.5 w-full sm:w-auto"
+            disabled={disabled || isRunning}
+            onClick={(e) => {
+              e.stopPropagation()
+              onApproveGuided()
+            }}
+          >
+            {isRunning ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <Play className="h-3.5 w-3.5" />
+            )}
+            Run step-by-step
+          </Button>
+          {onApproveBackground ? (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="gap-1.5 w-full sm:w-auto"
+              disabled={disabled || isRunning}
+              onClick={(e) => {
+                e.stopPropagation()
+                onApproveBackground()
+              }}
+            >
+              <Moon className="h-3.5 w-3.5" />
+              Run in background
+            </Button>
+          ) : null}
+        </div>
       )}
     </div>
   )

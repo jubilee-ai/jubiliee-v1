@@ -306,7 +306,7 @@ def evaluator_node(state: "TrainingAgentState") -> "TrainingAgentState":
         "message": f"Reviewing `{completed_step}` — deciding next move…",
     })
     token_handler = GraphTokenStreamHandler(phase="evaluator")
-    llm = init_chat_model(model="gpt-5.4-mini", temperature=0, streaming=True)
+    llm = init_chat_model(model="gpt-5.4", temperature=0, streaming=True)
     structured_llm = llm.with_structured_output(EvaluatorDecision)
     decision: EvaluatorDecision = structured_llm.invoke(
         prompt, config={"callbacks": [token_handler]}

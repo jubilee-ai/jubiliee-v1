@@ -268,18 +268,18 @@ function LabelSplitDetail({ agentState }: { agentState: TrainingAgentState; audi
       {/* Target Column */}
       <div className="bg-foreground/5 rounded-xl p-4">
         <div className="text-xs text-muted-foreground mb-1">Target Column</div>
-        <div className="text-2xl font-semibold">{labelDef?.target_column || "N/A"}</div>
+        <div className="text-md font-semibold">{labelDef?.target_column || "N/A"}</div>
       </div>
 
       {/* Split Configuration */}
       <div className="grid grid-cols-2 gap-4">
         <div className="bg-muted/30 rounded-lg p-3">
           <div className="text-xs text-muted-foreground">Split Strategy</div>
-          <div className="text-lg font-semibold capitalize">{labelDef?.split_strategy || "random"}</div>
+          <div className="text-md font-semibold capitalize">{labelDef?.split_strategy || "random"}</div>
         </div>
         <div className="bg-muted/30 rounded-lg p-3">
           <div className="text-xs text-muted-foreground">Grain</div>
-          <div className="text-lg font-semibold">{labelDef?.grain || "row"}</div>
+          <div className="text-md font-semibold">{labelDef?.grain || "row"}</div>
         </div>
       </div>
 
@@ -327,17 +327,26 @@ function LabelSplitDetail({ agentState }: { agentState: TrainingAgentState; audi
 }
 
 /** Full EDA (distributions, categories, concentration, full tables) — same data as Report → Analysis. */
-function ExploratoryAnalysisModalSection({ agentState }: { agentState: TrainingAgentState }) {
+function ExploratoryAnalysisModalSection({
+  agentState,
+  showTopSeparator = true,
+}: {
+  agentState: TrainingAgentState
+  /** When false, omit the top rule + extra padding (use when this block is first in the panel). */
+  showTopSeparator?: boolean
+}) {
   const keyStats = getFeatureSelectionKeyStats(agentState)
   if (!hasFeatureAnalysisContent(keyStats)) return null
   return (
-    <div className="space-y-4 border-t border-border/40 pt-6">
+    <div
+      className={
+        showTopSeparator
+          ? "space-y-4 border-t border-border/40 pt-6"
+          : "space-y-4 pt-0"
+      }
+    >
       <div>
         <h3 className="text-sm font-semibold text-foreground">Exploratory analysis</h3>
-        <p className="text-xs text-muted-foreground mt-1 leading-relaxed">
-          Numeric summaries, correlations, distributions, categorical target rates, and concentration — aligned with
-          the Analysis tab in the report.
-        </p>
       </div>
       <FeatureAnalysisPanels keyStats={keyStats} density="full" />
     </div>
@@ -638,10 +647,13 @@ function FeatureEngineeringDetail({ agentState, audit }: { agentState: TrainingA
     )
   }
 
+  const hasAuditErrors =
+    audit?.errors != null && Array.isArray(audit.errors) && (audit.errors as string[]).length > 0
+
   return (
     <div className="space-y-6">
       {/* Matrix columns after exploratory analysis + encoding (before any later feature experiments) */}
-      {audit?.features_created != null && Array.isArray(audit.features_created) && (
+      {/* {audit?.features_created != null && Array.isArray(audit.features_created) && (
         <div>
           <div className="text-sm font-medium mb-1">Feature matrix from first-pass analysis ({(audit.features_created as string[]).length} columns)</div>
           <p className="text-xs text-muted-foreground mb-2">
@@ -653,10 +665,10 @@ function FeatureEngineeringDetail({ agentState, audit }: { agentState: TrainingA
             ))}
           </div>
         </div>
-      )}
+      )} */}
 
       {/* Dataset Shapes */}
-      {audit?.shapes != null && typeof audit.shapes === "object" && (
+      {/* {audit?.shapes != null && typeof audit.shapes === "object" && (
         <div>
           <div className="text-sm font-medium mb-2">Dataset Shapes</div>
           <div className="grid grid-cols-3 gap-3">
@@ -678,10 +690,10 @@ function FeatureEngineeringDetail({ agentState, audit }: { agentState: TrainingA
             })}
           </div>
         </div>
-      )}
+      )} */}
 
       {/* Transformed Datasets */}
-      <div>
+      {/* <div>
         <div className="text-sm font-medium mb-2">Transformed Dataset References</div>
         <div className="space-y-2">
           {agentState.transformed_train_ref && (
@@ -703,10 +715,10 @@ function FeatureEngineeringDetail({ agentState, audit }: { agentState: TrainingA
             </div>
           )}
         </div>
-      </div>
+      </div> */}
 
       {/* Errors */}
-      {audit?.errors != null && Array.isArray(audit.errors) && (audit.errors as string[]).length > 0 && (
+      {hasAuditErrors && (
         <div className="bg-destructive/10 rounded-lg p-4">
           <div className="text-sm font-medium text-destructive mb-1">Errors Encountered</div>
           <ul className="text-sm text-destructive/80 space-y-1">
@@ -717,7 +729,7 @@ function FeatureEngineeringDetail({ agentState, audit }: { agentState: TrainingA
         </div>
       )}
 
-      <ExploratoryAnalysisModalSection agentState={agentState} />
+      <ExploratoryAnalysisModalSection agentState={agentState} showTopSeparator={hasAuditErrors} />
     </div>
   )
 }

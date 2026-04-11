@@ -7,7 +7,7 @@ and iterates.  No hardcoded model lists — the skill drives everything.
 """
 
 import contextvars
-import importlib.util
+import importlib
 import json
 import re
 import sys
@@ -50,6 +50,12 @@ _training_expected_task_type: contextvars.ContextVar[Optional[str]] = contextvar
     "training_expected_task_type", default=None
 )
 
+# Per run_training_agent run: number of train_with_skill / batch configs executed (None = no cap).
+_MAX_TRAINED_MODELS_PER_RUN = 10
+_training_models_trained: contextvars.ContextVar[Optional[int]] = contextvars.ContextVar(
+    "training_models_trained", default=None
+)
+
 
 # =============================================================================
 # SKILL HELPERS
@@ -68,11 +74,7 @@ def _run_skill(skill_name: str, params: dict) -> str:
     if not train_py.exists():
         raise ValueError(f"train.py not found for skill '{skill_name}'")
 
-    spec = importlib.util.spec_from_file_location(
-        f"skill_{skill_name}_train", str(train_py)
-    )
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    module = importlib.import_module(f"agents.training.skills.{skill_name}.train")
 
     if not hasattr(module, "run"):
         raise ValueError(f"Skill '{skill_name}' train.py must define a run(params) function")
@@ -114,10 +116,21 @@ def train_with_skill_tool(skill_name: str, params: Optional[dict] = None, **kwar
     et = _training_expected_task_type.get()
     if et and "expected_task_type" not in params:
         params = {**params, "expected_task_type": et}
+    used = _training_models_trained.get()
+    if used is not None and used >= _MAX_TRAINED_MODELS_PER_RUN:
+        return (
+            f"TRAINING BLOCKED: this run allows at most {_MAX_TRAINED_MODELS_PER_RUN} trained models "
+            f"({used} already completed). Use evaluate_model / get_model_info on existing models "
+            "or finish your structured result without further training."
+        )
     try:
-        return _run_skill(skill_name, params)
+        out = _run_skill(skill_name, params)
     except Exception as e:
         return f"Training failed: {e}"
+    cur = _training_models_trained.get()
+    if cur is not None:
+        _training_models_trained.set(cur + 1)
+    return out
 
 
 class FeatureRedoRequest(BaseModel):
@@ -201,6 +214,18 @@ def batch_train_with_skill_tool(
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
     configs = configs[:4]
+    used = _training_models_trained.get()
+    if used is not None:
+        remaining = _MAX_TRAINED_MODELS_PER_RUN - used
+        if remaining <= 0:
+            return (
+                f"TRAINING BLOCKED: this run allows at most {_MAX_TRAINED_MODELS_PER_RUN} trained models "
+                f"({used} already completed). Use evaluate_model / get_model_info on existing models "
+                "or finish without further batch training."
+            )
+        if len(configs) > remaining:
+            configs = configs[:remaining]
+
     expected_tt = _training_expected_task_type.get()
 
     def _run_one(cfg: BatchTrainConfig) -> dict:
@@ -209,7 +234,7 @@ def batch_train_with_skill_tool(
             "model_name": cfg.model_name,
             "train_dataset_ref": train_dataset_ref,
             "target_column": target_column,
-            **cfg.hyperparams,
+            "hyperparameters": cfg.hyperparams,
         }
         if expected_tt:
             params["expected_task_type"] = expected_tt
@@ -226,6 +251,10 @@ def batch_train_with_skill_tool(
         futures = {pool.submit(_run_one, cfg): cfg for cfg in configs}
         for future in as_completed(futures):
             results.append(future.result())
+
+    cur = _training_models_trained.get()
+    if cur is not None:
+        _training_models_trained.set(cur + len(results))
 
     lines = [f"## Batch Training Results ({len(results)} models)\n"]
     for i, r in enumerate(results, 1):
@@ -787,6 +816,66 @@ def _build_continuation_message(
     return "\n".join(lines)
 
 
+def _coerce_iteration_history(raw_iterations: Any) -> list[TrainingIteration]:
+    """Best-effort parse of persisted iteration history from prior runs."""
+    if not isinstance(raw_iterations, list):
+        return []
+
+    parsed: list[TrainingIteration] = []
+    for raw in raw_iterations:
+        if not isinstance(raw, dict):
+            continue
+        try:
+            parsed.append(TrainingIteration.model_validate(raw))
+        except Exception:
+            continue
+    return parsed
+
+
+def _build_prior_history_section(
+    prior_iterations: list[TrainingIteration],
+    task_type: str,
+) -> str:
+    """Summarize prior training runs so restarts avoid repeating dead ends."""
+    if not prior_iterations:
+        return ""
+
+    lines = [
+        "## Previous Training History",
+        "A prior training run already explored these configurations. Reuse this context so you do not restart blindly.",
+        "",
+    ]
+    for it in prior_iterations[-6:]:
+        metric = _primary_metric(it, task_type)
+        metric_str = f"{metric:.4f}" if metric is not None else "N/A"
+        status = "OK" if it.success else "FAIL"
+        hp = _truncate_jsonish(it.hyperparams) if it.hyperparams else "(defaults or unavailable)"
+        lines.extend([
+            f"- [{status}] `{it.model_name}` via `{it.tool_used}`",
+            f"  metric={metric_str}; hyperparams={hp}",
+        ])
+
+    best = _find_best_iteration(
+        [_iteration_to_dict(it) for it in prior_iterations],
+        task_type,
+    )
+    if best:
+        best_metric = _format_best_metric(best, task_type)
+        best_hp = _truncate_jsonish(best.get("hyperparams") or {})
+        lines.extend([
+            "",
+            f"Best prior validation result: `{best.get('model_name')}` with {best_metric}.",
+            f"Best prior hyperparams: {best_hp}",
+        ])
+
+    lines.extend([
+        "",
+        "Avoid repeating the exact same losing configurations unless you are validating a specific hypothesis or data changed.",
+        "",
+    ])
+    return "\n".join(lines)
+
+
 def _find_best_iteration(iterations: list[dict], task_type: str) -> Optional[dict]:
     """Pick the best successful iteration by validation metrics.
 
@@ -1119,12 +1208,13 @@ def run_training_agent(
     selected_model: str,
     goal: str,
     model_name: Optional[str] = None,
-    max_iterations: int = 10,
+    max_iterations: int = 4,
     llm_model: str = "openai:gpt-5.4",
     estimator_hint: Optional[str] = None,
     experiment_result: Optional[dict[str, Any]] = None,
     feature_rankings: Optional[dict[str, float]] = None,
     training_plan: Optional[dict[str, Any]] = None,
+    prior_training_metrics: Optional[dict[str, Any]] = None,
     max_continuation_rounds: int = 3,
     explicit_task_type: Optional[str] = None,
 ) -> dict[str, Any]:
@@ -1178,7 +1268,7 @@ def run_training_agent(
     if estimator_hint:
         print(f"  Estimator hint: {estimator_hint}")
 
-    emit_graph_stream({"type": "progress", "message": f"Starting training with {skill_name} skill...", "phase": "training"})
+    emit_graph_stream({"type": "progress", "message": f"Model training in progress...", "phase": "training"})
 
     if task_type == "unsupervised":
         class_counts = {}
@@ -1257,6 +1347,12 @@ def run_training_agent(
                 experiment_section += f"- {fname}: {imp:.4f}\n"
 
     plan_section = _format_training_plan_section(training_plan)
+    prior_iterations = _coerce_iteration_history(
+        (prior_training_metrics or {}).get("iterations")
+        if isinstance(prior_training_metrics, dict)
+        else None
+    )
+    prior_history_section = _build_prior_history_section(prior_iterations, task_type)
 
     if task_type == "unsupervised":
         target_line = "- Target column: N/A (unsupervised)"
@@ -1281,7 +1377,7 @@ Follow the skill documentation below — it covers model selection and training.
 <skill_documentation>
 {skill_docs}
 </skill_documentation>
-{estimator_section}{baseline_section}{experiment_section}{plan_section}## Data
+{estimator_section}{baseline_section}{experiment_section}{plan_section}{prior_history_section}## Data
 - Task type: {task_type}
 {target_line}
 - Training: {len(train_df)} rows (ref: `{train_ref}`)
@@ -1330,6 +1426,9 @@ Follow the skill documentation below — it covers model selection and training.
         start_instruction = (
             "Begin training now. Maximize **validation** performance (ROC-AUC primary, then "
             "accuracy for classification; R² for regression).\n\n"
+            "Keep experiments cheap and deliberate. When comparing fresh estimators, use small search budgets. "
+            "When refining a promising config, prefer passing exact hyperparameters and `auto_tune=false` so the tool "
+            "does a direct fit instead of a broad CV search unless you truly need a focused re-search.\n\n"
             "**Iteration protocol:**\n"
             "1) **First** experiment: use `batch_train_with_skill` to compare 2–3 estimators "
             "from different families in parallel (unless the Human-approved training plan "
@@ -1357,6 +1456,7 @@ Follow the skill documentation below — it covers model selection and training.
         cont_cap = max(1, min(6, int(training_plan["max_continuation_rounds"])))
 
     token = _training_expected_task_type.set(task_type)
+    budget_token = _training_models_trained.set(0)
     try:
         result = agent.invoke({"messages": messages})
         final_messages = result.get("messages", [])
@@ -1526,6 +1626,7 @@ Follow the skill documentation below — it covers model selection and training.
             "model_type": selected_model,
         }
     finally:
+        _training_models_trained.reset(budget_token)
         _training_expected_task_type.reset(token)
 
 
