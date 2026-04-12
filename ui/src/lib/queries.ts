@@ -16,10 +16,21 @@ import {
   getDatasets,
   getDatasetPreview,
   uploadDataset,
+  getModelRiskInventory,
+  getModelRiskDetail,
+  getModelRiskDashboard,
+  postModelRiskApproval,
+  patchModelRiskProfile,
   type ExperimentSummary,
   type ExperimentDetail,
   type Dataset,
   type DatasetPreview,
+  type ModelRiskInventoryItem,
+  type ModelRiskProfileDetail,
+  type ModelRiskDashboard,
+  type ModelRiskPortalRole,
+  type ModelRiskApprovalRequest,
+  type ModelRiskProfilePatch,
 } from "@/lib/api"
 
 function queryDebug(event: string, payload?: Record<string, unknown>) {
@@ -42,6 +53,14 @@ export const datasetKeys = {
   list: () => [...datasetKeys.all, "list"] as const,
   preview: (name: string, limit: number) =>
     [...datasetKeys.all, "preview", name, limit] as const,
+}
+
+export const modelRiskKeys = {
+  all: ["model-risk"] as const,
+  list: () => [...modelRiskKeys.all, "inventory"] as const,
+  detail: (name: string) => [...modelRiskKeys.all, "detail", name] as const,
+  dashboard: (portal: ModelRiskPortalRole) =>
+    [...modelRiskKeys.all, "dashboard", portal] as const,
 }
 
 export function useExperimentsList(options?: { enabled?: boolean }): UseQueryResult<ExperimentSummary[], Error> {
@@ -153,6 +172,70 @@ export function useUploadDatasetMutation() {
       uploadDataset(vars.file, { name: vars.name, description: vars.description }),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: datasetKeys.all })
+    },
+  })
+}
+
+export function useModelRiskList(options?: { enabled?: boolean }) {
+  return useQuery<ModelRiskInventoryItem[], Error>({
+    queryKey: modelRiskKeys.list(),
+    queryFn: () => getModelRiskInventory(),
+    enabled: options?.enabled !== false,
+    staleTime: 20_000,
+  })
+}
+
+export function useModelRiskDetail(
+  modelName: string | null,
+  options?: { enabled?: boolean },
+) {
+  const enabled = !!modelName?.trim() && (options?.enabled !== false)
+  return useQuery<ModelRiskProfileDetail, Error>({
+    queryKey: modelRiskKeys.detail(modelName ?? "__none__"),
+    queryFn: () => getModelRiskDetail(modelName!.trim()),
+    enabled,
+    staleTime: 10_000,
+  })
+}
+
+export function useModelRiskDashboard(
+  portal: ModelRiskPortalRole,
+  options?: { enabled?: boolean },
+) {
+  return useQuery<ModelRiskDashboard, Error>({
+    queryKey: modelRiskKeys.dashboard(portal),
+    queryFn: () => getModelRiskDashboard(portal),
+    enabled: options?.enabled !== false,
+    staleTime: 20_000,
+  })
+}
+
+export function useModelRiskApprovalMutation() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (vars: { modelName: string; body: ModelRiskApprovalRequest }) =>
+      postModelRiskApproval(vars.modelName, vars.body),
+    onSuccess: async (_void, vars) => {
+      await queryClient.invalidateQueries({ queryKey: modelRiskKeys.list() })
+      await queryClient.invalidateQueries({
+        queryKey: modelRiskKeys.detail(vars.modelName),
+      })
+      await queryClient.invalidateQueries({ queryKey: modelRiskKeys.all })
+    },
+  })
+}
+
+export function useModelRiskProfilePatchMutation() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (vars: { modelName: string; body: ModelRiskProfilePatch }) =>
+      patchModelRiskProfile(vars.modelName, vars.body),
+    onSuccess: async (_void, vars) => {
+      await queryClient.invalidateQueries({ queryKey: modelRiskKeys.list() })
+      await queryClient.invalidateQueries({
+        queryKey: modelRiskKeys.detail(vars.modelName),
+      })
+      await queryClient.invalidateQueries({ queryKey: modelRiskKeys.all })
     },
   })
 }

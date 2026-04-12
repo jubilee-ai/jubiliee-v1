@@ -57,5 +57,18 @@ def get_db_session() -> Generator[Session, None, None]:
 
 def init_db() -> None:
     """Create all tables (used for local dev; production uses Alembic)."""
+    import logging
+
     from backend.shared.models import Base
+
     Base.metadata.create_all(bind=_get_engine())
+    try:
+        with get_db_session() as session:
+            from backend.mrm.seed import seed_mrm_demo_data_if_needed
+
+            seed_mrm_demo_data_if_needed(session)
+    except Exception:
+        logging.getLogger(__name__).warning(
+            "MRM demo seed skipped (tables may not exist yet)",
+            exc_info=True,
+        )

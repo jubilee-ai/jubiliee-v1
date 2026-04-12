@@ -2,6 +2,13 @@
  * API client for the Jubilee Training Agent FastAPI backend.
  */
 
+import {
+  USE_MODEL_RISK_MOCK,
+  getMockModelRiskDetail,
+  getMockModelRiskDashboard,
+  getMockModelRiskInventory,
+} from "@/lib/modelRiskMock"
+
 const API_BASE = "" // Relative; proxied by nginx in Docker or same-origin in dev
 
 export interface Dataset {
@@ -310,6 +317,231 @@ export async function startExperimentAsyncTrain(
 export async function deleteExperiment(id: string): Promise<void> {
   const res = await fetch(`${API_BASE}/api/experiments/${id}`, { method: "DELETE" })
   if (!res.ok) throw new Error(`Failed to delete experiment: ${res.status}`)
+}
+
+// =========================================================================
+// Model Risk Management (demo API)
+// =========================================================================
+
+export type ModelRiskTier = "low" | "medium" | "high" | "critical"
+export type ModelRiskPortalRole = "owner" | "validation" | "board"
+export type ModelRiskMonitoringStatus = "healthy" | "watch" | "breach" | "unknown"
+
+export interface ModelRiskInventoryItem {
+  model_name: string
+  model_type?: string
+  risk_tier: ModelRiskTier
+  lifecycle_stage: string
+  monitoring_status: ModelRiskMonitoringStatus
+  governance_profile: string
+  last_reviewed_at?: string | null
+  /** One-line summary for registry list (demo / optional). */
+  intended_use_summary?: string
+  next_review_due?: string | null
+}
+
+export type ModelRiskLifecycleNodeStatus = "complete" | "current" | "pending" | "skipped"
+
+export interface ModelRiskLifecycleStage {
+  id: string
+  label: string
+  status: ModelRiskLifecycleNodeStatus
+  entered_at?: string | null
+  notes?: string | null
+}
+
+export type ModelRiskApprovalStatus = "pending" | "approved" | "rejected"
+
+export interface ModelRiskApproval {
+  id: string
+  stage: string
+  status: ModelRiskApprovalStatus
+  requested_at: string
+  decided_at?: string | null
+  actor_role?: string | null
+  comment?: string | null
+}
+
+export interface ModelRiskPsiCsiRow {
+  feature: string
+  psi: number
+  csi?: number | null
+}
+
+export interface ModelRiskBacktestRow {
+  period: string
+  metric: string
+  value: number
+  benchmark?: number | null
+  pass: boolean
+}
+
+export interface ModelRiskMonitoring {
+  status: ModelRiskMonitoringStatus
+  as_of: string
+  psi_csi: ModelRiskPsiCsiRow[]
+  backtest: ModelRiskBacktestRow[]
+  narrative?: string | null
+}
+
+export interface ModelRiskDocument {
+  id: string
+  title: string
+  kind: string
+  href?: string | null
+  updated_at?: string | null
+}
+
+export interface ModelRiskReview {
+  id: string
+  review_type: string
+  scheduled_for?: string | null
+  completed_at?: string | null
+  outcome?: string | null
+  owner?: string | null
+}
+
+export interface ModelRiskMonitoringPipeline {
+  id: string
+  name: string
+  schedule_cron: string
+  last_run_at: string
+  status: "ok" | "warning" | "failed"
+}
+
+export interface ModelRiskInferenceCall {
+  id: string
+  at: string
+  input_preview: Record<string, string | number | boolean>
+  output_preview: Record<string, string | number | boolean>
+  latency_ms: number
+}
+
+export interface ModelRiskPerformanceKpi {
+  label: string
+  value: number
+  unit?: string
+  window?: string
+  trend?: "up" | "down" | "flat"
+}
+
+export interface ModelRiskLineDefenseDocs {
+  owner: ModelRiskDocument
+  mrm: ModelRiskDocument
+  audit: ModelRiskDocument
+}
+
+export interface ModelRiskProfileDetail {
+  model_name: string
+  model_type?: string
+  risk_tier: ModelRiskTier
+  governance_profile: string
+  lifecycle_stage: string
+  lifecycle_stages: ModelRiskLifecycleStage[]
+  monitoring: ModelRiskMonitoring
+  approvals: ModelRiskApproval[]
+  documents: ModelRiskDocument[]
+  reviews: ModelRiskReview[]
+  metadata?: Record<string, unknown>
+  /** Business purpose and boundaries (MRM profile). */
+  intended_use?: string
+  /** Short line for registry list cards; falls back to truncated intended_use. */
+  intended_use_summary?: string
+  usage_guidance?: string
+  prohibited_use?: string
+  monitoring_pipelines?: ModelRiskMonitoringPipeline[]
+  inference_log?: ModelRiskInferenceCall[]
+  performance_kpis?: ModelRiskPerformanceKpi[]
+  line_defense_docs?: ModelRiskLineDefenseDocs
+}
+
+export interface ModelRiskDashboardItem {
+  model_name: string
+  snippet: string
+  risk_tier: ModelRiskTier
+  monitoring_status: ModelRiskMonitoringStatus
+}
+
+export interface ModelRiskDashboard {
+  portal: ModelRiskPortalRole
+  headline: string
+  counts: {
+    models: number
+    pending_approvals: number
+    monitoring_watch: number
+    breaches: number
+  }
+  items: ModelRiskDashboardItem[]
+}
+
+export interface ModelRiskApprovalRequest {
+  approval_id: string
+  decision: "approved" | "rejected"
+  comment?: string
+}
+
+export interface ModelRiskProfilePatch {
+  risk_tier?: ModelRiskTier
+  governance_profile?: string
+  lifecycle_stage?: string
+}
+
+export async function getModelRiskInventory(): Promise<ModelRiskInventoryItem[]> {
+  if (USE_MODEL_RISK_MOCK) return getMockModelRiskInventory()
+  const res = await fetch(`${API_BASE}/api/model-risk/inventory`)
+  if (!res.ok) throw new Error(`Model risk inventory failed: ${res.status}`)
+  return res.json()
+}
+
+export async function getModelRiskDetail(modelName: string): Promise<ModelRiskProfileDetail> {
+  if (USE_MODEL_RISK_MOCK) return getMockModelRiskDetail(modelName)
+  const res = await fetch(
+    `${API_BASE}/api/model-risk/models/${encodeURIComponent(modelName)}`,
+  )
+  if (!res.ok) throw new Error(`Model risk detail failed: ${res.status}`)
+  return res.json()
+}
+
+export async function getModelRiskDashboard(
+  portal: ModelRiskPortalRole = "owner",
+): Promise<ModelRiskDashboard> {
+  if (USE_MODEL_RISK_MOCK) return getMockModelRiskDashboard(portal)
+  const q = new URLSearchParams({ portal })
+  const res = await fetch(`${API_BASE}/api/model-risk/dashboard?${q}`)
+  if (!res.ok) throw new Error(`Model risk dashboard failed: ${res.status}`)
+  return res.json()
+}
+
+export async function postModelRiskApproval(
+  modelName: string,
+  body: ModelRiskApprovalRequest,
+): Promise<void> {
+  if (USE_MODEL_RISK_MOCK) return
+  const res = await fetch(
+    `${API_BASE}/api/model-risk/models/${encodeURIComponent(modelName)}/approvals`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    },
+  )
+  if (!res.ok) throw new Error(`Model risk approval failed: ${res.status}`)
+}
+
+export async function patchModelRiskProfile(
+  modelName: string,
+  body: ModelRiskProfilePatch,
+): Promise<void> {
+  if (USE_MODEL_RISK_MOCK) return
+  const res = await fetch(
+    `${API_BASE}/api/model-risk/models/${encodeURIComponent(modelName)}/profile`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    },
+  )
+  if (!res.ok) throw new Error(`Model risk profile update failed: ${res.status}`)
 }
 
 export async function saveExperimentMessages(

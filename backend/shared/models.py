@@ -5,6 +5,7 @@ from sqlalchemy import (
     Boolean,
     BigInteger,
     DateTime,
+    Float,
     ForeignKey,
     Integer,
     String,
@@ -169,6 +170,24 @@ class Model(Base):
         back_populates="model", passive_deletes=True,
         order_by="ModelVersion.version.desc()",
     )
+    mrm_profile: Mapped["ModelRiskProfile | None"] = relationship(
+        back_populates="model", uselist=False, passive_deletes=True,
+    )
+    mrm_lifecycle_stages: Mapped[list["ModelLifecycleStage"]] = relationship(
+        back_populates="model", passive_deletes=True,
+    )
+    mrm_artifacts: Mapped[list["ModelArtifact"]] = relationship(
+        back_populates="model", passive_deletes=True,
+    )
+    mrm_approvals: Mapped[list["ModelApproval"]] = relationship(
+        back_populates="model", passive_deletes=True,
+    )
+    mrm_monitoring_snapshots: Mapped[list["ModelMonitoringSnapshot"]] = relationship(
+        back_populates="model", passive_deletes=True,
+    )
+    mrm_review_schedules: Mapped[list["ModelReviewSchedule"]] = relationship(
+        back_populates="model", passive_deletes=True,
+    )
 
 
 class ModelVersion(Base):
@@ -198,6 +217,10 @@ class ModelVersion(Base):
     training_run: Mapped["TrainingJob | None"] = relationship(
         back_populates="model_versions",
     )
+    mrm_monitoring_snapshots: Mapped[list["ModelMonitoringSnapshot"]] = relationship(
+        back_populates="model_version",
+        passive_deletes=False,
+    )
 
 
 class RunDatasetLink(Base):
@@ -224,6 +247,173 @@ class RunDatasetLink(Base):
 
     training_run: Mapped["TrainingJob"] = relationship(back_populates="dataset_links")
     dataset: Mapped["Dataset"] = relationship(back_populates="run_links")
+
+
+# =============================================================================
+# Model Risk Management (MRM) demo registry
+# =============================================================================
+
+
+class ModelRiskProfile(Base):
+    """One-to-one governance profile per catalog model."""
+    __tablename__ = "model_risk_profiles"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    model_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("models.id", ondelete="CASCADE"),
+        unique=True,
+        nullable=False,
+        index=True,
+    )
+    business_owner: Mapped[str] = mapped_column(String(256), nullable=False)
+    business_line: Mapped[str] = mapped_column(String(256), nullable=False)
+    risk_tier: Mapped[str] = mapped_column(String(64), nullable=False)
+    governance_profile: Mapped[str] = mapped_column(String(64), nullable=False)
+    model_origin: Mapped[str] = mapped_column(String(32), nullable=False)
+    business_purpose: Mapped[str] = mapped_column(Text, nullable=False)
+    approved_use: Mapped[str] = mapped_column(Text, nullable=False)
+    prohibited_use: Mapped[str] = mapped_column(Text, nullable=False)
+    limitations: Mapped[str | None] = mapped_column(Text, nullable=True)
+    board_visible: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    current_lifecycle_stage: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    model: Mapped["Model"] = relationship(back_populates="mrm_profile")
+
+
+class ModelLifecycleStage(Base):
+    __tablename__ = "model_lifecycle_stages"
+    __table_args__ = (
+        UniqueConstraint("model_id", "stage_name", name="uq_mrm_lifecycle_model_stage"),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    model_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("models.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    stage_name: Mapped[str] = mapped_column(String(256), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    owner_role: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    result_payload: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
+    model: Mapped["Model"] = relationship(back_populates="mrm_lifecycle_stages")
+
+
+class ModelArtifact(Base):
+    __tablename__ = "model_artifacts"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    model_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("models.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    stage_name: Mapped[str] = mapped_column(String(256), nullable=False)
+    artifact_type: Mapped[str] = mapped_column(String(128), nullable=False)
+    title: Mapped[str] = mapped_column(String(512), nullable=False)
+    storage_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    external_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    uploaded_by: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    model: Mapped["Model"] = relationship(back_populates="mrm_artifacts")
+
+
+class ModelApproval(Base):
+    __tablename__ = "model_approvals"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    model_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("models.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    stage_name: Mapped[str] = mapped_column(String(256), nullable=False)
+    approval_role: Mapped[str] = mapped_column(String(128), nullable=False)
+    approver_name: Mapped[str] = mapped_column(String(256), nullable=False)
+    decision: Mapped[str] = mapped_column(String(32), nullable=False)
+    comment: Mapped[str | None] = mapped_column(Text, nullable=True)
+    decided_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    model: Mapped["Model"] = relationship(back_populates="mrm_approvals")
+
+
+class ModelMonitoringSnapshot(Base):
+    __tablename__ = "model_monitoring_snapshots"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    model_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("models.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    model_version_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("model_versions.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    captured_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    psi_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    backtest_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    metrics_payload: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    top_csi_features: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    model: Mapped["Model"] = relationship(back_populates="mrm_monitoring_snapshots")
+    model_version: Mapped["ModelVersion | None"] = relationship(
+        back_populates="mrm_monitoring_snapshots",
+    )
+
+
+class ModelReviewSchedule(Base):
+    __tablename__ = "model_review_schedules"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    model_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("models.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    review_type: Mapped[str] = mapped_column(String(128), nullable=False)
+    cadence: Mapped[str] = mapped_column(String(64), nullable=False)
+    next_due_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    status: Mapped[str] = mapped_column(String(64), nullable=False)
+
+    model: Mapped["Model"] = relationship(back_populates="mrm_review_schedules")
 
 
 # Backward-compat aliases for imports that reference old names.

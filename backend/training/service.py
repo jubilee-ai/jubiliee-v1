@@ -367,12 +367,11 @@ def _iter_graph_sse_lines(agent, config: dict, thread_id: str, stream_input: obj
             merged_snap: dict[str, object] = dict(snap_vals) if snap_vals else {}
             if isinstance(intr_snap, dict) and intr_snap:
                 merged_snap.update(intr_snap)
-            serialized_snap = serialize_state(merged_snap) if merged_snap else {}
             evt = review_required(
                 node=info.get("node", "unknown"),
                 summary=info.get("summary", ""),
                 message=info.get("message", "Approve to continue, or provide feedback to redo."),
-                state_snapshot=serialized_snap,
+                state_snapshot=serialize_state(merged_snap) if merged_snap else {},
                 review_prompt=f"Review {info.get('node', 'unknown')} output and approve or provide feedback",
             )
             for k in ("plan", "plan_strategy", "plan_index"):
@@ -387,13 +386,12 @@ def _iter_graph_sse_lines(agent, config: dict, thread_id: str, stream_input: obj
                 repository.merge_experiment_training_state(
                     experiment_id,
                     {
-                        "graph_run_status": "awaiting_review",
                         "pending_interrupt": {
                             "node": interrupt_node,
                             "summary": info.get("summary", ""),
-                            "message": info.get("message", ""),
-                            "state_snapshot": serialized_snap,
+                            "message": info.get("message", "Approve to continue, or provide feedback to redo."),
                         },
+                        "graph_run_status": "awaiting_review",
                     },
                 )
 

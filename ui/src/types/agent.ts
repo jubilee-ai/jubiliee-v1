@@ -341,6 +341,12 @@ export interface TrainingAgentState {
   task_started_at?: string | null
   task_completed_at?: string | null
   graph_thread_id?: string | null
+  graph_run_status?: string | null
+  pending_interrupt?: {
+    node: string
+    summary?: string
+    message?: string
+  } | null
 }
 
 export interface TaskPlanSummary {

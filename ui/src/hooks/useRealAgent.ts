@@ -1827,7 +1827,8 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
     }
 
     const initialSteps = createInitialSteps()
-    let resolvedSteps = ts ? mergeTaskProgressIntoSteps(initialSteps, ts) : initialSteps
+    let computedSteps = ts ? mergeTaskProgressIntoSteps(initialSteps, ts) : initialSteps
+
     setIsRunning(false)
     setStartingHandsOffTask(false)
     setCurrentJobId(null)
@@ -1840,35 +1841,38 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
     setBackgroundIntakeActive(false)
     suppressPostPlanTokensRef.current = false
 
-    const pending = ts?.pending_interrupt as
-      | { node: string; summary?: string; message?: string; state_snapshot?: Record<string, unknown> }
+    const pendingInterrupt = ts?.pending_interrupt as
+      | { node: string; summary?: string; message?: string }
       | null
       | undefined
-    if (pending && typeof pending === "object" && pending.node) {
-      const nodeName = pending.node
+    const graphRunStatus = ts?.graph_run_status as string | undefined
+
+    if (
+      pendingInterrupt &&
+      typeof pendingInterrupt.node === "string" &&
+      graphRunStatus === "awaiting_review"
+    ) {
+      const nodeName = pendingInterrupt.node
       const stepDef = STEP_DEFINITIONS.find((s) => s.id === nodeName)
-      const interruptIndex = STEP_ORDER_IDS.indexOf(nodeName)
-      resolvedSteps = resolvedSteps.map((step, index) => {
-        if (step.id === nodeName) {
-          return { ...step, status: "awaiting_confirmation" as const, endTime: step.endTime ?? Date.now() }
-        }
-        if (index < interruptIndex && step.status === "pending") {
-          return { ...step, status: "completed" as const }
-        }
-        return step
-      })
+      const summary = pendingInterrupt.summary || pendingInterrupt.message || ""
+      computedSteps = computedSteps.map((step) =>
+        step.id === nodeName
+          ? { ...step, status: "awaiting_confirmation" as const, endTime: Date.now(), details: summary }
+          : step,
+      )
       setConfirmationRequest({
         step: nodeName,
         stepName: stepDef?.name || nodeName,
-        summary: typeof pending.summary === "string" ? pending.summary : "",
-        details: (pending.state_snapshot || {}) as Record<string, unknown>,
+        summary,
+        details: {},
       })
-      agentDebug("restored-pending-interrupt", { node: nodeName })
+      agentDebug("recovered-pending-interrupt", { node: nodeName })
     } else {
       setConfirmationRequest(null)
     }
 
-    setSteps(resolvedSteps)
+    setSteps(computedSteps)
+
     agentDebug("apply-experiment-detail-finish", {
       experimentId: exp.id,
       appliedMessagesCount: Array.isArray(exp.chat_history) ? exp.chat_history.length : 0,

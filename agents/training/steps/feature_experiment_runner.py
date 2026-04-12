@@ -596,55 +596,48 @@ def run_experiment_grid(
 
     TOTAL_TIMEOUT = 300
     HEARTBEAT_INTERVAL = 15
-    POLL_INTERVAL = 5
     scout_start = time.time()
     last_heartbeat = scout_start
     scout_results: list[ScoutResult] = []
     completed_count = 0
     total_jobs = len(jobs)
     with ProcessPoolExecutor(max_workers=n_workers) as pool:
-        pending = {pool.submit(_scout_worker, job): job for job in jobs}
-        while pending:
+        futures = {pool.submit(_scout_worker, job): job for job in jobs}
+        for future in as_completed(futures):
             elapsed = time.time() - scout_start
             if elapsed > TOTAL_TIMEOUT:
                 print(f"[experiment_runner] Total timeout ({TOTAL_TIMEOUT}s) reached, "
                       f"cancelling remaining scouts")
-                for f in pending:
+                for f in futures:
                     f.cancel()
                 break
-
-            done_batch = {f for f in pending if f.done()}
-            if not done_batch:
-                now = time.time()
-                if now - last_heartbeat >= HEARTBEAT_INTERVAL:
-                    emit_graph_stream({
-                        "type": "progress",
-                        "message": f"Running scouts ({completed_count}/{total_jobs}, {int(elapsed)}s elapsed)…",
-                        "phase": "feature_experiment_runner",
-                    })
-                    last_heartbeat = now
-                time.sleep(POLL_INTERVAL)
-                continue
-
-            for future in done_batch:
-                job_info = pending.pop(future)
+            now = time.time()
+            if now - last_heartbeat >= HEARTBEAT_INTERVAL:
+                emit_graph_stream({
+                    "type": "progress",
+                    "message": f"Scout models running ({completed_count}/{total_jobs} done, {int(elapsed)}s elapsed)…",
+                    "phase": "feature_experiment_runner",
+                })
+                last_heartbeat = now
+            try:
+                remaining_budget = max(10, TOTAL_TIMEOUT - elapsed)
+                sr = future.result(timeout=min(120, remaining_budget))
+                scout_results.append(sr)
                 completed_count += 1
-                try:
-                    sr = future.result(timeout=0)
-                    scout_results.append(sr)
-                    status = "OK" if sr.success else "FAIL"
-                    metric_val = _primary_metric_value(sr.metrics, task_type)
-                    print(f"  [{status}] {sr.variant_name} + {sr.model_family}: "
-                          f"{_primary_metric_key(task_type)}={metric_val:.4f}")
-                except Exception as exc:
-                    print(f"  [FAIL] {job_info[0]} + {job_info[1]}: {exc}")
-
-            emit_graph_stream({
-                "type": "progress",
-                "message": f"Scout {completed_count}/{total_jobs} done…",
-                "phase": "feature_experiment_runner",
-            })
-            last_heartbeat = time.time()
+                status = "OK" if sr.success else "FAIL"
+                metric_val = _primary_metric_value(sr.metrics, task_type)
+                print(f"  [{status}] {sr.variant_name} + {sr.model_family}: "
+                      f"{_primary_metric_key(task_type)}={metric_val:.4f}")
+                emit_graph_stream({
+                    "type": "progress",
+                    "message": f"Scout {completed_count}/{total_jobs}: {sr.variant_name} + {sr.model_family} done",
+                    "phase": "feature_experiment_runner",
+                })
+                last_heartbeat = time.time()
+            except Exception as exc:
+                completed_count += 1
+                job_info = futures[future]
+                print(f"  [FAIL] {job_info[0]} + {job_info[1]}: {exc}")
 
     emit_graph_stream({"type": "progress", "message": "Analyzing experiment results...", "phase": "feature_experiment_runner"})
 

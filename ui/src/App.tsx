@@ -14,6 +14,7 @@ import { cn } from "@/lib/utils"
 import { useExperimentDetailQuery } from "@/lib/queries"
 import { DatasetsPage } from "@/components/DatasetsPage"
 import { ModelsPage } from "@/components/ModelsPage"
+import { ModelRiskProfilePage } from "@/components/model-risk/ModelRiskProfilePage"
 import { Show, SignIn, UserButton, useAuth } from "@clerk/react"
 
 function appDebug(event: string, payload?: Record<string, unknown>) {
@@ -153,6 +154,8 @@ function AuthenticatedApp() {
   const [experimentDetailQueryId, setExperimentDetailQueryId] = useState<string | null>(null)
   /** When set, Models tab scrolls to and briefly highlights this trained model row. */
   const [modelsScrollToModelName, setModelsScrollToModelName] = useState<string | null>(null)
+  /** Model Risk profile drill-in from Models registry (same tab, no router). */
+  const [selectedModelRiskName, setSelectedModelRiskName] = useState<string | null>(null)
   const realAgent = useRealAgent()
 
   const experimentDetailQuery = useExperimentDetailQuery(experimentDetailQueryId)
@@ -221,6 +224,10 @@ function AuthenticatedApp() {
       void realAgent.refreshTrainedModels()
     }
   }, [activeTab, realAgent.refreshDatasets, realAgent.refreshModelTypes, realAgent.refreshTrainedModels])
+
+  useEffect(() => {
+    if (activeTab !== "models") setSelectedModelRiskName(null)
+  }, [activeTab])
 
   const taskRunning =
     realAgent.agentState.lab_mode === "task" &&
@@ -581,14 +588,23 @@ function AuthenticatedApp() {
               />
             </div>
             <div className={cn("flex-1 overflow-auto", activeTab !== "models" && "hidden")}>
-              <ModelsPage
-                trainedModels={realAgent.trainedModels}
-                loading={realAgent.trainedModelsLoading}
-                onOpenExperiment={handleOpenExperimentFromModels}
-                onViewReport={(modelName) => setReportView({ kind: "registry", modelName })}
-                scrollToModelName={modelsScrollToModelName}
-                onScrollToModelConsumed={() => setModelsScrollToModelName(null)}
-              />
+              {selectedModelRiskName ? (
+                <ModelRiskProfilePage
+                  modelName={selectedModelRiskName}
+                  onBack={() => setSelectedModelRiskName(null)}
+                />
+              ) : (
+                <ModelsPage
+                  trainedModels={realAgent.trainedModels}
+                  loading={realAgent.trainedModelsLoading}
+                  onOpenExperiment={handleOpenExperimentFromModels}
+                  onViewReport={(modelName) => setReportView({ kind: "registry", modelName })}
+                  scrollToModelName={modelsScrollToModelName}
+                  onScrollToModelConsumed={() => setModelsScrollToModelName(null)}
+                  riskInventoryEnabled={activeTab === "models"}
+                  onOpenModelRisk={(name) => setSelectedModelRiskName(name)}
+                />
+              )}
             </div>
             {/* Settings tab (commented out)
             <div className={cn("flex-1 overflow-auto", activeTab !== "settings" && "hidden")}>
