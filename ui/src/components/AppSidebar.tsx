@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from "react"
 import { useQueryClient } from "@tanstack/react-query"
-import { Plus, MessageSquare, Loader2, CheckCircle2, AlertCircle, Trash2, FlaskConical, Database, Box, Moon } from "lucide-react"
+import { Plus, MessageSquare, Loader2, CheckCircle2, AlertCircle, Trash2, FlaskConical, Database, Box, Moon, Settings } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import {
   Dialog,
@@ -30,7 +30,7 @@ function sidebarDebug(event: string, payload?: Record<string, unknown>) {
   console.log(`[sidebar:experiment-switch][${ts}] ${event}`)
 }
 
-export type AppTab = "experiment_lab" | "datasets" | "models"
+export type AppTab = "experiment_lab" | "datasets" | "models" | "settings"
 
 interface AppSidebarProps {
   activeTab: AppTab
@@ -49,7 +49,7 @@ const navItems: { id: AppTab; label: string; icon: React.ReactNode }[] = [
   { id: "experiment_lab", label: "Experiments", icon: <FlaskConical className="h-4 w-4 shrink-0 opacity-90" /> },
   { id: "models", label: "Models", icon: <Box className="h-4 w-4 shrink-0 opacity-90" /> },
   { id: "datasets", label: "Datasets", icon: <Database className="h-4 w-4 shrink-0 opacity-90" /> },
-  // { id: "settings", label: "Settings", icon: <Settings className="h-4 w-4" /> },
+  { id: "settings", label: "Settings", icon: <Settings className="h-4 w-4 shrink-0 opacity-90" /> },
 ]
 
 function statusIcon(status: string) {

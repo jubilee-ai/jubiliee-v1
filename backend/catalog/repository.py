@@ -12,22 +12,33 @@ def _trained_model_report_path(model_name: str) -> Path:
     return Path(__file__).resolve().parents[2] / "trained_models" / f"{model_name}_report.json"
 
 
-def get_datasets(include_derived: bool = False) -> list[dict[str, object]]:
+def get_datasets(
+    include_derived: bool = False,
+    org_id: str | None = None,
+) -> list[dict[str, object]]:
     """Return datasets from Postgres."""
     try:
-        return _get_datasets_from_db(include_derived=include_derived)
+        return _get_datasets_from_db(
+            include_derived=include_derived,
+            org_id=org_id,
+        )
     except Exception:
         log.exception("Failed to fetch datasets from database")
         return []
 
 
-def _get_datasets_from_db(include_derived: bool = False) -> list[dict[str, object]]:
+def _get_datasets_from_db(
+    include_derived: bool = False,
+    org_id: str | None = None,
+) -> list[dict[str, object]]:
     from backend.shared.database import get_db_session
 
     with get_db_session() as session:
         query = session.query(Dataset).order_by(Dataset.created_at.desc())
         if not include_derived:
             query = query.filter(Dataset.source_type != "derived")
+        if org_id:
+            query = query.filter(Dataset.org_id == org_id)
         rows = query.all()
         return [_dataset_to_dict(r) for r in rows]
 
@@ -57,8 +68,15 @@ def dataset_to_dict(row: Any) -> dict[str, object]:
     return _dataset_to_dict(row)
 
 
-def dataset_name_exists(session: Any, name: str) -> bool:
-    return session.query(Dataset).filter_by(name=name).first() is not None
+def dataset_name_exists(
+    session: Any,
+    name: str,
+    org_id: str | None = None,
+) -> bool:
+    q = session.query(Dataset).filter_by(name=name)
+    if org_id:
+        q = q.filter(Dataset.org_id == org_id)
+    return q.first() is not None
 
 
 def insert_dataset(
@@ -67,8 +85,14 @@ def insert_dataset(
     name: str,
     source_type: str,
     properties: dict[str, Any],
+    org_id: str | None = None,
 ) -> Any:
-    row = Dataset(name=name, source_type=source_type, properties=properties)
+    row = Dataset(
+        name=name,
+        source_type=source_type,
+        properties=properties,
+        org_id=org_id,
+    )
     session.add(row)
     session.flush()
     return row
@@ -109,16 +133,16 @@ def get_models() -> list[dict[str, str]]:
     ]
 
 
-def get_trained_models() -> dict[str, object]:
+def get_trained_models(org_id: str | None = None) -> dict[str, object]:
     """Return trained models from Postgres."""
     try:
-        return _get_trained_models_from_db()
+        return _get_trained_models_from_db(org_id=org_id)
     except Exception:
         log.exception("Failed to fetch trained models from database")
         return {}
 
 
-def _get_trained_models_from_db() -> dict[str, object]:
+def _get_trained_models_from_db(org_id: str | None = None) -> dict[str, object]:
     from backend.shared.database import get_db_session
     from backend.shared.models import Experiment, Model, ModelVersion
 
@@ -142,10 +166,16 @@ def _get_trained_models_from_db() -> dict[str, object]:
             if exp_id:
                 exp = session.get(Experiment, exp_id)
                 if exp is not None:
+                    if org_id and (exp.org_id is None or exp.org_id != org_id):
+                        continue
                     experiment_name = exp.name
                 else:
                     snap = props.get("experiment_name")
                     experiment_name = snap if isinstance(snap, str) else None
+                    if org_id:
+                        continue
+            elif org_id:
+                continue
             v_props = version.properties or {}
             report_path = _trained_model_report_path(model.name)
             result[model.name] = {

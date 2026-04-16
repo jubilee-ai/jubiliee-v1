@@ -78,6 +78,7 @@ def upload_user_dataset(
     filename: str | None,
     name: str | None = None,
     description: str | None = None,
+    org_id: str | None = None,
 ) -> dict[str, object]:
     if not file_content:
         raise DatasetUploadValidationError("Empty file")
@@ -109,7 +110,7 @@ def upload_user_dataset(
         columns = [str(c) for c in df.columns.tolist()]
 
         with get_db_session() as session:
-            if repository.dataset_name_exists(session, base_name):
+            if repository.dataset_name_exists(session, base_name, org_id=org_id):
                 raise DatasetUploadConflictError()
 
         with tempfile.NamedTemporaryFile(suffix=".parquet", delete=False) as tmp_out:
@@ -133,7 +134,7 @@ def upload_user_dataset(
         }
 
         with get_db_session() as session:
-            if repository.dataset_name_exists(session, base_name):
+            if repository.dataset_name_exists(session, base_name, org_id=org_id):
                 try:
                     store.delete(key)
                 except Exception:
@@ -144,6 +145,7 @@ def upload_user_dataset(
                 name=base_name,
                 source_type="uploaded",
                 properties=properties,
+                org_id=org_id,
             )
             return repository.dataset_to_dict(row)
     finally:
@@ -158,8 +160,11 @@ def upload_user_dataset(
                 pass
 
 
-def get_datasets(include_derived: bool = False) -> list[dict[str, object]]:
-    return repository.get_datasets(include_derived=include_derived)
+def get_datasets(
+    include_derived: bool = False,
+    org_id: str | None = None,
+) -> list[dict[str, object]]:
+    return repository.get_datasets(include_derived=include_derived, org_id=org_id)
 
 
 def _read_parquet_head(path: Path, limit: int) -> pd.DataFrame:
@@ -206,11 +211,18 @@ def _dataframe_preview_payload(df: pd.DataFrame) -> tuple[list[str], list[dict[s
     return cols, records
 
 
-def get_dataset_preview(ref: str, limit: int = 25) -> dict[str, object]:
+def get_dataset_preview(
+    ref: str,
+    limit: int = 25,
+    org_id: str | None = None,
+) -> dict[str, object]:
     """Load up to ``limit`` rows from a dataset's backing file or object storage."""
     limit = max(1, min(limit, 100))
     with get_db_session() as session:
-        row = session.query(DatasetModel).filter_by(name=ref).first()
+        q = session.query(DatasetModel).filter_by(name=ref)
+        if org_id:
+            q = q.filter(DatasetModel.org_id == org_id)
+        row = q.first()
         if not row:
             raise LookupError("Dataset not found")
         props = row.properties or {}
@@ -261,5 +273,5 @@ def get_models() -> list[dict[str, str]]:
     return repository.get_models()
 
 
-def get_trained_models() -> dict[str, object]:
-    return repository.get_trained_models()
+def get_trained_models(org_id: str | None = None) -> dict[str, object]:
+    return repository.get_trained_models(org_id=org_id)

@@ -1,5 +1,5 @@
 import uuid
-from fastapi import APIRouter, Body, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException
 from pydantic import BaseModel
 
 from backend.catalog.repository import _dataset_to_dict
@@ -10,6 +10,7 @@ from backend.experiments.schemas import (
     ExperimentSummary,
     UpdateExperimentRequest,
 )
+from backend.shared.auth import ClerkUser, require_org
 from backend.shared.database import get_db_session
 from backend.shared.models import (
     Dataset,
@@ -29,7 +30,10 @@ class SaveMessagesRequest(BaseModel):
 
 
 @router.post("/api/experiments", response_model=ExperimentSummary)
-def create_experiment(request: CreateExperimentRequest):
+def create_experiment(
+    request: CreateExperimentRequest,
+    user: ClerkUser = Depends(require_org),
+):
     experiment_id = f"exp-{uuid.uuid4().hex[:8]}"
     chat_thread_id = f"chat-{experiment_id}"
     name = request.name or f"Experiment {experiment_id[-8:]}"
@@ -38,34 +42,47 @@ def create_experiment(request: CreateExperimentRequest):
         name=name,
         chat_thread_id=chat_thread_id,
         linked_datasets=request.linked_datasets,
+        org_id=user.org_id,
+        created_by=user.user_id,
     )
     return result
 
 
 @router.get("/api/experiments", response_model=list[ExperimentSummary])
-def list_experiments():
-    return repository.list_experiments()
+def list_experiments(user: ClerkUser = Depends(require_org)):
+    return repository.list_experiments(org_id=user.org_id)
 
 
 @router.get("/api/experiments/{experiment_id}", response_model=ExperimentDetail)
-def get_experiment(experiment_id: str):
-    result = repository.get_experiment(experiment_id)
+def get_experiment(
+    experiment_id: str,
+    user: ClerkUser = Depends(require_org),
+):
+    result = repository.get_experiment(experiment_id, org_id=user.org_id)
     if result is None:
         raise HTTPException(status_code=404, detail="Experiment not found")
     return result
 
 
 @router.patch("/api/experiments/{experiment_id}")
-def update_experiment(experiment_id: str, request: UpdateExperimentRequest):
+def update_experiment(
+    experiment_id: str,
+    request: UpdateExperimentRequest,
+    user: ClerkUser = Depends(require_org),
+):
     updates = request.model_dump(exclude_none=True)
     merge_patch = updates.pop("training_state_merge", None)
     did_something = False
     if merge_patch is not None:
-        if not repository.merge_experiment_training_state(experiment_id, merge_patch):
+        if not repository.merge_experiment_training_state(
+            experiment_id, merge_patch, org_id=user.org_id
+        ):
             raise HTTPException(status_code=404, detail="Experiment not found")
         did_something = True
     if updates:
-        if not repository.update_experiment(experiment_id, updates):
+        if not repository.update_experiment(
+            experiment_id, updates, org_id=user.org_id
+        ):
             raise HTTPException(status_code=404, detail="Experiment not found")
         did_something = True
     if not did_something:
@@ -77,7 +94,10 @@ def update_experiment(experiment_id: str, request: UpdateExperimentRequest):
 def start_async_training(
     experiment_id: str,
     request: AsyncTrainRequest = Body(default_factory=AsyncTrainRequest),
+    user: ClerkUser = Depends(require_org),
 ):
+    if not repository.get_experiment(experiment_id, org_id=user.org_id):
+        raise HTTPException(status_code=404, detail="Experiment not found")
     body = request
     try:
         training_service.start_experiment_async_training(
@@ -93,24 +113,38 @@ def start_async_training(
 
 
 @router.delete("/api/experiments/{experiment_id}")
-def delete_experiment(experiment_id: str):
-    ok = repository.delete_experiment(experiment_id)
+def delete_experiment(
+    experiment_id: str,
+    user: ClerkUser = Depends(require_org),
+):
+    ok = repository.delete_experiment(experiment_id, org_id=user.org_id)
     if not ok:
         raise HTTPException(status_code=404, detail="Experiment not found")
     return {"status": "ok"}
 
 
 @router.put("/api/experiments/{experiment_id}/messages")
-def save_messages(experiment_id: str, request: SaveMessagesRequest):
-    exp = repository.get_experiment(experiment_id)
+def save_messages(
+    experiment_id: str,
+    request: SaveMessagesRequest,
+    user: ClerkUser = Depends(require_org),
+):
+    exp = repository.get_experiment(experiment_id, org_id=user.org_id)
     if exp is None:
         raise HTTPException(status_code=404, detail="Experiment not found")
-    repository.save_experiment_chat_history(experiment_id, request.messages)
+    repository.save_experiment_chat_history(
+        experiment_id, request.messages, org_id=user.org_id,
+    )
     return {"status": "ok", "count": len(request.messages)}
 
 
 @router.get("/api/experiments/{experiment_id}/artifacts")
-def get_experiment_artifacts(experiment_id: str):
+def get_experiment_artifacts(
+    experiment_id: str,
+    user: ClerkUser = Depends(require_org),
+):
+    if not repository.get_experiment(experiment_id, org_id=user.org_id):
+        raise HTTPException(status_code=404, detail="Experiment not found")
     with get_db_session() as session:
         run_ids = [
             r.id

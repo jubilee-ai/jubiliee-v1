@@ -125,6 +125,7 @@ def _persist_chat_exchange(
     experiment_id: Optional[str],
     user_message: str,
     agent_text: str,
+    org_id: Optional[str] = None,
 ) -> None:
     if not experiment_id:
         return
@@ -133,13 +134,15 @@ def _persist_chat_exchange(
 
         now = int(_t.time() * 1000)
         existing = []
-        exp_data = training_repo.get_experiment(experiment_id)
+        exp_data = training_repo.get_experiment(experiment_id, org_id=org_id)
         if exp_data and exp_data.get("chat_history"):
             existing = list(exp_data["chat_history"])
         existing.append({"role": "user", "content": user_message, "timestamp": now - 1})
         if agent_text.strip():
             existing.append({"role": "agent", "content": agent_text, "timestamp": now})
-        training_repo.save_experiment_chat_history(experiment_id, existing)
+        training_repo.save_experiment_chat_history(
+            experiment_id, existing, org_id=org_id,
+        )
     except Exception:
         pass
 
@@ -147,6 +150,7 @@ def _persist_chat_exchange(
 def generate_direct_dataset_search_sse(
     message: str,
     experiment_id: Optional[str] = None,
+    org_id: Optional[str] = None,
 ):
     orchestrator_mod = repository.get_orchestrator_module()
     tool_args = orchestrator_mod.build_dataset_search_args(message)
@@ -167,7 +171,7 @@ def generate_direct_dataset_search_sse(
         if result and not result.startswith("No datasets found"):
             visible_reply += "\n\nReply with the dataset name or its number to continue (or **go** if that single match is what you want)."
         yield format_sse(token_event(visible_reply, experiment_id), experiment_id)
-        _persist_chat_exchange(experiment_id, message, visible_reply)
+        _persist_chat_exchange(experiment_id, message, visible_reply, org_id=org_id)
         yield format_sse(stream_end(experiment_id), experiment_id)
     except Exception as exc:
         yield format_sse(error_event(str(exc), experiment_id), experiment_id)
@@ -179,6 +183,7 @@ def generate_chat_sse(
     training_context: Optional[str] = None,
     experiment_id: Optional[str] = None,
     conversation: Optional[list[dict[str, Any]]] = None,
+    org_id: Optional[str] = None,
 ):
     orchestrator_agent = repository.get_orchestrator_agent()
     # Snapshot thread when sending full transcript so checkpoint state does not hide prior turns
@@ -310,7 +315,9 @@ def generate_chat_sse(
                         else:
                             yield format_sse(tool_end(name, snippet, experiment_id), experiment_id)
 
-        _persist_chat_exchange(experiment_id, message, "".join(accumulated_response))
+        _persist_chat_exchange(
+            experiment_id, message, "".join(accumulated_response), org_id=org_id,
+        )
 
         yield format_sse(stream_end(experiment_id), experiment_id)
     except Exception as exc:
@@ -321,6 +328,7 @@ def generate_background_intake_sse(
     message: str,
     experiment_id: Optional[str] = None,
     conversation: Optional[list[dict[str, Any]]] = None,
+    org_id: Optional[str] = None,
 ):
     """
     Structured LLM output (``IntakeResponse``): stream ``message`` only, then ``task_plan.proposed``
@@ -364,12 +372,14 @@ def generate_background_intake_sse(
 
                 now = int(_t.time() * 1000)
                 existing = []
-                exp_data = training_repo.get_experiment(experiment_id)
+                exp_data = training_repo.get_experiment(experiment_id, org_id=org_id)
                 if exp_data and exp_data.get("chat_history"):
                     existing = list(exp_data["chat_history"])
                 existing.append({"role": "user", "content": message, "timestamp": now - 1})
                 existing.append({"role": "agent", "content": text, "timestamp": now})
-                training_repo.save_experiment_chat_history(experiment_id, existing)
+                training_repo.save_experiment_chat_history(
+                    experiment_id, existing, org_id=org_id,
+                )
             except Exception:
                 pass
 
@@ -378,14 +388,21 @@ def generate_background_intake_sse(
         yield format_sse(error_event(str(exc), experiment_id), experiment_id)
 
 
-def chat(request: ChatRequest) -> tuple[str, object]:
+def chat(
+    request: ChatRequest,
+    org_id: Optional[str] = None,
+) -> tuple[str, object]:
     """Route unified /api/chat body to graph training or orchestrator SSE."""
     from backend.training import service as training_service
+
+    if request.experiment_id and org_id:
+        if not training_repo.get_experiment(request.experiment_id, org_id=org_id):
+            raise ValueError("Experiment not found or access denied")
 
     if request.resume:
         if not request.experiment_id:
             raise ValueError("experiment_id required for resume")
-        exp = training_repo.get_experiment(request.experiment_id)
+        exp = training_repo.get_experiment(request.experiment_id, org_id=org_id)
         if not exp or not exp.get("training_state", {}).get("graph_thread_id"):
             raise ValueError("No active training graph found for this experiment")
         graph_thread = exp["training_state"]["graph_thread_id"]
@@ -409,7 +426,7 @@ def chat(request: ChatRequest) -> tuple[str, object]:
         return "", gen
 
     if request.experiment_id:
-        exp = training_repo.get_experiment(request.experiment_id)
+        exp = training_repo.get_experiment(request.experiment_id, org_id=org_id)
         resolved_thread_id = exp["chat_thread_id"] if exp else f"chat-{uuid.uuid4().hex[:8]}"
     else:
         resolved_thread_id = f"chat-{uuid.uuid4().hex[:8]}"
@@ -419,6 +436,7 @@ def chat(request: ChatRequest) -> tuple[str, object]:
             request.message,
             experiment_id=request.experiment_id,
             conversation=request.conversation,
+            org_id=org_id,
         )
 
     orchestrator_mod = repository.get_orchestrator_module()
@@ -426,6 +444,7 @@ def chat(request: ChatRequest) -> tuple[str, object]:
         return resolved_thread_id, generate_direct_dataset_search_sse(
             request.message,
             experiment_id=request.experiment_id,
+            org_id=org_id,
         )
 
     training_context = None
@@ -439,4 +458,5 @@ def chat(request: ChatRequest) -> tuple[str, object]:
         training_context,
         experiment_id=request.experiment_id,
         conversation=request.conversation,
+        org_id=org_id,
     )

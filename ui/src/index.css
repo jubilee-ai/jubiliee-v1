@@ -172,8 +172,8 @@ textarea.composer-textarea:focus-visible {
 }
 
 .jubilee-signin-gate .cl-socialButtons {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  display: flex;
+  flex-direction: column;
   gap: 0.75rem;
   width: 100%;
 }
@@ -181,6 +181,8 @@ textarea.composer-textarea:focus-visible {
 .jubilee-signin-gate .cl-socialButtonsBlockButton {
   width: 100%;
   max-width: none;
+  min-width: 0;
+  justify-content: center;
 }
 
 .jubilee-signin-gate .cl-dividerRow {
@@ -272,4 +274,15 @@ textarea.composer-textarea:focus-visible {
 }
 .animate-progress-fill {
   animation: progressFill 0.5s ease-out;
+}
+
+/*
+ * Clerk OrganizationProfile (General): Leave and Delete are two separate profileSection rows,
+ * both use element id `organizationDanger` (see @clerk/ui OrganizationGeneralPage). Hide only the
+ * second row — the Delete organization section — without hiding Leave.
+ */
+@layer components {
+  [class*="cl-profileSection__organizationDanger"] ~ [class*="cl-profileSection__organizationDanger"] {
+    display: none !important;
+  }
 }

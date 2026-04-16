@@ -12,7 +12,7 @@ import {
 import { Send, Database, X, ChevronRight, Download } from "lucide-react"
 import { cn } from "@/lib/utils"
 import type { Dataset } from "@/types/agent"
-import { type Dataset as ApiDataset } from "@/lib/api"
+import { getExperimentArtifacts, type Dataset as ApiDataset } from "@/lib/api"
 
 interface ChatInputProps {
   draft: string
@@ -43,13 +43,15 @@ export function ChatInput({
   onAssignBackgroundTask: _onAssignBackgroundTask,
 }: ChatInputProps) {
   const [showDatasetPicker, setShowDatasetPicker] = useState(false)
-  const [artifacts, setArtifacts] = useState<{ datasets: Array<{ id?: string; ref?: string; name?: string; role?: string; rows?: number }>; models: Array<{ name: string; metrics?: { accuracy?: number } }> }>({ datasets: [], models: [] })
+  const [artifacts, setArtifacts] = useState<{
+    datasets: Array<{ id?: string; ref?: string; name?: string; role?: string; rows?: number; columns?: string[] }>
+    models: Array<{ model_name: string; metrics?: Record<string, number> }>
+  }>({ datasets: [], models: [] })
   const [showArtifacts, setShowArtifacts] = useState(false)
 
   useEffect(() => {
     if (experimentId) {
-      fetch(`/api/experiments/${experimentId}/artifacts`)
-        .then(r => r.json())
+      getExperimentArtifacts(experimentId)
         .then(setArtifacts)
         .catch(() => {})
     } else {
@@ -198,12 +200,12 @@ export function ChatInput({
                           ))}
 
                           {artifacts.models.map(m => (
-                            <div key={m.name} className="flex items-center justify-between px-4 py-2 text-sm">
+                            <div key={m.model_name} className="flex items-center justify-between px-4 py-2 text-sm">
                               <span className="text-foreground">
-                                {m.name} — {m.metrics?.accuracy ? `acc: ${(m.metrics.accuracy * 100).toFixed(1)}%` : "No metrics"}
+                                {m.model_name} — {m.metrics?.accuracy != null ? `acc: ${(m.metrics.accuracy * 100).toFixed(1)}%` : "No metrics"}
                               </span>
                               <a
-                                href={`/api/trained-models/${m.name}/download`}
+                                href={`/api/trained-models/${m.model_name}/download`}
                                 className="inline-flex items-center gap-1 text-xs text-primary hover:underline"
                               >
                                 <Download className="h-3 w-3" />

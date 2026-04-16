@@ -4,6 +4,38 @@
 
 const API_BASE = "" // Relative; proxied by nginx in Docker or same-origin in dev
 
+// ---------------------------------------------------------------------------
+// Auth token integration
+// ---------------------------------------------------------------------------
+
+type TokenGetter = () => Promise<string | null>
+let _getToken: TokenGetter | null = null
+
+/** Called from SignedInWithOrg to provide the Clerk getToken function. */
+export function setTokenGetter(fn: TokenGetter): void {
+  _getToken = fn
+}
+
+/**
+ * Wrapper around fetch that attaches the Clerk JWT as a Bearer token.
+ * Falls through to plain fetch for unauthenticated endpoints (e.g. health).
+ */
+async function authFetch(
+  input: RequestInfo | URL,
+  init?: RequestInit,
+): Promise<Response> {
+  const headers = new Headers(init?.headers)
+  if (_getToken) {
+    try {
+      const token = await _getToken()
+      if (token) headers.set("Authorization", `Bearer ${token}`)
+    } catch {
+      /* token retrieval failed; proceed without auth */
+    }
+  }
+  return fetch(input, { ...init, headers })
+}
+
 export interface Dataset {
   id?: string
   name: string
@@ -140,7 +172,7 @@ export async function checkHealth(): Promise<boolean> {
 }
 
 export async function getDatasets(): Promise<Dataset[]> {
-  const res = await fetch(`${API_BASE}/api/datasets`)
+  const res = await authFetch(`${API_BASE}/api/datasets`)
   if (!res.ok) throw new Error(`Failed to fetch datasets: ${res.status}`)
   return res.json()
 }
@@ -152,7 +184,7 @@ export async function getDatasetPreview(
   opts?: { limit?: number },
 ): Promise<DatasetPreview> {
   const limit = opts?.limit ?? DATASET_PREVIEW_LIMIT
-  const res = await fetch(
+  const res = await authFetch(
     `${API_BASE}/api/datasets/${encodeURIComponent(name)}/preview?limit=${limit}`,
   )
   if (!res.ok) {
@@ -176,7 +208,7 @@ export async function uploadDataset(
   form.append("file", file)
   if (opts?.name?.trim()) form.append("name", opts.name.trim())
   if (opts?.description?.trim()) form.append("description", opts.description.trim())
-  const res = await fetch(`${API_BASE}/api/datasets/upload`, {
+  const res = await authFetch(`${API_BASE}/api/datasets/upload`, {
     method: "POST",
     body: form,
   })
@@ -194,20 +226,20 @@ export async function uploadDataset(
 }
 
 export async function getModelTypes(): Promise<ModelType[]> {
-  const res = await fetch(`${API_BASE}/api/models`)
+  const res = await authFetch(`${API_BASE}/api/models`)
   if (!res.ok) throw new Error(`Failed to fetch models: ${res.status}`)
   return res.json()
 }
 
 /** Trained model registry entries keyed by model name. */
 export async function getTrainedModels(): Promise<Record<string, TrainedModelEntry>> {
-  const res = await fetch(`${API_BASE}/api/trained-models`)
+  const res = await authFetch(`${API_BASE}/api/trained-models`)
   if (!res.ok) throw new Error(`Failed to fetch trained models: ${res.status}`)
   return res.json()
 }
 
 export async function getTrainedModelReport(modelName: string): Promise<Record<string, unknown>> {
-  const res = await fetch(`${API_BASE}/api/trained-models/${encodeURIComponent(modelName)}/report`)
+  const res = await authFetch(`${API_BASE}/api/trained-models/${encodeURIComponent(modelName)}/report`)
   if (!res.ok) throw new Error(`Failed to fetch trained model report: ${res.status}`)
   return res.json()
 }
@@ -253,7 +285,7 @@ export async function createExperiment(
   name?: string,
   linked_datasets?: string[],
 ): Promise<ExperimentSummary> {
-  const res = await fetch(`${API_BASE}/api/experiments`, {
+  const res = await authFetch(`${API_BASE}/api/experiments`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ name, linked_datasets }),
@@ -263,14 +295,35 @@ export async function createExperiment(
 }
 
 export async function listExperiments(): Promise<ExperimentSummary[]> {
-  const res = await fetch(`${API_BASE}/api/experiments`)
+  const res = await authFetch(`${API_BASE}/api/experiments`)
   if (!res.ok) throw new Error(`Failed to list experiments: ${res.status}`)
   return res.json()
 }
 
 export async function getExperiment(id: string): Promise<ExperimentDetail> {
-  const res = await fetch(`${API_BASE}/api/experiments/${id}`)
+  const res = await authFetch(`${API_BASE}/api/experiments/${id}`)
   if (!res.ok) throw new Error(`Failed to get experiment: ${res.status}`)
+  return res.json()
+}
+
+export interface ExperimentArtifactsResponse {
+  datasets: Dataset[]
+  models: Array<{
+    model_name: string
+    model_type?: string
+    version?: number
+    metrics?: Record<string, number>
+    storage_key?: string | null
+    is_current?: boolean
+    created_at?: string
+  }>
+}
+
+export async function getExperimentArtifacts(
+  experimentId: string,
+): Promise<ExperimentArtifactsResponse> {
+  const res = await authFetch(`${API_BASE}/api/experiments/${experimentId}/artifacts`)
+  if (!res.ok) throw new Error(`Failed to load experiment artifacts: ${res.status}`)
   return res.json()
 }
 
@@ -284,7 +337,7 @@ export async function updateExperiment(
     training_state_merge?: Record<string, unknown>
   },
 ): Promise<void> {
-  const res = await fetch(`${API_BASE}/api/experiments/${id}`, {
+  const res = await authFetch(`${API_BASE}/api/experiments/${id}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(updates),
@@ -296,7 +349,7 @@ export async function startExperimentAsyncTrain(
   experimentId: string,
   body?: { user_model_preference?: string | null; conversation?: Array<{ role: string; content: string }> },
 ): Promise<void> {
-  const res = await fetch(`${API_BASE}/api/experiments/${experimentId}/async-train`, {
+  const res = await authFetch(`${API_BASE}/api/experiments/${experimentId}/async-train`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body ?? {}),
@@ -308,7 +361,7 @@ export async function startExperimentAsyncTrain(
 }
 
 export async function deleteExperiment(id: string): Promise<void> {
-  const res = await fetch(`${API_BASE}/api/experiments/${id}`, { method: "DELETE" })
+  const res = await authFetch(`${API_BASE}/api/experiments/${id}`, { method: "DELETE" })
   if (!res.ok) throw new Error(`Failed to delete experiment: ${res.status}`)
 }
 
@@ -316,7 +369,7 @@ export async function saveExperimentMessages(
   id: string,
   messages: Array<Record<string, unknown>>,
 ): Promise<void> {
-  const res = await fetch(`${API_BASE}/api/experiments/${id}/messages`, {
+  const res = await authFetch(`${API_BASE}/api/experiments/${id}/messages`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ messages }),
@@ -336,7 +389,7 @@ export function streamChat(
   const controller = new AbortController()
   const body = JSON.stringify(req)
 
-  fetch(`${API_BASE}/api/chat`, {
+  authFetch(`${API_BASE}/api/chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body,

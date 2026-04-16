@@ -37,3 +37,5 @@ python-multipart
 uvicorn[standard]
 celery[redis]
 redis
+PyJWT[crypto]
+requests

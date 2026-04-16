@@ -537,6 +537,8 @@ def create_experiment(
     name: str,
     chat_thread_id: str,
     linked_datasets: Optional[list[str]] = None,
+    org_id: Optional[str] = None,
+    created_by: Optional[str] = None,
 ) -> dict[str, object]:
     with get_db_session() as session:
         exp = Experiment(
@@ -544,6 +546,8 @@ def create_experiment(
             name=name,
             chat_thread_id=chat_thread_id,
             linked_datasets=linked_datasets or [],
+            org_id=org_id,
+            created_by=created_by,
         )
         session.add(exp)
     return {
@@ -558,11 +562,12 @@ def create_experiment(
     }
 
 
-def list_experiments() -> list[dict[str, object]]:
+def list_experiments(org_id: Optional[str] = None) -> list[dict[str, object]]:
     with get_db_session() as session:
-        rows = session.execute(
-            select(Experiment).order_by(Experiment.updated_at.desc())
-        ).scalars().all()
+        q = select(Experiment).order_by(Experiment.updated_at.desc())
+        if org_id:
+            q = q.where(Experiment.org_id == org_id)
+        rows = session.execute(q).scalars().all()
         for row in rows:
             _maybe_backfill_experiment(row)
         return [
@@ -595,11 +600,17 @@ def list_experiments() -> list[dict[str, object]]:
         ]
 
 
-def get_experiment(experiment_id: str) -> Optional[dict[str, object]]:
+def get_experiment(
+    experiment_id: str,
+    org_id: Optional[str] = None,
+) -> Optional[dict[str, object]]:
     with get_db_session() as session:
         exp = session.get(Experiment, experiment_id)
         if exp is None:
             return None
+        if org_id is not None:
+            if exp.org_id is None or exp.org_id != org_id:
+                return None
         _maybe_backfill_experiment(exp)
         return {
             "id": exp.id,
@@ -616,10 +627,16 @@ def get_experiment(experiment_id: str) -> Optional[dict[str, object]]:
         }
 
 
-def update_experiment(experiment_id: str, updates: dict[str, object]) -> bool:
+def update_experiment(
+    experiment_id: str,
+    updates: dict[str, object],
+    org_id: Optional[str] = None,
+) -> bool:
     with get_db_session() as session:
         exp = session.get(Experiment, experiment_id)
         if exp is None:
+            return False
+        if org_id is not None and (exp.org_id is None or exp.org_id != org_id):
             return False
         for key, value in updates.items():
             if hasattr(exp, key) and key not in ("id", "created_at"):
@@ -649,12 +666,18 @@ def _compact_experiment_training_patch(patch: dict[str, object]) -> dict[str, ob
     return out
 
 
-def merge_experiment_training_state(experiment_id: str, patch: dict[str, object]) -> bool:
+def merge_experiment_training_state(
+    experiment_id: str,
+    patch: dict[str, object],
+    org_id: Optional[str] = None,
+) -> bool:
     """Deep-shallow merge JSON `training_state` on an experiment (patch wins for top-level keys)."""
     patch = _compact_experiment_training_patch(dict(patch))
     with get_db_session() as session:
         exp = session.get(Experiment, experiment_id)
         if exp is None:
+            return False
+        if org_id is not None and (exp.org_id is None or exp.org_id != org_id):
             return False
         cur = dict(exp.training_state or {})
         for k, v in patch.items():
@@ -663,19 +686,25 @@ def merge_experiment_training_state(experiment_id: str, patch: dict[str, object]
         return True
 
 
-def delete_experiment(experiment_id: str) -> bool:
+def delete_experiment(experiment_id: str, org_id: Optional[str] = None) -> bool:
     with get_db_session() as session:
         exp = session.get(Experiment, experiment_id)
         if exp is None:
+            return False
+        if org_id is not None and (exp.org_id is None or exp.org_id != org_id):
             return False
         session.delete(exp)
         return True
 
 
 def save_experiment_chat_history(
-    experiment_id: str, chat_history: list[dict],
+    experiment_id: str,
+    chat_history: list[dict],
+    org_id: Optional[str] = None,
 ) -> None:
     with get_db_session() as session:
         exp = session.get(Experiment, experiment_id)
         if exp:
+            if org_id is not None and (exp.org_id is None or exp.org_id != org_id):
+                return
             exp.chat_history = chat_history

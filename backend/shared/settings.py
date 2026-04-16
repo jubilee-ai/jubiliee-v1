@@ -111,6 +111,16 @@ class Settings(BaseSettings):
         "larger than this threshold and keep only compact data plus a storage key in Postgres.",
     )
 
+    # Clerk authentication
+    CLERK_JWKS_URL: Optional[str] = Field(
+        default=None,
+        description="Clerk JWKS endpoint URL, e.g. https://<frontend-api>.clerk.accounts.dev/.well-known/jwks.json",
+    )
+    CLERK_SECRET_KEY: Optional[SecretStr] = Field(
+        default=None,
+        description="Clerk secret key for backend SDK calls (member lookups, etc.)",
+    )
+
     # App config
     CORS_ORIGINS: list[str] = Field(
         default_factory=lambda: [

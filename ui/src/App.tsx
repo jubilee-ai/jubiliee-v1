@@ -1,4 +1,12 @@
-import { useState, useEffect, useCallback, useMemo, type CSSProperties, type MouseEvent as ReactMouseEvent } from "react"
+import {
+  useState,
+  useEffect,
+  useCallback,
+  useMemo,
+  useRef,
+  type CSSProperties,
+  type MouseEvent as ReactMouseEvent,
+} from "react"
 import { useRealAgent } from "@/hooks/useRealAgent"
 import { ChatPanel } from "@/components/ChatPanel"
 import { AppSidebar, type AppTab } from "@/components/AppSidebar"
@@ -14,7 +22,33 @@ import { cn } from "@/lib/utils"
 import { useExperimentDetailQuery } from "@/lib/queries"
 import { DatasetsPage } from "@/components/DatasetsPage"
 import { ModelsPage } from "@/components/ModelsPage"
-import { Show, SignIn, UserButton, useAuth } from "@clerk/react"
+import { SettingsPage } from "@/components/SettingsPage"
+import {
+  OrganizationSwitcher,
+  Show,
+  SignIn,
+  UserButton,
+  useAuth,
+  useOrganization,
+  useOrganizationList,
+} from "@clerk/react"
+import { setTokenGetter } from "@/lib/api"
+
+const browserRedirectUrl =
+  typeof window === "undefined" ? "/" : `${window.location.origin}${window.location.pathname}`
+
+const signInUrl = import.meta.env.VITE_CLERK_SIGN_IN_URL ?? browserRedirectUrl
+const signUpUrl = import.meta.env.VITE_CLERK_SIGN_UP_URL ?? browserRedirectUrl
+
+const signInForceRedirectUrl =
+  import.meta.env.VITE_CLERK_SIGN_IN_FORCE_REDIRECT_URL ?? browserRedirectUrl
+const signInFallbackRedirectUrl =
+  import.meta.env.VITE_CLERK_SIGN_IN_FALLBACK_REDIRECT_URL ?? browserRedirectUrl
+
+const signUpForceRedirectUrl =
+  import.meta.env.VITE_CLERK_SIGN_UP_FORCE_REDIRECT_URL ?? browserRedirectUrl
+const signUpFallbackRedirectUrl =
+  import.meta.env.VITE_CLERK_SIGN_UP_FALLBACK_REDIRECT_URL ?? browserRedirectUrl
 
 function appDebug(event: string, payload?: Record<string, unknown>) {
   const ts = new Date().toISOString()
@@ -23,6 +57,40 @@ function appDebug(event: string, payload?: Record<string, unknown>) {
     return
   }
   console.log(`[app:experiment-switch][${ts}] ${event}`)
+}
+
+type OrgSwitcherVariant = "header" | "gate"
+
+/** Org switcher styling; hides "Manage organization" for non-admins (Clerk role `org:admin`). */
+function JubileeOrganizationSwitcher({ variant = "header" }: { variant?: OrgSwitcherVariant }) {
+  const { isLoaded, isSignedIn, has } = useAuth()
+  const canManageOrg = isLoaded && isSignedIn && has({ role: "org:admin" })
+
+  const triggerClass =
+    variant === "gate"
+      ? "h-10 rounded-xl border border-border bg-card px-3 text-sm text-foreground shadow-sm"
+      : "h-8 rounded-lg border border-border/60 bg-background/80 px-2 text-xs text-foreground shadow-none"
+
+  return (
+    <OrganizationSwitcher
+      hidePersonal
+      appearance={{
+        elements: {
+          ...(variant === "gate" ? { rootBox: "mx-auto" } : {}),
+          ...(variant === "header"
+            ? { organizationPreviewMainIdentifier: "text-xs font-medium" }
+            : {}),
+          organizationSwitcherTrigger: triggerClass,
+          organizationSwitcherTriggerIcon: "text-muted-foreground",
+          ...(canManageOrg
+            ? {}
+            : {
+                organizationSwitcherPopoverFooter: "hidden",
+              }),
+        },
+      }}
+    />
+  )
 }
 
 export default function App() {
@@ -40,12 +108,90 @@ export default function App() {
     return <SignInGate />
   }
 
+  return <SignedInWithOrg />
+}
+
+function OrgRequiredGate({ hasMemberships }: { hasMemberships: boolean }) {
+  return (
+    <div className="fixed inset-0 z-[100] overflow-hidden bg-background">
+      <div className="jubilee-dot-grid absolute inset-0 opacity-[0.72]" />
+      <div className="absolute inset-0 bg-[radial-gradient(circle_at_top,_rgba(18,86,210,0.14),_transparent_38%),radial-gradient(circle_at_bottom_right,_hsl(var(--primary)/0.08),_transparent_30%)]" />
+      <div className="relative flex min-h-screen items-center justify-center px-4 py-10">
+        <div className="mx-auto w-full max-w-[440px] text-center">
+          <img src="/jubilee-logo.svg" alt="" className="mx-auto h-10 w-10 mb-4" width={40} height={40} />
+          <h1 className="font-headline text-2xl font-semibold text-foreground">Organization required</h1>
+          {hasMemberships ? (
+            <p className="mt-2 text-sm text-muted-foreground leading-relaxed">
+              Select an organization to open your workspace.
+            </p>
+          ) : (
+            <p className="mt-2 text-sm text-muted-foreground leading-relaxed">
+              You need an invitation to join an organization before you can use Jubilee. Ask an admin to invite you, or create an organization if your account allows it.
+            </p>
+          )}
+          <div className="mt-8 flex justify-center">
+            <JubileeOrganizationSwitcher variant="gate" />
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function SignedInWithOrg() {
+  const { getToken } = useAuth()
+  const { organization, isLoaded: orgLoaded } = useOrganization()
+  const { userMemberships, isLoaded: membershipsLoaded, setActive } = useOrganizationList({
+    userMemberships: true,
+  })
+  const previousOrgIdRef = useRef<string | null>(null)
+
+  useEffect(() => {
+    const id = organization?.id
+    if (!id) return
+    const prev = previousOrgIdRef.current
+    previousOrgIdRef.current = id
+    if (prev !== null && prev !== id) {
+      window.location.reload()
+    }
+  }, [organization?.id])
+
+  useEffect(() => {
+    setTokenGetter(() => getToken())
+    return () => {
+      setTokenGetter(async () => null)
+    }
+  }, [getToken])
+
+  // Auto-activate the first org when user has memberships but no active org
+  // (e.g. right after accepting an invitation and signing up).
+  useEffect(() => {
+    if (!orgLoaded || !membershipsLoaded || organization) return
+    const firstOrg = userMemberships?.data?.[0]?.organization
+    if (firstOrg) {
+      void setActive?.({ organization: firstOrg.id })
+    }
+  }, [orgLoaded, membershipsLoaded, organization, userMemberships?.data, setActive])
+
+  if (!orgLoaded || !membershipsLoaded) {
+    return (
+      <div className="flex h-screen items-center justify-center bg-background">
+        <p className="text-sm text-muted-foreground">Loading…</p>
+      </div>
+    )
+  }
+
+  if (!organization) {
+    const hasMemberships = (userMemberships?.data?.length ?? 0) > 0
+    return <OrgRequiredGate hasMemberships={hasMemberships} />
+  }
+
   return <AuthenticatedApp />
 }
 
 function SignInGate() {
   return (
-    <div className="fixed inset-0 z-[100] overflow-hidden bg-background">
+    <div className="fixed inset-0 z-[100] overflow-y-auto overflow-x-hidden bg-background">
       <div className="jubilee-dot-grid absolute inset-0 opacity-[0.72]" />
       <div className="absolute inset-0 bg-[radial-gradient(circle_at_top,_rgba(18,86,210,0.14),_transparent_38%),radial-gradient(circle_at_bottom_right,_hsl(var(--primary)/0.08),_transparent_30%)]" />
 
@@ -71,6 +217,12 @@ function SignInGate() {
             <SignIn
               routing="hash"
               withSignUp
+              signInUrl={signInUrl}
+              signUpUrl={signUpUrl}
+              forceRedirectUrl={signInForceRedirectUrl}
+              fallbackRedirectUrl={signInFallbackRedirectUrl}
+              signUpForceRedirectUrl={signUpForceRedirectUrl}
+              signUpFallbackRedirectUrl={signUpFallbackRedirectUrl}
               appearance={{
                 theme: "simple",
                 variables: {
@@ -453,7 +605,8 @@ function AuthenticatedApp() {
             Jubilee
           </div>
 
-          <div className="flex items-center gap-1.5">
+          <div className="flex items-center gap-2">
+            <JubileeOrganizationSwitcher />
             <Button variant="ghost" size="sm" className="h-8 w-8 p-0 text-muted-foreground hover:text-foreground">
               <Search className="h-4 w-4" />
             </Button>
@@ -590,18 +743,9 @@ function AuthenticatedApp() {
                 onScrollToModelConsumed={() => setModelsScrollToModelName(null)}
               />
             </div>
-            {/* Settings tab (commented out)
             <div className={cn("flex-1 overflow-auto", activeTab !== "settings" && "hidden")}>
-              <div className="max-w-5xl mx-auto px-8 py-10">
-                  <span className="text-overline font-bold text-muted-foreground tracking-widest uppercase">Configuration</span>
-                  <h1 className="font-headline text-3xl font-semibold text-foreground tracking-tight mt-1">Settings & API</h1>
-                  <p className="mt-3 text-muted-foreground text-sm leading-relaxed max-w-lg">Account management, API keys, and MCP access configuration.</p>
-                  <div className="mt-10 rounded-xl bg-card p-8 text-center text-muted-foreground text-sm">
-                    Coming soon.
-                  </div>
-              </div>
+              <SettingsPage />
             </div>
-            */}
           </main>
         </div>
 

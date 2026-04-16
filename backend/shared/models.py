@@ -43,6 +43,8 @@ class Experiment(Base):
     training_state: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     training_context: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     linked_datasets: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    org_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    created_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -77,6 +79,7 @@ class TrainingJob(Base):
     completed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    org_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
 
     experiment: Mapped["Experiment | None"] = relationship(
         back_populates="training_jobs",
@@ -142,6 +145,7 @@ class Dataset(Base):
     name: Mapped[str] = mapped_column(String(256), nullable=False)
     source_type: Mapped[str] = mapped_column(String(64), nullable=False)
     properties: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    org_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

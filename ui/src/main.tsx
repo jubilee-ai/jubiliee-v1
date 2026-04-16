@@ -18,6 +18,22 @@ if (!isPublishableKey(publishableKey)) {
   )
 }
 
+const browserRedirectUrl =
+  typeof window === 'undefined' ? '/' : `${window.location.origin}${window.location.pathname}`
+
+const signInUrl = import.meta.env.VITE_CLERK_SIGN_IN_URL ?? browserRedirectUrl
+const signUpUrl = import.meta.env.VITE_CLERK_SIGN_UP_URL ?? browserRedirectUrl
+
+const signInForceRedirectUrl =
+  import.meta.env.VITE_CLERK_SIGN_IN_FORCE_REDIRECT_URL ?? browserRedirectUrl
+const signInFallbackRedirectUrl =
+  import.meta.env.VITE_CLERK_SIGN_IN_FALLBACK_REDIRECT_URL ?? browserRedirectUrl
+
+const signUpForceRedirectUrl =
+  import.meta.env.VITE_CLERK_SIGN_UP_FORCE_REDIRECT_URL ?? browserRedirectUrl
+const signUpFallbackRedirectUrl =
+  import.meta.env.VITE_CLERK_SIGN_UP_FALLBACK_REDIRECT_URL ?? browserRedirectUrl
+
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
@@ -61,10 +77,24 @@ const clerkAppearance = {
   },
 }
 
+const clerkLocalization = {
+  socialButtonsBlockButton: 'Sign in with {{provider|titleize}}',
+} as const
+
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
-      <ClerkProvider publishableKey={publishableKey} appearance={clerkAppearance}>
+      <ClerkProvider
+        publishableKey={publishableKey}
+        appearance={clerkAppearance}
+        localization={clerkLocalization}
+        signInUrl={signInUrl}
+        signUpUrl={signUpUrl}
+        signInForceRedirectUrl={signInForceRedirectUrl}
+        signInFallbackRedirectUrl={signInFallbackRedirectUrl}
+        signUpForceRedirectUrl={signUpForceRedirectUrl}
+        signUpFallbackRedirectUrl={signUpFallbackRedirectUrl}
+      >
         <App />
         <Toaster position="bottom-right" closeButton richColors offset={20} />
       </ClerkProvider>

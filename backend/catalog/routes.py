@@ -6,12 +6,14 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
 
+from backend.catalog import repository as catalog_repository
 from backend.catalog import service as catalog_service
 from backend.catalog.interfaces import CatalogServiceInterface
 from backend.catalog.repository import _trained_model_report_path
 from backend.catalog.service import (DatasetUploadConflictError,
                                      DatasetUploadValidationError)
 from backend.shared.artifact_store import get_artifact_store
+from backend.shared.auth import ClerkUser, require_org
 from backend.shared.training_artifacts import download_json_artifact
 from backend.shared.database import get_db_session
 from backend.shared.models import Dataset, Model, ModelVersion
@@ -31,9 +33,13 @@ def get_catalog_service() -> CatalogServiceInterface:
 async def get_datasets(
     include_derived: bool = False,
     service: CatalogServiceInterface = Depends(get_catalog_service),
+    user: ClerkUser = Depends(require_org),
 ):
     try:
-        return service.get_datasets(include_derived=include_derived)
+        return service.get_datasets(
+            include_derived=include_derived,
+            org_id=user.org_id,
+        )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -44,6 +50,7 @@ async def upload_dataset(
     name: str | None = Form(None),
     description: str | None = Form(None),
     service: CatalogServiceInterface = Depends(get_catalog_service),
+    user: ClerkUser = Depends(require_org),
 ):
     try:
         content = await file.read()
@@ -52,6 +59,7 @@ async def upload_dataset(
             file.filename,
             name=name,
             description=description,
+            org_id=user.org_id,
         )
     except DatasetUploadValidationError as e:
         raise HTTPException(status_code=400, detail=e.detail) from e
@@ -62,22 +70,32 @@ async def upload_dataset(
 
 
 @router.get("/api/models")
-async def get_models(service: CatalogServiceInterface = Depends(get_catalog_service)):
+async def get_models(
+    service: CatalogServiceInterface = Depends(get_catalog_service),
+    user: ClerkUser = Depends(require_org),
+):
     return service.get_models()
 
 
 @router.get("/api/trained-models")
 async def get_trained_models(
     service: CatalogServiceInterface = Depends(get_catalog_service),
+    user: ClerkUser = Depends(require_org),
 ):
     try:
-        return service.get_trained_models()
+        return service.get_trained_models(org_id=user.org_id)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/api/trained-models/{model_name}/report")
-async def get_trained_model_report(model_name: str):
+async def get_trained_model_report(
+    model_name: str,
+    user: ClerkUser = Depends(require_org),
+):
+    visible = catalog_repository.get_trained_models(org_id=user.org_id)
+    if model_name not in visible:
+        raise HTTPException(status_code=404, detail="Report not found")
     report_path = _trained_model_report_path(model_name)
     if report_path.is_file():
         try:
@@ -98,7 +116,13 @@ async def get_trained_model_report(model_name: str):
 
 
 @router.get("/api/trained-models/{model_name}/download")
-async def download_model(model_name: str):
+async def download_model(
+    model_name: str,
+    user: ClerkUser = Depends(require_org),
+):
+    visible = catalog_repository.get_trained_models(org_id=user.org_id)
+    if model_name not in visible:
+        raise HTTPException(status_code=404, detail="Model not found")
     with get_db_session() as session:
         model = session.query(Model).filter_by(name=model_name).first()
         if not model:
@@ -118,10 +142,17 @@ async def download_model(model_name: str):
 
 
 @router.post("/api/trained-models/{model_name}/predict")
-async def predict_trained_model(model_name: str, body: PredictFeaturesBody):
+async def predict_trained_model(
+    model_name: str,
+    body: PredictFeaturesBody,
+    user: ClerkUser = Depends(require_org),
+):
     """Run model inference on a single feature row (no LLM)."""
     from model_storage import predict_from_feature_dict
 
+    visible = catalog_repository.get_trained_models(org_id=user.org_id)
+    if model_name not in visible:
+        raise HTTPException(status_code=404, detail="Model not found")
     try:
         return predict_from_feature_dict(model_name, body.features)
     except LookupError as e:
@@ -131,10 +162,16 @@ async def predict_trained_model(model_name: str, body: PredictFeaturesBody):
 
 
 @router.get("/api/trained-models/{model_name}/input-features")
-async def get_trained_model_input_features(model_name: str):
+async def get_trained_model_input_features(
+    model_name: str,
+    user: ClerkUser = Depends(require_org),
+):
     """Raw training columns for the prediction form (resolved from the fitted artifact when possible)."""
     from model_storage import get_predict_input_schema
 
+    visible = catalog_repository.get_trained_models(org_id=user.org_id)
+    if model_name not in visible:
+        raise HTTPException(status_code=404, detail="Model not found")
     try:
         return get_predict_input_schema(model_name)
     except LookupError as e:
@@ -148,9 +185,10 @@ async def preview_dataset(
     ref: str,
     limit: int = 25,
     service: CatalogServiceInterface = Depends(get_catalog_service),
+    user: ClerkUser = Depends(require_org),
 ):
     try:
-        return service.get_dataset_preview(ref, limit=limit)
+        return service.get_dataset_preview(ref, limit=limit, org_id=user.org_id)
     except LookupError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
     except ValueError as e:
@@ -160,9 +198,16 @@ async def preview_dataset(
 
 
 @router.get("/api/datasets/{ref}/download")
-async def download_dataset(ref: str):
+async def download_dataset(
+    ref: str,
+    user: ClerkUser = Depends(require_org),
+):
     with get_db_session() as session:
-        dataset = session.query(Dataset).filter_by(name=ref).first()
+        dataset = (
+            session.query(Dataset)
+            .filter(Dataset.name == ref, Dataset.org_id == user.org_id)
+            .first()
+        )
         if not dataset:
             raise HTTPException(status_code=404, detail="Dataset not found")
 

@@ -3,6 +3,7 @@ import json
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 
+from backend.shared.auth import ClerkUser, require_org
 from backend.training.interfaces import (
     TrainingRepositoryInterface,
     TrainingServiceInterface,
@@ -26,6 +27,7 @@ def get_training_repository() -> TrainingRepositoryInterface:
 async def start_training(
     request: TrainRequest,
     service: TrainingServiceInterface = Depends(get_training_service),
+    user: ClerkUser = Depends(require_org),
 ):
     return service.start_training(request)
 
@@ -34,6 +36,7 @@ async def start_training(
 async def get_training_status(
     job_id: str,
     service: TrainingServiceInterface = Depends(get_training_service),
+    user: ClerkUser = Depends(require_org),
 ):
     return service.get_training_status(job_id)
 
@@ -42,6 +45,7 @@ async def get_training_status(
 async def train_sync(
     request: TrainRequest,
     service: TrainingServiceInterface = Depends(get_training_service),
+    user: ClerkUser = Depends(require_org),
 ):
     try:
         return service.train_sync(request)
@@ -53,6 +57,7 @@ async def train_sync(
 async def cancel_training(
     job_id: str,
     service: TrainingServiceInterface = Depends(get_training_service),
+    user: ClerkUser = Depends(require_org),
 ):
     return service.cancel_training(job_id)
 
@@ -61,6 +66,7 @@ async def cancel_training(
 async def train_stream(
     request: TrainRequest,
     service: TrainingServiceInterface = Depends(get_training_service),
+    user: ClerkUser = Depends(require_org),
 ):
     generator = service.generate_simple_sse_events(
         request.goal,
@@ -83,6 +89,7 @@ async def train_stream(
 async def train_graph_stream(
     request: TrainRequest,
     service: TrainingServiceInterface = Depends(get_training_service),
+    user: ClerkUser = Depends(require_org),
 ):
     """Start training via the agentic graph (planner + executor + evaluator)."""
     generator = service.generate_graph_sse_events(
@@ -106,6 +113,7 @@ async def train_graph_resume(
     request: ResumeRequest,
     service: TrainingServiceInterface = Depends(get_training_service),
     repository: TrainingRepositoryInterface = Depends(get_training_repository),
+    user: ClerkUser = Depends(require_org),
 ):
     """Resume the agentic graph after a HITL interrupt."""
     if not repository.thread_exists(request.thread_id):
@@ -139,6 +147,7 @@ async def train_resume(
     request: ResumeRequest,
     service: TrainingServiceInterface = Depends(get_training_service),
     repository: TrainingRepositoryInterface = Depends(get_training_repository),
+    user: ClerkUser = Depends(require_org),
 ):
     if not repository.thread_exists(request.thread_id):
         return StreamingResponse(
