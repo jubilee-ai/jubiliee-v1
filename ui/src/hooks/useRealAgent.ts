@@ -1689,11 +1689,13 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
       }
 
       void (async () => {
+        setIsRunning(true)
         const eid = await ensureExperimentId(
           suggestExperimentTitleFromUserMessage(topic || content),
           linkedForCreate ?? null,
         )
         if (!eid) {
+          setIsRunning(false)
           addMessage("system", "Could not create an experiment. Check the backend connection.")
           return
         }
@@ -1711,8 +1713,6 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
           lastTrainingSummaryRef.current = null
           setProgress(0)
         }
-
-        setIsRunning(true)
 
         const conversation = buildPlanningConversation(messagesRef.current, content)
         streamControllerRef.current = streamChat(
