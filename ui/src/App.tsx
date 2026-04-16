@@ -14,6 +14,7 @@ import { cn } from "@/lib/utils"
 import { useExperimentDetailQuery } from "@/lib/queries"
 import { DatasetsPage } from "@/components/DatasetsPage"
 import { ModelsPage } from "@/components/ModelsPage"
+import { InsuranceBrokerDemoPage } from "@/components/InsuranceBrokerDemoPage"
 import { ModelRiskProfilePage } from "@/components/model-risk/ModelRiskProfilePage"
 import { Show, SignIn, UserButton, useAuth } from "@clerk/react"
 
@@ -149,7 +150,7 @@ function AuthenticatedApp() {
     null | { kind: "chat" } | { kind: "registry"; modelName: string }
   >(null)
   const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null)
-  const [activeTab, setActiveTab] = useState<AppTab>("experiment_lab")
+  const [activeTab, setActiveTab] = useState<AppTab>("broker_demo")
   /** When set, TanStack Query loads this experiment from the API and applies it to the lab hook (sidebar selection). */
   const [experimentDetailQueryId, setExperimentDetailQueryId] = useState<string | null>(null)
   /** When set, Models tab scrolls to and briefly highlights this trained model row. */
@@ -449,15 +450,29 @@ function AuthenticatedApp() {
   }, [isResizingSidebar, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH])
 
   const layoutStyle = { "--sidebar-width": `${sidebarWidth}px` } as CSSProperties
+  const hideAppSidebar = activeTab === "broker_demo"
 
   return (
     <TooltipProvider>
       <div className="h-screen bg-background flex flex-col overflow-hidden">
         {/* Top Navigation Bar */}
         <nav className="fixed top-0 w-full z-50 border-b border-border/60 bg-background/90 backdrop-blur-xl shadow-[0_1px_0_hsl(var(--border)/0.35),0_12px_40px_-12px_rgba(18,86,210,0.07)] flex items-center justify-between px-6 h-14">
-          <div className="flex items-center gap-2.5 font-headline text-xl font-bold tracking-tight text-foreground">
-            <img src="/jubilee-logo.svg" alt="" className="h-8 w-8 shrink-0" width={32} height={32} />
-            Jubilee
+          <div className="flex min-w-0 items-center gap-2 sm:gap-4">
+            <div className="flex items-center gap-2.5 font-headline text-xl font-bold tracking-tight text-foreground">
+              <img src="/jubilee-logo.svg" alt="" className="h-8 w-8 shrink-0" width={32} height={32} />
+              Jubilee
+            </div>
+            {hideAppSidebar ? (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="h-8 shrink-0 text-muted-foreground hover:text-foreground"
+                onClick={() => setActiveTab("experiment_lab")}
+              >
+                Workspace
+              </Button>
+            ) : null}
           </div>
 
           <div className="flex items-center gap-1.5">
@@ -493,44 +508,51 @@ function AuthenticatedApp() {
 
         {/* Main Layout — min-h-0 so inner chat can scroll instead of growing the page */}
         <div className="flex flex-1 min-h-0 overflow-hidden pt-14" style={layoutStyle}>
-          {/* Fixed Sidebar */}
-          <aside className="hidden md:flex w-[var(--sidebar-width)] fixed left-0 top-14 bottom-0 flex-col z-40">
-            <AppSidebar
-              activeTab={activeTab}
-              onTabChange={setActiveTab}
-              activeExperimentId={realAgent.experimentId}
-              onSelectExperiment={handleSelectExperiment}
-              onStartBlankChat={handleStartBlankChat}
-              isBackendConnected={realAgent.isBackendConnected}
-              switchingTo={switchingTo}
-              onActiveExperimentDeleted={() => {
-                setExperimentDetailQueryId(null)
-                realAgent.leaveLabSession()
-              }}
-            />
-            <div className="absolute inset-y-0 -right-2 z-50 hidden md:flex w-4 items-center justify-center">
-              <button
-                type="button"
-                aria-label="Resize sidebar"
-                className={cn(
-                  "group flex h-full w-full cursor-col-resize items-center justify-center",
-                  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-0"
-                )}
-                onMouseDown={handleSidebarResizeStart}
-              >
-                <span
+          {/* Fixed Sidebar — hidden on broker demo (full-width placement UI) */}
+          {!hideAppSidebar ? (
+            <aside className="hidden md:flex w-[var(--sidebar-width)] fixed left-0 top-14 bottom-0 flex-col z-40">
+              <AppSidebar
+                activeTab={activeTab}
+                onTabChange={setActiveTab}
+                activeExperimentId={realAgent.experimentId}
+                onSelectExperiment={handleSelectExperiment}
+                onStartBlankChat={handleStartBlankChat}
+                isBackendConnected={realAgent.isBackendConnected}
+                switchingTo={switchingTo}
+                onActiveExperimentDeleted={() => {
+                  setExperimentDetailQueryId(null)
+                  realAgent.leaveLabSession()
+                }}
+              />
+              <div className="absolute inset-y-0 -right-2 z-50 hidden md:flex w-4 items-center justify-center">
+                <button
+                  type="button"
+                  aria-label="Resize sidebar"
                   className={cn(
-                    "h-10 w-1 rounded-full bg-border/70 transition-colors",
-                    "group-hover:bg-primary/70",
-                    isResizingSidebar && "bg-primary"
+                    "group flex h-full w-full cursor-col-resize items-center justify-center",
+                    "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-0"
                   )}
-                />
-              </button>
-            </div>
-          </aside>
+                  onMouseDown={handleSidebarResizeStart}
+                >
+                  <span
+                    className={cn(
+                      "h-10 w-1 rounded-full bg-border/70 transition-colors",
+                      "group-hover:bg-primary/70",
+                      isResizingSidebar && "bg-primary"
+                    )}
+                  />
+                </button>
+              </div>
+            </aside>
+          ) : null}
 
           {/* Main Content */}
-          <main className="flex-1 min-h-0 flex flex-col overflow-hidden md:ml-[var(--sidebar-width)]">
+          <main
+            className={cn(
+              "flex-1 min-h-0 flex flex-col overflow-hidden",
+              !hideAppSidebar && "md:ml-[var(--sidebar-width)]",
+            )}
+          >
             {/* All tabs stay mounted; inactive ones are hidden via CSS to preserve state and avoid refetches */}
             <div className={cn("flex flex-1 min-h-0 flex-col overflow-hidden relative", activeTab !== "experiment_lab" && "hidden")}>
                 {realAgent.experimentId ? (
@@ -578,6 +600,9 @@ function AuthenticatedApp() {
                     onSubmitBackgroundTask={handleSubmitBackgroundTask}
                   />
                 </div>
+            </div>
+            <div className={cn("flex-1 overflow-auto", activeTab !== "broker_demo" && "hidden")}>
+              <InsuranceBrokerDemoPage />
             </div>
             <div className={cn("flex-1 overflow-auto", activeTab !== "datasets" && "hidden")}>
               <DatasetsPage
