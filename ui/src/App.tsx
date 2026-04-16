@@ -146,6 +146,10 @@ function SignedInWithOrg() {
   })
   const previousOrgIdRef = useRef<string | null>(null)
 
+  // Register during render so api.ts authFetch sees a token getter before child useEffects
+  // (e.g. TanStack Query) run — avoids a spurious 401 on GET /api/experiments on first paint.
+  setTokenGetter(() => getToken())
+
   useEffect(() => {
     const id = organization?.id
     if (!id) return
@@ -157,11 +161,10 @@ function SignedInWithOrg() {
   }, [organization?.id])
 
   useEffect(() => {
-    setTokenGetter(() => getToken())
     return () => {
       setTokenGetter(async () => null)
     }
-  }, [getToken])
+  }, [])
 
   // Auto-activate the first org when user has memberships but no active org
   // (e.g. right after accepting an invitation and signing up).

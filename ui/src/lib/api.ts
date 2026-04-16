@@ -27,7 +27,11 @@ async function authFetch(
   const headers = new Headers(init?.headers)
   if (_getToken) {
     try {
-      const token = await _getToken()
+      let token = await _getToken()
+      if (!token) {
+        await new Promise((r) => setTimeout(r, 75))
+        token = await _getToken()
+      }
       if (token) headers.set("Authorization", `Bearer ${token}`)
     } catch {
       /* token retrieval failed; proceed without auth */
