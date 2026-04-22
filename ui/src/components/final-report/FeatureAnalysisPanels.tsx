@@ -10,6 +10,7 @@ import type {
   ConcentrationStat,
   HistogramBin,
   LorenzPoint,
+  StatisticalTestRow,
 } from "@/types/agent"
 import { Section, MetricBox } from "./shared"
 import { CorrelationBar } from "./CorrelationBar"
@@ -29,13 +30,15 @@ export function hasFeatureAnalysisContent(keyStats: KeyStats): boolean {
   const hasDistributionStats = (keyStats?.distribution_stats?.length ?? 0) > 0
   const hasGroupSummaries = (keyStats?.group_summaries?.length ?? 0) > 0
   const hasConcentrationAnalysis = (keyStats?.concentration_analysis?.length ?? 0) > 0
+  const hasInferential = (keyStats?.statistical_tests?.length ?? 0) > 0
   return (
     hasDatasetOverview ||
     hasNumericSummaries ||
     hasCorrelations ||
     hasDistributionStats ||
     hasGroupSummaries ||
-    hasConcentrationAnalysis
+    hasConcentrationAnalysis ||
+    hasInferential
   )
 }
 
@@ -88,6 +91,7 @@ export function FeatureAnalysisPanels({ keyStats, density = "full" }: FeatureAna
   const hasDistributionStats = keyStats?.distribution_stats?.length > 0
   const hasGroupSummaries = (keyStats?.group_summaries?.length ?? 0) > 0
   const hasConcentrationAnalysis = keyStats?.concentration_analysis?.length > 0
+  const hasInferential = (keyStats?.statistical_tests?.length ?? 0) > 0
 
   const histClass = compact ? "h-10" : "h-10 sm:h-12"
   const distBoxClass = compact ? "rounded-lg p-3" : "rounded-lg p-3"
@@ -183,6 +187,50 @@ export function FeatureAnalysisPanels({ keyStats, density = "full" }: FeatureAna
                 rank={i + 1}
               />
             ))}
+          </div>
+        </PanelSection>
+      )}
+
+      {hasInferential && (
+        <PanelSection title="Inferential statistics (exploratory)" density={density}>
+          <p className="text-xs text-muted-foreground mb-2">
+            p-values are not adjusted for multiple comparisons. Use for screening, not final claims.
+          </p>
+          <div className="overflow-x-auto rounded-lg border border-border/50">
+            <table className={`w-full ${numericTableClass}`}>
+              <thead className="bg-muted/50">
+                <tr>
+                  <th className="text-left py-1.5 px-2 font-medium">Feature</th>
+                  <th className="text-left py-1.5 px-2 font-medium">Test</th>
+                  <th className="text-right py-1.5 px-2 font-medium">p</th>
+                  <th className="text-right py-1.5 px-2 font-medium">Effect</th>
+                </tr>
+              </thead>
+              <tbody>
+                {sliceLimit(keyStats.statistical_tests, compact ? 8 : 20).map((row: StatisticalTestRow, i: number) => {
+                  const p = row.p_value
+                  const sig = p != null && p < 0.05
+                  const effect =
+                    row.cramers_v != null
+                      ? `V=${row.cramers_v.toFixed(3)}`
+                      : row.cohens_d != null
+                        ? `d=${row.cohens_d.toFixed(3)}`
+                        : "—"
+                  return (
+                    <tr key={i} className="border-t border-border/50 hover:bg-muted/30">
+                      <td className="py-1.5 px-2 font-mono max-w-[140px] truncate">{row.feature ?? "—"}</td>
+                      <td className="py-1.5 px-2 text-muted-foreground">{row.test ?? "—"}</td>
+                      <td
+                        className={`text-right py-1.5 px-2 ${sig ? "text-amber-700 dark:text-amber-400 font-medium" : ""}`}
+                      >
+                        {p != null ? p.toExponential(2) : "—"}
+                      </td>
+                      <td className="text-right py-1.5 px-2">{effect}</td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
           </div>
         </PanelSection>
       )}

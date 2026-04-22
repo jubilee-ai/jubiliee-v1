@@ -28,9 +28,10 @@ if str(_DATA_TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(_DATA_TOOLS_DIR))
 
 from analysis import (  # data_validation_tool,  # Excluded: has Pydantic schema issues with OpenAI strict mode
-    concentration_analysis_tool, correlation_matrix_tool,
-    distribution_analysis_tool, eda_report_tool, feature_diagnostics_tool,
-    group_summary_tool, trend_analysis_tool)
+    categorical_association_test_tool, concentration_analysis_tool,
+    correlation_matrix_tool, distribution_analysis_tool, eda_report_tool,
+    feature_diagnostics_tool, group_comparison_test_tool, group_summary_tool,
+    regression_summary_tool, trend_analysis_tool)
 
 # =============================================================================
 # FORMULA DSL - Structured operations that map to data-tools
@@ -204,6 +205,9 @@ FEATURE_ENGINEERING_TOOLS = [
     concentration_analysis_tool,
     group_summary_tool,
     trend_analysis_tool,
+    group_comparison_test_tool,
+    categorical_association_test_tool,
+    regression_summary_tool,
 ]
 
 # =============================================================================
@@ -217,6 +221,11 @@ Analyze the dataset and decide which features to include.
 
 ## Your Tools
 You have analysis tools to explore the data. Use them to understand the dataset before making feature decisions.
+
+**Inferential statistics** (use when asking whether a relationship is statistically meaningful, not only correlational):
+- `group_comparison_test_tool` — numeric outcome across groups (significance + effect size).
+- `categorical_association_test_tool` — association between two categorical columns (e.g. target vs feature) with Cramér's V.
+- `regression_summary_tool` — OLS or binary logit with multiple numeric predictors (encode categoricals first if needed).
 
 ## Feature Formula DSL
 Specify each feature using one of these operations:

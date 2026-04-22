@@ -66,6 +66,7 @@ _configure_langsmith_tracing()
 _MODEL_TOOLS_DIR = _ROOT / "tools" / "models-tools" / "training"
 if str(_MODEL_TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(_MODEL_TOOLS_DIR))
+from agents.subagents.orchestrator_tools import ORCHESTRATOR_SUBAGENT_TOOLS
 from model_storage import (evaluate_model_tool, get_model_info_tool,
                            list_trained_models_tool, predict_with_model_tool)
 
@@ -75,6 +76,7 @@ if str(_DT_ROOT) not in sys.path:
     sys.path.insert(0, str(_DT_ROOT))
 
 from analysis import (  # noqa: E402
+    categorical_association_test_tool,
     chart_tool,
     concentration_analysis_tool,
     correlation_matrix_tool,
@@ -82,7 +84,9 @@ from analysis import (  # noqa: E402
     distribution_analysis_tool,
     eda_report_tool,
     feature_diagnostics_tool,
+    group_comparison_test_tool,
     group_summary_tool,
+    regression_summary_tool,
     trend_analysis_tool,
 )
 from data_loader import dataset_get_tool  # noqa: E402
@@ -431,6 +435,9 @@ tool calls (usually **2–4** tools for a full analytical answer — see analysi
 - `data_validation_tool` — Rule-based validation when the user cares about DQ rules.
 - `concentration_analysis_tool` — Gini / Lorenz / Pareto concentration.
 - `trend_analysis_tool` — Time trends (needs a date column).
+- `group_comparison_test_tool` — **Inferential:** compare a **numeric** column across **groups** (Welch t / Mann-Whitney / ANOVA / Kruskal). Use for "is the difference significant?", effect sizes, not just group means.
+- `categorical_association_test_tool` — **Inferential:** association between two **categorical** columns (chi-square, Cramér's V; Fisher for 2x2 with small expected counts). Use for "is feature X related to the target / segment?".
+- `regression_summary_tool` — **Inferential:** OLS (numeric target) or **logit** (binary target) with coefficients, p-values, CIs; use when the user wants multivariate "controlling for other factors" (numeric predictors only — encode categoricals first).
 - `chart_tool` — Build **one** primary chart JSON for the UI — **always** include this when answering an analytical question with quantitative evidence (pick chart_type: bar, grouped_bar, histogram, scatter, line, or box).
 
 **Data access**
@@ -441,7 +448,9 @@ tool calls (usually **2–4** tools for a full analytical answer — see analysi
 - `credit_card_risk_prediction_tool`, `loan_default_prediction_tool`, `finbert_tone_tool`, `finbert_sentiment_tool`, `claim_detection_tool`, `chronos2_forecast_tool`, `timesfm_forecast_tool`
 
 **Training & trained models**
-- `propose_training_plan`, `run_training_pipeline`
+- `propose_training_plan`, `run_training_pipeline` (full UI pipeline with HITL)
+- **Subagents (optional, composable):** `invoke_data_analyst`, `invoke_feature_engineer`, `invoke_trainer`,
+  `invoke_evaluator`, `invoke_explainer`, `invoke_deployer`, `invoke_monitor` — each returns JSON; you choose order.
 - `predict_with_model`, `evaluate_model`, `list_trained_models`, `get_model_info`
 
 ## Attached datasets (critical)
@@ -456,10 +465,14 @@ When the message starts with **`[ATTACHED DATASETS`**:
 For questions like “what affects X”, “correlations”, “distribution”, “segments”:
 
 1. If you need a quick overview → `eda_report_tool` with `target_col` when predicting a column.
-2. Else pick **up to two** focused tools (e.g. `correlation_matrix_tool` + `group_summary_tool`).
-3. Always add **`chart_tool`** reflecting the strongest finding (e.g. bar of mean target by category).
+2. If the user asks about **statistical significance**, **p-values**, **effect size**, or **"is A associated with B"**:
+   - numeric outcome vs groups → `group_comparison_test_tool`
+   - two categoricals (e.g. target vs feature) → `categorical_association_test_tool`
+   - multivariate adjusted effects (numeric features) → `regression_summary_tool`
+3. Otherwise pick **up to two** focused descriptive tools (e.g. `correlation_matrix_tool` + `group_summary_tool`).
+4. Add **`chart_tool`** when it clarifies the main finding (e.g. bar of mean outcome by group).
 
-Keep total analysis tool calls ≤ **3** unless the user asks for exhaustive exploration.
+Keep total analysis tool calls ≤ **4** when inferential tools are needed; ≤ **3** for descriptive-only questions unless the user asks for exhaustive exploration.
 
 ### Response format (analysis answers)
 
@@ -586,6 +599,9 @@ TOOLS = [
     data_validation_tool,
     concentration_analysis_tool,
     trend_analysis_tool,
+    group_comparison_test_tool,
+    categorical_association_test_tool,
+    regression_summary_tool,
     chart_tool,
     dataset_get_tool,
     sql_query_tool,
@@ -602,6 +618,7 @@ TOOLS = [
     get_model_info_tool,
     propose_training_plan,
     run_training_pipeline,
+    *ORCHESTRATOR_SUBAGENT_TOOLS,
 ]
 
 # Tools whose results emit `<ANALYSIS_JSON>` sidecars for the chat UI (suppress duplicate tool_end text).
@@ -616,6 +633,9 @@ SIDECHANNEL_TOOL_NAMES = frozenset(
         "data_validation_tool",
         "concentration_analysis_tool",
         "trend_analysis_tool",
+        "group_comparison_test_tool",
+        "categorical_association_test_tool",
+        "regression_summary_tool",
         "chart_tool",
     )
 )

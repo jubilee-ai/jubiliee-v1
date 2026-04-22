@@ -185,6 +185,81 @@ function EdaCompact({ payload }: { payload: Record<string, unknown> }) {
   )
 }
 
+function InferentialGroupTable({ payload }: { payload: Record<string, unknown> }) {
+  const p = payload.p_value as number | undefined
+  const d = payload.cohens_d as number | undefined
+  return (
+    <div className="space-y-1 text-xs font-mono">
+      <p>
+        <span className="text-muted-foreground">test:</span> {String(payload.test ?? "—")}{" "}
+        <span className="text-muted-foreground">p:</span>{" "}
+        {p != null ? p.toExponential(3) : "—"}{" "}
+        {d != null ? (
+          <>
+            <span className="text-muted-foreground">Cohen&apos;s d:</span> {d.toFixed(3)}
+          </>
+        ) : null}
+      </p>
+    </div>
+  )
+}
+
+function InferentialCategoricalTable({ payload }: { payload: Record<string, unknown> }) {
+  const chi2 = payload.chi2 as number | undefined
+  const p = payload.p_value as number | undefined
+  const v = payload.cramers_v as number | undefined
+  return (
+    <div className="rounded-md border border-border/60 overflow-hidden text-xs">
+      <table className="w-full text-left">
+        <tbody>
+          <tr className="border-b border-border/40">
+            <td className="px-2 py-1 text-muted-foreground">χ²</td>
+            <td className="px-2 py-1">{chi2 != null ? chi2.toFixed(4) : "—"}</td>
+          </tr>
+          <tr className="border-b border-border/40">
+            <td className="px-2 py-1 text-muted-foreground">p-value</td>
+            <td className="px-2 py-1">{p != null ? p.toExponential(3) : "—"}</td>
+          </tr>
+          <tr>
+            <td className="px-2 py-1 text-muted-foreground">Cramér&apos;s V</td>
+            <td className="px-2 py-1">{v != null ? v.toFixed(4) : "—"}</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
+function RegressionCoefTable({ payload }: { payload: Record<string, unknown> }) {
+  const coefs = (payload.coefficients as Array<Record<string, unknown>>) || []
+  const rows = coefs.slice(0, 12)
+  if (!rows.length) return <p className="text-xs text-muted-foreground">No coefficients.</p>
+  return (
+    <div className="rounded-md border border-border/60 overflow-hidden text-xs max-h-48 overflow-y-auto">
+      <table className="w-full text-left">
+        <thead>
+          <tr className="border-b border-border/60 bg-muted/40">
+            <th className="px-2 py-1">Term</th>
+            <th className="px-2 py-1">p</th>
+            <th className="px-2 py-1">coef</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => (
+            <tr key={String(row.name)} className="border-b border-border/40 last:border-0">
+              <td className="px-2 py-0.5 font-mono max-w-[120px] truncate">{String(row.name)}</td>
+              <td className="px-2 py-0.5">
+                {typeof row.p_value === "number" ? row.p_value.toExponential(2) : "—"}
+              </td>
+              <td className="px-2 py-0.5">{typeof row.coef === "number" ? row.coef.toFixed(4) : "—"}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
 function CorrelationBars({ payload }: { payload: Record<string, unknown> }) {
   const pairs = (payload.top_pairs as Array<{ col1: string; col2: string; correlation: number }>) || []
   const rows = pairs.slice(0, 12).map((p) => ({
@@ -229,7 +304,10 @@ export function AnalysisCard({ insight }: { insight: AnalysisInsight }) {
     insight.kind === "concentration" ||
     insight.kind === "group_summary" ||
     insight.kind === "eda" ||
-    insight.kind === "chart"
+    insight.kind === "chart" ||
+    insight.kind === "inferential_group" ||
+    insight.kind === "inferential_categorical" ||
+    insight.kind === "inferential_regression"
 
   return (
     <div
@@ -258,6 +336,15 @@ export function AnalysisCard({ insight }: { insight: AnalysisInsight }) {
         ) : null}
         {insight.kind === "correlation" && insight.payload ? (
           <CorrelationBars payload={insight.payload as Record<string, unknown>} />
+        ) : null}
+        {insight.kind === "inferential_group" && insight.payload ? (
+          <InferentialGroupTable payload={insight.payload as Record<string, unknown>} />
+        ) : null}
+        {insight.kind === "inferential_categorical" && insight.payload ? (
+          <InferentialCategoricalTable payload={insight.payload as Record<string, unknown>} />
+        ) : null}
+        {insight.kind === "inferential_regression" && insight.payload ? (
+          <RegressionCoefTable payload={insight.payload as Record<string, unknown>} />
         ) : null}
         {spec && Object.keys(spec).length > 0 ? <ChartSpecChart spec={spec} /> : null}
         {insight.kind === "trend" && Array.isArray((insight.payload as Record<string, unknown> & { periods?: unknown }).periods) ? (

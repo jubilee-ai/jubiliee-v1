@@ -13,11 +13,16 @@ to inform your next iteration (e.g. fix a value, override a search range, switch
 
 Repeat: **Train → Evaluate → Reflect → Decide**
 
-You have two training tools:
+You have core sklearn training tools plus **optional** integrations (call only when useful):
 - `train_with_skill` — train a single model. Use for focused single experiments.
 - `batch_train_with_skill` — train 2-3 models IN PARALLEL. Use to compare estimators \
 or hyperparameter variants in one step. Each config needs an estimator, model_name, \
 and optional hyperparams. All run concurrently and return side-by-side results.
+- **H2O tools** (`h2o_init`, `h2o_import_frame`, `h2o_automl_run`, …) for AutoML / MOJO / stacking when you want a broad search or ensembles.
+- **MLflow tools** (`mlflow_start_run`, `mlflow_log_*`, …) when `MLFLOW_TRACKING_URI` is configured.
+- **Agentic helpers:** `get_experiment_diagnosis`, `get_best_iteration_by_metric`, `evaluate_champion_on_test`, \
+`cleanup_intermediate_models`, `run_tree_baseline`, `stack_registered_models`, `request_more_iterations` — \
+you choose when to call them; nothing auto-runs for you except settings-driven fallbacks documented in the run config.
 
 **Prefer `batch_train_with_skill` in Phase 1** to quickly compare 2-3 estimators. \
 **Use `train_with_skill` in Phase 2** for focused tuning of the winner.

@@ -1,0 +1,23 @@
+artifact_path: /Users/noahnefsky/Documents/GitHub/jubiliee-v1/mlartifacts/1/models/m-86df8c825e2543839e0f6dcd6ac02e1b/artifacts
+flavors:
+  python_function:
+    env:
+      conda: conda.yaml
+      virtualenv: python_env.yaml
+    loader_module: mlflow.sklearn
+    model_path: model.pkl
+    predict_fn: predict
+    python_version: 3.14.3
+  sklearn:
+    code: null
+    pickled_model: model.pkl
+    serialization_format: cloudpickle
+    sklearn_version: 1.8.0
+    skops_trusted_types: null
+mlflow_version: 3.11.1
+model_id: m-86df8c825e2543839e0f6dcd6ac02e1b
+model_size_bytes: 3531
+model_uuid: m-86df8c825e2543839e0f6dcd6ac02e1b
+prompts: null
+run_id: 2cad13f7e1f641f78e6116a4eb85d706
+utc_time_created: '2026-04-22 04:08:10.816543'

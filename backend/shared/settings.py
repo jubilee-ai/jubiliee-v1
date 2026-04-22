@@ -105,6 +105,38 @@ class Settings(BaseSettings):
         "larger than this threshold and keep only compact data plus a storage key in Postgres.",
     )
 
+    # MLflow (experiment tracking + registry; optional)
+    MLFLOW_TRACKING_URI: Optional[str] = Field(
+        default=None,
+        description="e.g. http://127.0.0.1:5000 or sqlite:///mlflow.db — when unset, MLflow is disabled",
+    )
+    MLFLOW_ARTIFACT_ROOT: Optional[str] = Field(
+        default=None,
+        description="Optional artifact root URI (s3://... or file://...) for MLflow artifacts",
+    )
+    MLFLOW_ENABLE_AUTOLOG: bool = Field(
+        default=True,
+        description="When True and MLFLOW_TRACKING_URI is set, enable mlflow autolog on startup",
+    )
+    MLFLOW_REGISTER_ON_MODEL_SAVE: bool = Field(
+        default=True,
+        description="When True, register_model also logs to MLflow Model Registry when URI is set",
+    )
+
+    # Training agent (agentic vs legacy automation)
+    TRAINING_AUTO_TEST_EVAL: bool = Field(
+        default=True,
+        description="When True, run_training_agent still computes test metrics after success unless the model calls evaluate_champion_on_test first",
+    )
+    TRAINING_METRIC_LEADER_OVERRIDE: bool = Field(
+        default=False,
+        description="When True, reconcile best_model_name/metrics from validation leaderboard instead of trusting the LLM",
+    )
+    TRAINING_AUTO_CLEANUP_INTERMEDIATES: bool = Field(
+        default=False,
+        description="When True, delete non-champion trial models automatically after training",
+    )
+
     # Clerk authentication
     CLERK_JWKS_URL: Optional[str] = Field(
         default=None,

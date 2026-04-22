@@ -195,6 +195,9 @@ function getToolRunningHint(
     case "data_validation_tool":
     case "trend_analysis_tool":
     case "concentration_analysis_tool":
+    case "group_comparison_test_tool":
+    case "categorical_association_test_tool":
+    case "regression_summary_tool":
       if (datasetLabel) return `Analyzing ${datasetLabel}`
       return "Analyzing your data"
     case "train_model":

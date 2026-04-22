@@ -32,7 +32,8 @@ if str(_DATA_TOOLS_DIR) not in sys.path:
 
 from analysis import (analyze_concentration, analyze_distribution,
                       compute_correlation_matrix, compute_group_summary,
-                      run_eda_report, run_feature_diagnostics)
+                      run_eda_report, run_feature_diagnostics,
+                      run_inferential_feature_scan)
 from transformations.tool_utils import resolve_dataset
 
 from .feature_engineering import (AsOfConstraint, FeatureDefinition,
@@ -76,6 +77,8 @@ def _extract_key_stats(analysis_results: dict[str, Any], target_column: str) -> 
         "group_summaries": [],  # Detailed group summaries with default rates
         "concentration_analysis": [],
         "schema": [],  # Column schema
+        "statistical_tests": [],  # Inferential: chi2, t-tests, ANOVA-style
+        "effect_sizes": [],  # Cramér's V, Cohen's d where available
         "summary_text": "",
     }
     
@@ -348,6 +351,71 @@ def _extract_key_stats(analysis_results: dict[str, Any], target_column: str) -> 
     card = analysis_results.get("cardinality_analysis")
     if isinstance(card, list):
         key_stats["cardinality_analysis"] = card
+
+    # 8b. Inferential scan (chi-square / t-tests / ANOVA-style)
+    inf = analysis_results.get("inferential_scan")
+    if isinstance(inf, dict) and "error" not in inf:
+        cat_tests = inf.get("categorical_tests") or []
+        num_tests = inf.get("numeric_tests") or []
+        stat_rows = []
+        eff_rows = []
+        for t in cat_tests[:25]:
+            if not isinstance(t, dict):
+                continue
+            feat = t.get("feature") or t.get("col_b")
+            if t.get("cramers_v") is not None or t.get("chi2") is not None:
+                stat_rows.append(
+                    {
+                        "feature": feat,
+                        "test": "categorical_association",
+                        "p_value": t.get("p_value"),
+                        "cramers_v": t.get("cramers_v"),
+                        "fisher_p": t.get("fisher_exact_p"),
+                        "note": t.get("method_note") or t.get("warning"),
+                    }
+                )
+                if t.get("cramers_v") is not None:
+                    eff_rows.append(
+                        {
+                            "feature": feat,
+                            "metric": "cramers_v",
+                            "value": round(float(t["cramers_v"]), 4),
+                        }
+                    )
+            elif t.get("p_value") is not None and t.get("test"):
+                stat_rows.append(
+                    {
+                        "feature": feat or t.get("group_col"),
+                        "test": t.get("test"),
+                        "p_value": t.get("p_value"),
+                        "note": t.get("method_note"),
+                    }
+                )
+        for t in num_tests[:20]:
+            if not isinstance(t, dict):
+                continue
+            p_main = t.get("primary_p")
+            if p_main is None:
+                p_main = t.get("welch_t_p")
+            stat_rows.append(
+                {
+                    "feature": t.get("feature"),
+                    "test": t.get("test", "binary_numeric_comparison"),
+                    "p_value": p_main,
+                    "cohens_d": t.get("cohens_d"),
+                    "note": t.get("method_note"),
+                }
+            )
+            if t.get("cohens_d") is not None:
+                eff_rows.append(
+                    {
+                        "feature": t.get("feature"),
+                        "metric": "cohens_d",
+                        "value": round(float(t["cohens_d"]), 4),
+                    }
+                )
+        key_stats["statistical_tests"] = stat_rows[:40]
+        key_stats["effect_sizes"] = eff_rows[:30]
     
     # 9. Generate summary text
     summary_parts = []
@@ -380,6 +448,17 @@ def _extract_key_stats(analysis_results: dict[str, Any], target_column: str) -> 
         high_card = [c for c in card if c.get("n_unique", 0) > 50]
         if high_card:
             summary_parts.append(f"{len(high_card)} high-cardinality categoricals (>50 values)")
+
+    if key_stats.get("statistical_tests"):
+        n_st = len(key_stats["statistical_tests"])
+        sig = [
+            s
+            for s in key_stats["statistical_tests"]
+            if s.get("p_value") is not None and float(s["p_value"]) < 0.05
+        ]
+        summary_parts.append(
+            f"Inferential tests: {n_st} run, {len(sig)} with p<0.05 (exploratory; not adjusted for multiple comparisons)"
+        )
     
     key_stats["summary_text"] = ". ".join(summary_parts) if summary_parts else "Analysis complete"
     
@@ -663,6 +742,19 @@ def _run_all_analysis(dataset_ref: str, target_column: str, task_type: str = "cl
             results["cardinality_analysis"] = "No categorical columns to analyze"
     except Exception as e:
         results["cardinality_analysis"] = f"Error: {e}"
+
+    # 9. INFERENTIAL STATISTICS — p-values / effect sizes for key feature–target relationships
+    try:
+        print(f"[feature_analysis] Running inferential feature scan (task_type={task_type})...")
+        results["inferential_scan"] = run_inferential_feature_scan(
+            dataset_ref,
+            target_column,
+            task_type=task_type,
+            max_categorical=8,
+            max_numeric=6,
+        )
+    except Exception as e:
+        results["inferential_scan"] = f"Error: {e}"
     
     print(f"[feature_analysis] Analysis complete")
     
@@ -694,6 +786,7 @@ def _format_analysis_results(results: dict[str, Any]) -> str:
         "correlation_matrix": 5000,
         "feature_diagnostics": 5000,
         "eda_report": 5000,
+        "inferential_scan": 6000,
     }
     DEFAULT_LIMIT = 4000
 

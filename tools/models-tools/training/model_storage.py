@@ -31,6 +31,90 @@ def _sanitize(name: str) -> str:
     return "".join(c if c.isalnum() or c in "-_" else "_" for c in name)
 
 
+def _try_mlflow_register_sklearn_artifact(
+    model_name: str,
+    model_path: str,
+    model_type: str,
+    metrics: dict,
+    training_run_id: Optional[str],
+) -> Optional[dict]:
+    """Log a sklearn-compatible joblib artifact to MLflow + Model Registry (best-effort)."""
+    try:
+        from backend.shared.settings import get_settings
+
+        s = get_settings()
+        uri = (getattr(s, "MLFLOW_TRACKING_URI", None) or "").strip()
+        if not uri or not getattr(s, "MLFLOW_REGISTER_ON_MODEL_SAVE", True):
+            return None
+        if not os.path.exists(model_path):
+            return None
+    except Exception:
+        return None
+
+    try:
+        import mlflow
+        from mlflow.tracking import MlflowClient
+    except ImportError:
+        return None
+
+    reg_name = _sanitize(model_name)[:256]
+    try:
+        mlflow.set_tracking_uri(uri)
+        loaded = joblib.load(model_path)
+        # Log under an active run if present; otherwise open a short-lived run for this artifact.
+        active = mlflow.active_run()
+        if active is not None:
+            mlflow.log_params(
+                {
+                    "jubilee_model_name": model_name,
+                    "jubilee_model_type": model_type,
+                }
+            )
+            if training_run_id:
+                try:
+                    mlflow.set_tag("jubilee_training_run_id", str(training_run_id))
+                except Exception:
+                    pass
+            if metrics:
+                flat = {k: float(v) for k, v in metrics.items() if isinstance(v, (int, float))}
+                if flat:
+                    mlflow.log_metrics(flat)
+            mlflow.sklearn.log_model(loaded, artifact_path="model", registered_model_name=reg_name)
+            run_id = active.info.run_id
+        else:
+            with mlflow.start_run(run_name=f"register_{reg_name}") as run:
+                mlflow.log_params(
+                    {
+                        "jubilee_model_name": model_name,
+                        "jubilee_model_type": model_type,
+                    }
+                )
+                if training_run_id:
+                    try:
+                        mlflow.set_tag("jubilee_training_run_id", str(training_run_id))
+                    except Exception:
+                        pass
+                if metrics:
+                    flat = {k: float(v) for k, v in metrics.items() if isinstance(v, (int, float))}
+                    if flat:
+                        mlflow.log_metrics(flat)
+                mlflow.sklearn.log_model(loaded, artifact_path="model", registered_model_name=reg_name)
+                run_id = run.info.run_id
+
+        client = MlflowClient()
+        versions = client.search_model_versions(f"name='{reg_name}'")
+        latest_ver = max((int(v.version) for v in versions), default=1)
+        mv_uri = f"models:/{reg_name}/{latest_ver}"
+        return {
+            "mlflow_run_id": run_id,
+            "mlflow_model_uri": mv_uri,
+            "mlflow_registered_model_name": reg_name,
+            "mlflow_model_version": str(latest_ver),
+        }
+    except Exception:
+        return None
+
+
 # ── In-memory model cache ────────────────────────────────────────────────────
 _model_cache: dict[str, Any] = {}
 
@@ -53,6 +137,7 @@ def _version_to_dict(
         "hyperparameters": v_props.get("hyperparameters", {}),
         "training_samples": v_props.get("training_samples", 0),
         "classes": v_props.get("classes", []),
+        "mlflow": v_props.get("mlflow"),
         "created_at": model.created_at.isoformat() if model.created_at else "",
         "updated_at": model.updated_at.isoformat() if model.updated_at else "",
         "version": version.version,
@@ -149,6 +234,19 @@ def register_model(
         )
         session.add(mv)
         session.flush()
+
+        mlflow_meta = _try_mlflow_register_sklearn_artifact(
+            model_name=model_name,
+            model_path=model_path,
+            model_type=model_type,
+            metrics=metrics or {},
+            training_run_id=training_run_id,
+        )
+        if mlflow_meta:
+            p = dict(mv.properties or {})
+            p["mlflow"] = mlflow_meta
+            mv.properties = p
+            session.flush()
 
         return _version_to_dict(model, mv)
 

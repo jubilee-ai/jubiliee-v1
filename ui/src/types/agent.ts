@@ -185,6 +185,23 @@ export interface CorrelationMatrix {
   matrix: Record<string, Record<string, number>>
 }
 
+/** One row from training-time inferential scan (chi2, t-tests, ANOVA, etc.) */
+export interface StatisticalTestRow {
+  feature?: string
+  test?: string
+  p_value?: number
+  cramers_v?: number
+  fisher_p?: number
+  cohens_d?: number
+  note?: string
+}
+
+export interface EffectSizeRow {
+  feature?: string
+  metric: string
+  value?: number
+}
+
 export interface KeyStats {
   dataset_overview: {
     rows?: number
@@ -230,6 +247,8 @@ export interface KeyStats {
   }>
   group_summaries?: GroupSummary[]
   concentration_analysis: ConcentrationStat[]
+  statistical_tests?: StatisticalTestRow[]
+  effect_sizes?: EffectSizeRow[]
   feature_importances?: Array<{feature: string; importance: number}>
   summary_text: string
 }

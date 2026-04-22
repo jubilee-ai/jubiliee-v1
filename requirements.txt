@@ -16,6 +16,8 @@ pandas
 pyarrow>=14.0.0
 numpy
 scikit-learn
+scipy
+statsmodels
 joblib
 xgboost
 lifelines
@@ -40,3 +42,8 @@ celery[redis]
 redis
 PyJWT[crypto]
 requests
+mlflow>=2.10.0
+h2o>=3.44.0.3
+shap>=0.44.0
+evidently>=0.4.0
+apscheduler>=3.10.0

@@ -1,0 +1,6 @@
+{
+  "name": "h2o_automl",
+  "title": "H2O-3 + AutoML (tool-driven)",
+  "description": "Documentation-only skill: use h2o_* tools from the training agent; no train.py entrypoint.",
+  "documentation_only": true
+}

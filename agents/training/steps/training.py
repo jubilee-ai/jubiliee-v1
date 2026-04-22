@@ -42,9 +42,9 @@ if str(_MODEL_TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(_MODEL_TOOLS_DIR))
 
 from model_storage import (classification_roc_auc, delete_model,
-                           evaluate_model_tool, get_model_info,
-                           get_model_info_tool, list_models,
-                           list_trained_models_tool, load_model)
+                           evaluate_model_tool, generate_model_path,
+                           get_model_info, get_model_info_tool, list_models,
+                           list_trained_models_tool, load_model, register_model)
 from utils import get_registered_dataset
 
 SKILLS_DIR = Path(__file__).parent.parent / "skills"
@@ -58,6 +58,11 @@ _training_expected_task_type: contextvars.ContextVar[Optional[str]] = contextvar
 _MAX_TRAINED_MODELS_PER_RUN = 10
 _training_models_trained: contextvars.ContextVar[Optional[int]] = contextvars.ContextVar(
     "training_models_trained", default=None
+)
+
+# Current iteration list for get_experiment_diagnosis / get_best_iteration_by_metric tools.
+_training_iterations_ctx: contextvars.ContextVar[Optional[list]] = contextvars.ContextVar(
+    "training_iterations_ctx", default=None
 )
 
 
@@ -183,6 +188,196 @@ def request_feature_engineering_redo_tool(
     }
 
 
+def _tool_request_more_iterations_in_messages(messages: Any) -> bool:
+    """True if the agent called ``request_more_iterations`` this turn."""
+    if not messages:
+        return False
+    for msg in messages:
+        name = getattr(msg, "name", None)
+        if name == "request_more_iterations":
+            return True
+        if getattr(msg, "type", None) == "tool" and getattr(msg, "name", None) == "request_more_iterations":
+            return True
+        for tc in getattr(msg, "tool_calls", None) or []:
+            n = tc.get("name") if isinstance(tc, dict) else getattr(tc, "name", "")
+            if n == "request_more_iterations":
+                return True
+    return False
+
+
+@tool("request_more_iterations")
+def request_more_iterations_tool(reason: str) -> dict[str, Any]:
+    """Request another full training agent turn (same session) when you need more budget.
+
+    The orchestrator re-invokes you with an extra user message if under max continuation rounds.
+    """
+    return {
+        "status": "registered",
+        "reason": reason,
+        "message": "Extension recorded; finish this turn with your TrainingResult, then you may get another turn.",
+    }
+
+
+@tool("get_experiment_diagnosis")
+def get_experiment_diagnosis_tool(task_type: str) -> str:
+    """Summarize experiment trend (improving / plateau / regressed) from iterations so far."""
+    raw = _training_iterations_ctx.get()
+    iters = list(raw) if raw else []
+    if not iters:
+        return json.dumps({"trend": "no_data", "diagnosis": "No iterations yet.", "n_iterations": 0})
+    diag = _diagnose_trend(iters, task_type)
+    diag["n_iterations"] = len(iters)
+    return json.dumps(diag, default=str)
+
+
+@tool("get_best_iteration_by_metric")
+def get_best_iteration_by_metric_tool(task_type: str) -> str:
+    """Return the best successful iteration by validation metric (ROC-AUC / R² / silhouette)."""
+    raw = _training_iterations_ctx.get()
+    iters = list(raw) if raw else []
+    dicts = [_iteration_to_dict(it) for it in iters]
+    best = _find_best_iteration(dicts, task_type)
+    return json.dumps({"best": best}, default=str)
+
+
+@tool("cleanup_intermediate_models")
+def cleanup_intermediate_models_tool(
+    best_model_name: str,
+    base_model_name: str,
+    iteration_model_names_json: str = "[]",
+) -> str:
+    """Delete intermediate trial models; keep ``best_model_name``."""
+    try:
+        names = json.loads(iteration_model_names_json or "[]")
+        if not isinstance(names, list):
+            names = []
+        deleted = _cleanup_intermediate_models(
+            best_model_name=best_model_name,
+            base_model_name=base_model_name,
+            iteration_model_names=names,
+        )
+        return json.dumps({"deleted": deleted, "n_deleted": len(deleted)})
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+@tool("evaluate_champion_on_test")
+def evaluate_champion_on_test_tool(
+    model_name: str,
+    test_ref: str,
+    target_column: str,
+    task_type: str,
+) -> str:
+    """Compute holdout test metrics for a registered model (call before submitting TrainingResult)."""
+    m = _evaluate_model_on_test(model_name, test_ref, target_column, task_type)
+    return json.dumps({"metrics": m}, default=str)
+
+
+@tool("run_tree_baseline")
+def run_tree_baseline_tool(
+    train_ref: str,
+    val_ref: str,
+    target_column: str,
+    task_type: str,
+) -> str:
+    """Quick HistGradientBoosting baseline on train/val (optional for neural_networks or comparisons)."""
+    train_df = get_registered_dataset(train_ref)
+    val_df = get_registered_dataset(val_ref)
+    if train_df is None or val_df is None:
+        return json.dumps({"error": "train or val dataset not found"})
+    b = _run_quick_baseline(train_df, val_df, target_column, task_type)
+    return json.dumps(b, default=str)
+
+
+@tool("stack_registered_models")
+def stack_registered_models_tool(
+    model_names_json: str,
+    new_model_name: str,
+    train_dataset_ref: str,
+    val_dataset_ref: str,
+    target_column: str,
+    task_type: str,
+    meta_learner: str = "logistic",
+) -> str:
+    """Build a sklearn Voting soft ensemble (or hard if no proba) from existing registered models."""
+    import joblib
+    from sklearn.ensemble import VotingClassifier, VotingRegressor
+    from sklearn.linear_model import LogisticRegression, Ridge
+
+    try:
+        names = json.loads(model_names_json or "[]")
+        if not isinstance(names, list) or len(names) < 2:
+            return json.dumps({"ok": False, "error": "model_names_json must be a JSON list of at least 2 names"})
+        train_df = get_registered_dataset(train_dataset_ref)
+        val_df = get_registered_dataset(val_dataset_ref)
+        if train_df is None or val_df is None:
+            return json.dumps({"ok": False, "error": "datasets not found"})
+        ests = []
+        for n in names:
+            m = load_model(n)
+            if m is None:
+                return json.dumps({"ok": False, "error": f"model not found: {n}"})
+            ests.append((str(n).replace(" ", "_")[:40], m))
+        feature_cols = [c for c in train_df.columns if c != target_column]
+        X_tr = train_df[feature_cols]
+        y_tr = train_df[target_column]
+        if task_type == "regression":
+            vr = VotingRegressor(estimators=ests)
+            vr.fit(X_tr, y_tr)
+            fitted = vr
+        else:
+            try:
+                vc = VotingClassifier(estimators=ests, voting="soft")
+                vc.fit(X_tr, y_tr)
+                fitted = vc
+            except Exception:
+                vc = VotingClassifier(estimators=ests, voting="hard")
+                vc.fit(X_tr, y_tr)
+                fitted = vc
+        save_path = generate_model_path(new_model_name)
+        joblib.dump(fitted, save_path)
+
+        y_val = val_df[target_column]
+        X_val = val_df[feature_cols]
+        if task_type == "regression":
+            from sklearn.metrics import mean_squared_error, r2_score
+
+            pred = fitted.predict(X_val)
+            metrics = {
+                "val_r2": float(r2_score(y_val, pred)),
+                "val_rmse": float(np.sqrt(mean_squared_error(y_val, pred))),
+            }
+        else:
+            from sklearn.metrics import accuracy_score, roc_auc_score
+
+            pred = fitted.predict(X_val)
+            metrics = {"val_accuracy": float(accuracy_score(y_val, pred))}
+            try:
+                proba = fitted.predict_proba(X_val)
+                if proba.shape[1] == 2:
+                    metrics["val_roc_auc"] = float(roc_auc_score(y_val, proba[:, 1]))
+            except Exception:
+                pass
+        reg = register_model(
+            model_name=new_model_name,
+            model_path=save_path,
+            model_type="sklearn_stacked_voting",
+            description=f"Voting ensemble of {names}",
+            metrics=metrics,
+            feature_names=feature_cols,
+            target_column=target_column,
+            hyperparameters={"base_models": names, "meta": meta_learner},
+            training_samples=len(train_df),
+            classes=[str(x) for x in sorted(y_tr.unique())] if task_type != "regression" else [],
+        )
+        used = _training_models_trained.get()
+        if used is not None:
+            _training_models_trained.set(used + 1)
+        return json.dumps({"ok": True, "registered": reg}, default=str)
+    except Exception as e:
+        return json.dumps({"ok": False, "error": str(e)})
+
+
 class BatchTrainConfig(BaseModel):
     estimator: str = Field(description="Estimator class name, e.g. 'HistGradientBoostingClassifier'")
     model_name: str = Field(description="Unique name for this model, e.g. 'hgb_v1'")
@@ -284,6 +479,9 @@ def batch_train_with_skill_tool(
     return "\n".join(lines)
 
 
+from agents.training.mcp.h2o_server import build_h2o_tools
+from agents.training.mcp.mlflow_server import build_mlflow_tools
+
 TRAINING_TOOLS = [
     train_with_skill_tool,
     batch_train_with_skill_tool,
@@ -291,7 +489,14 @@ TRAINING_TOOLS = [
     list_trained_models_tool,
     get_model_info_tool,
     request_feature_engineering_redo_tool,
-]
+    request_more_iterations_tool,
+    get_experiment_diagnosis_tool,
+    get_best_iteration_by_metric_tool,
+    cleanup_intermediate_models_tool,
+    evaluate_champion_on_test_tool,
+    run_tree_baseline_tool,
+    stack_registered_models_tool,
+] + list(build_h2o_tools()) + list(build_mlflow_tools())
 
 
 # =============================================================================
@@ -1318,20 +1523,11 @@ def run_training_agent(
     baseline_section = ""
     baseline_metrics = None
     if skill_name == "neural_networks" and task_type != "unsupervised":
-        baseline_metrics = _run_quick_baseline(train_df, val_df, target_column, task_type)
-        if baseline_metrics.get("roc_auc") or baseline_metrics.get("r2"):
-            baseline_section = (
-                f"\n## Performance Baseline (HistGradientBoosting — auto-computed)\n"
-                f"A quick tree-based model achieved these metrics on the same data:\n"
-            )
-            for k, v in baseline_metrics.items():
-                if k != "model" and v is not None:
-                    baseline_section += f"- {k}: {v}\n"
-            baseline_section += (
-                "\n**Your neural network must beat these numbers.** "
-                "If it can't match the baseline after several iterations, "
-                "focus on matching it first before trying to exceed it.\n"
-            )
+        baseline_section = (
+            "\n## Tree baseline (optional)\n"
+            "Call `run_tree_baseline` with the train ref, val ref, target, and task_type if you want "
+            "a quick HistGradientBoosting reference — **you decide** whether to run it.\n"
+        )
 
     experiment_section = ""
     if experiment_result and experiment_result.get("total_scouts", 0) > 0:
@@ -1469,7 +1665,6 @@ Follow the skill documentation below — it covers model selection and training.
 
     all_iterations: list[TrainingIteration] = []
     continuation_round = 0
-    _baseline = baseline_metrics
     cont_cap = max(1, min(6, max_continuation_rounds))
     if training_plan and isinstance(training_plan.get("max_continuation_rounds"), int):
         cont_cap = max(1, min(6, int(training_plan["max_continuation_rounds"])))
@@ -1477,39 +1672,18 @@ Follow the skill documentation below — it covers model selection and training.
     token = _training_expected_task_type.set(task_type)
     budget_token = _training_models_trained.set(0)
     try:
-        result = agent.invoke({"messages": messages})
-        final_messages = result.get("messages", [])
-        training_result = _extract_training_result(result)
-        all_iterations.extend(training_result.iterations)
+        extensions_used = 0
+        result: dict[str, Any] = {}
+        final_messages: list[Any] = []
+        training_result: TrainingResult | None = None
 
-        while (
-            continuation_round < cont_cap
-            and training_result.success
-            and not training_result.feature_redo_requested
-            and _should_continue_iterating(all_iterations, max_iterations, task_type)
-        ):
-            continuation_round += 1
-            emit_graph_stream({"type": "progress", "message": f"Training iteration {continuation_round + 1} — exploring hyperparameters...", "phase": "training"})
-            continuation_msg = _build_continuation_message(
-                all_iterations, max_iterations, task_type, _baseline,
-            )
+        while True:
+            it_tok = _training_iterations_ctx.set(list(all_iterations))
+            try:
+                result = agent.invoke({"messages": messages})
+            finally:
+                _training_iterations_ctx.reset(it_tok)
 
-            diag = _diagnose_trend(all_iterations, task_type)
-            best_str = _format_best_metric(
-                _find_best_iteration(
-                    [_iteration_to_dict(it) for it in all_iterations], task_type
-                ) or {},
-                task_type,
-            )
-            print(f"\n[training_agent] Continuing training (round {continuation_round}, "
-                  f"{max_iterations - len(all_iterations)} remaining, "
-                  f"best: {best_str}, trend: {diag['trend']})")
-
-            cont_messages = final_messages + [
-                {"role": "user", "content": continuation_msg},
-            ]
-
-            result = agent.invoke({"messages": cont_messages})
             final_messages = result.get("messages", [])
             training_result = _extract_training_result(result)
             existing_names = {it.model_name for it in all_iterations}
@@ -1518,6 +1692,36 @@ Follow the skill documentation below — it covers model selection and training.
                     all_iterations.append(it)
                     existing_names.add(it.model_name)
 
+            want_more = _tool_request_more_iterations_in_messages(final_messages)
+            if (
+                want_more
+                and extensions_used < cont_cap
+                and training_result.success
+                and not training_result.feature_redo_requested
+            ):
+                extensions_used += 1
+                continuation_round = extensions_used
+                emit_graph_stream(
+                    {
+                        "type": "progress",
+                        "message": f"Training extension {extensions_used} — additional turn granted...",
+                        "phase": "training",
+                    }
+                )
+                messages = final_messages + [
+                    {
+                        "role": "user",
+                        "content": (
+                            "You requested more training budget. Continue experimenting. "
+                            "Optional: call `get_experiment_diagnosis` or `get_best_iteration_by_metric` first, "
+                            "then train/evaluate. Call `request_more_iterations` again if you still need another turn."
+                        ),
+                    },
+                ]
+                continue
+            break
+
+        assert training_result is not None
         training_result.iterations = all_iterations
         training_result.num_iterations = len(all_iterations)
 
@@ -1526,7 +1730,21 @@ Follow the skill documentation below — it covers model selection and training.
 
         iterations_dict = [_iteration_to_dict(it) for it in training_result.iterations]
         best_iteration = _find_best_iteration(iterations_dict, task_type)
-        actual_best_name = best_iteration["model_name"] if best_iteration else training_result.best_model_name
+        from backend.shared.settings import get_settings as _gs_tr
+
+        _s = _gs_tr()
+        actual_best_name = (training_result.best_model_name or "").strip()
+        if not actual_best_name and best_iteration:
+            actual_best_name = str(best_iteration.get("model_name") or "")
+
+        if _s.TRAINING_METRIC_LEADER_OVERRIDE and best_iteration:
+            training_result = training_result.model_copy(
+                update=_training_result_updates_from_best_iteration(
+                    best_iteration, training_result.best_model_name
+                )
+            )
+            training_result = _maybe_clarify_summary_vs_saved_model(training_result)
+            actual_best_name = (training_result.best_model_name or "").strip()
 
         if training_result.success and actual_best_name:
             est_ok, est_msg = _validate_estimator_matches_task(
@@ -1549,12 +1767,6 @@ Follow the skill documentation below — it covers model selection and training.
                     "summary": est_msg,
                 }
 
-        training_result = training_result.model_copy(
-            update=_training_result_updates_from_best_iteration(
-                best_iteration, training_result.best_model_name
-            )
-        )
-        training_result = _maybe_clarify_summary_vs_saved_model(training_result)
         _log_training_results(training_result, task_type)
 
         # Extract feature importances BEFORE cleanup so we can try all models
@@ -1568,7 +1780,7 @@ Follow the skill documentation below — it covers model selection and training.
                         if feat_imp:
                             break
 
-        if training_result.success and actual_best_name:
+        if training_result.success and actual_best_name and _s.TRAINING_AUTO_CLEANUP_INTERMEDIATES:
             iteration_model_names = [it.model_name for it in training_result.iterations if it.model_name]
             deleted = _cleanup_intermediate_models(
                 best_model_name=actual_best_name,
@@ -1580,7 +1792,15 @@ Follow the skill documentation below — it covers model selection and training.
 
         output = training_result.model_dump(exclude={"best_model_name", "feature_redo_requested", "iterations"})
 
-        if best_iteration:
+        metric_row = (
+            best_iteration
+            if _s.TRAINING_METRIC_LEADER_OVERRIDE and best_iteration
+            else next(
+                (d for d in iterations_dict if d.get("model_name") == actual_best_name),
+                best_iteration,
+            )
+        )
+        if metric_row:
             if task_type == "unsupervised":
                 metric_keys = ("silhouette_score", "davies_bouldin", "inertia", "reconstruction_loss")
             elif task_type == "regression":
@@ -1588,10 +1808,10 @@ Follow the skill documentation below — it covers model selection and training.
             else:
                 metric_keys = ("val_accuracy", "val_roc_auc")
             for key in metric_keys:
-                if best_iteration.get(key) is not None:
-                    output[key] = best_iteration[key]
+                if metric_row.get(key) is not None:
+                    output[key] = metric_row[key]
 
-        if training_result.success and actual_best_name and task_type != "unsupervised":
+        if training_result.success and actual_best_name and task_type != "unsupervised" and _s.TRAINING_AUTO_TEST_EVAL:
             test_metrics = _evaluate_model_on_test(
                 model_name=actual_best_name,
                 test_ref=test_ref,

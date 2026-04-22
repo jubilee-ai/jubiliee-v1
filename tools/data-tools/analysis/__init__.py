@@ -1,4 +1,4 @@
-"""Analysis tools for AI agents - validation, EDA, diagnostics, correlation, grouping, distribution, trends, concentration."""
+"""Analysis tools for AI agents - validation, EDA, diagnostics, correlation, inferential tests, regression summaries, grouping, distribution, trends, concentration."""
 
 from .chart import chart_tool
 from .concentration_analysis import (analyze_concentration,
@@ -12,6 +12,11 @@ from .eda_report import eda_report_tool, run_eda_report
 from .feature_diagnostics import (feature_diagnostics_tool,
                                   run_feature_diagnostics)
 from .group_summary import compute_group_summary, group_summary_tool
+from .hypothesis_tests import (categorical_association_test_tool,
+                               group_comparison_test_tool,
+                               run_categorical_association,
+                               run_group_comparison, run_inferential_feature_scan)
+from .statistical_models import regression_summary_tool, run_ols_summary
 from .trend_analysis import analyze_trend, trend_analysis_tool
 
 analysis_tools = [
@@ -23,6 +28,9 @@ analysis_tools = [
     distribution_analysis_tool,
     trend_analysis_tool,
     concentration_analysis_tool,
+    group_comparison_test_tool,
+    categorical_association_test_tool,
+    regression_summary_tool,
     chart_tool,
 ]
 
@@ -44,6 +52,13 @@ __all__ = [
     "analyze_trend",
     "concentration_analysis_tool",
     "analyze_concentration",
+    "group_comparison_test_tool",
+    "categorical_association_test_tool",
+    "regression_summary_tool",
+    "run_group_comparison",
+    "run_categorical_association",
+    "run_inferential_feature_scan",
+    "run_ols_summary",
     "chart_tool",
 ]
 
