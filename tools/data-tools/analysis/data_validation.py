@@ -19,6 +19,8 @@ from pydantic import BaseModel, Field
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from transformations.tool_utils import resolve_dataset
 
+from .analysis_sidecar import attach_analysis_sidecar
+
 # =============================================================================
 # HELPERS
 # =============================================================================
@@ -476,7 +478,23 @@ def data_validation_tool(
         if len(result["schema_inferred"]) > 10:
             lines.append(f"- ... +{len(result['schema_inferred']) - 10} more columns")
         
-        return "\n".join(lines)
+        md = "\n".join(lines)
+        payload = {
+            "passed": result["passed"],
+            "violations": result["violations"][:40],
+            "schema_inferred": result["schema_inferred"][:40],
+            "summary": result["summary"],
+        }
+        summary_line = (
+            "passed" if result["passed"] else f"{len(result['violations'])} violation(s)"
+        )
+        return attach_analysis_sidecar(
+            md,
+            kind="data_validation",
+            tool="data_validation_tool",
+            summary=summary_line,
+            payload=payload,
+        )
         
     except Exception as e:
         return f"✗ Validation failed: {type(e).__name__}: {e}"

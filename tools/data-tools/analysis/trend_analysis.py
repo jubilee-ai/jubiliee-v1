@@ -17,6 +17,8 @@ from pydantic import BaseModel, Field
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from transformations.tool_utils import resolve_dataset
 
+from .analysis_sidecar import attach_analysis_sidecar
+
 
 def _r(value: float, decimals: int = 2) -> Optional[float]:
     """Round to native float, handle NaN."""
@@ -265,7 +267,28 @@ def trend_analysis_tool(
     if len(result['periods']) > 12:
         lines.append(f"\n*Last 12 of {len(result['periods'])} periods*")
     
-    return "\n".join(lines)
+    md = "\n".join(lines)
+    payload = {
+        "date_col": result["date_col"],
+        "metric_col": result["metric_col"],
+        "frequency": result["frequency"],
+        "aggregation": result["aggregation"],
+        "summary": result["summary"],
+        "trend": result["trend"],
+        "seasonality": result["seasonality"],
+        "periods": result["periods"][-80:],
+    }
+    summary = (
+        f"{result['trend'].get('direction', 'trend')} over "
+        f"{result['summary']['total_periods']} periods"
+    )
+    return attach_analysis_sidecar(
+        md,
+        kind="trend",
+        tool="trend_analysis_tool",
+        summary=summary,
+        payload=payload,
+    )
 
 
 __all__ = ["trend_analysis_tool", "analyze_trend"]

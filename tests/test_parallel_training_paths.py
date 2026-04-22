@@ -96,7 +96,7 @@ def test_tool_training_forwards_experiment_context_to_run_training():
             "best_iteration": None,
         }
 
-    with patch("agents.training.agent_simple.create_agent", side_effect=capture_create_agent), patch(
+    with patch("agents.training.agent_simple.create_deep_agent", side_effect=capture_create_agent), patch(
         "agents.training.agent_simple._run_training", side_effect=mock_run_training
     ), patch("agents.training.agent_simple.init_chat_model", return_value=MagicMock()):
         _agent, state = create_simple_training_agent(goal="test", hitl=False, model=MagicMock())
@@ -177,7 +177,7 @@ def test_evaluate_models_runs_three_fits_with_peak_concurrency():
                 _tools[fn.__name__] = fn
             return MagicMock()
 
-        with patch("agents.training.agent_simple.create_agent", side_effect=cap_create), patch(
+        with patch("agents.training.agent_simple.create_deep_agent", side_effect=cap_create), patch(
             "agents.training.agent_simple.init_chat_model", return_value=MagicMock()
         ):
             _a, state = create_simple_training_agent(goal="classification", hitl=False, model=MagicMock())

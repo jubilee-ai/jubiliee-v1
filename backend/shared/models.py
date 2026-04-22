@@ -70,7 +70,7 @@ class TrainingJob(Base):
     current_step: Mapped[str | None] = mapped_column(String(128), nullable=True)
     goal: Mapped[str | None] = mapped_column(Text, nullable=True)
     linked_datasets: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
-    model_preference: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    model_preference: Mapped[str | None] = mapped_column(Text, nullable=True)
     state: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     started_at: Mapped[datetime] = mapped_column(

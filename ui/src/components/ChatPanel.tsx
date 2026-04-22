@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo, useImperativeHandle, forwardRef } from "react"
 import type {
+  AttachedDatasetSnapshot,
   ChatMessage,
   ConfirmationRequest,
   ConfirmationAction,
@@ -24,6 +25,7 @@ import {
   detectStepFromMessage,
   STEP_KEYWORDS,
 } from "./chat"
+import { AttachedDatasetChips } from "@/components/chat/AttachedDatasetChips"
 import { PredictionResultCard } from "./chat/PredictionResultCard"
 import type { ResolvedConfirmation } from "./chat"
 import { BackgroundTaskDialog } from "./chat/BackgroundTaskDialog"
@@ -56,6 +58,8 @@ interface ChatPanelProps {
   ) => void
   onConfirmation: (action: ConfirmationAction, comment?: string) => void
   linkedDatasets: string[]
+  /** Resolved workspace datasets from the latest attach (SSE `dataset.resolved`). */
+  attachedDatasets?: AttachedDatasetSnapshot[]
   onLinkedDatasetsChange: (ids: string[]) => void
   datasets?: ApiDataset[]
   highlightedMessageId?: string | null
@@ -93,6 +97,7 @@ export const ChatPanel = forwardRef<ChatPanelRef, ChatPanelProps>(function ChatP
   onSendMessage,
   onConfirmation,
   linkedDatasets,
+  attachedDatasets = [],
   onLinkedDatasetsChange,
   datasets: propDatasets,
   highlightedMessageId,
@@ -353,6 +358,7 @@ export const ChatPanel = forwardRef<ChatPanelRef, ChatPanelProps>(function ChatP
               </div>
             </div>
           )}
+          <AttachedDatasetChips datasets={attachedDatasets} />
           {messages.length === 0 ? (
             <EmptyState
               onAssignTask={onSubmitBackgroundTask ? () => setBackgroundDialogOpen(true) : undefined}

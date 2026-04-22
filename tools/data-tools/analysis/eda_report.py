@@ -133,6 +133,8 @@ class EdaReportType(TypedDict, total=False):
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from transformations.tool_utils import resolve_dataset
 
+from .analysis_sidecar import attach_analysis_sidecar
+
 # =============================================================================
 # HELPERS
 # =============================================================================
@@ -828,7 +830,30 @@ def eda_report_tool(
             if report["summary"]["top_actions"]:
                 lines.append(f"**Top actions:** {', '.join(report['summary']['top_actions'])}")
         
-        return "\n".join(lines)
+        md = "\n".join(lines)
+        payload = {
+            "shape": report["shape"],
+            "schema": report["schema"][:40],
+            "numeric_summary": report["numeric_summary"][:25],
+            "categorical_summary": report["categorical_summary"][:25],
+            "target_analysis": report.get("target_analysis"),
+            "target_associations": report.get("target_associations", [])[:25],
+            "correlations": report.get("correlations"),
+            "alerts": report["alerts"][:25],
+            "recommendations": report["recommendations"][:15],
+            "summary": report["summary"],
+        }
+        summary = (
+            f"{report['shape']['rows']:,}×{report['shape']['columns']} "
+            f"({len(report['alerts'])} alerts)"
+        )
+        return attach_analysis_sidecar(
+            md,
+            kind="eda",
+            tool="eda_report_tool",
+            summary=summary,
+            payload=payload,
+        )
     
     except Exception as e:
         return f"✗ EDA report failed: {type(e).__name__}: {e}"

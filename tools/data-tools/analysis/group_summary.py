@@ -16,6 +16,8 @@ from pydantic import BaseModel, Field
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from transformations.tool_utils import resolve_dataset
 
+from .analysis_sidecar import attach_analysis_sidecar
+
 # =============================================================================
 # CORE FUNCTION
 # =============================================================================
@@ -301,7 +303,27 @@ def group_summary_tool(
                                     f"(highest: {max_group[group_key]}, lowest: {min_group[group_key]})"
                                 )
         
-        return "\n".join(lines)
+        md = "\n".join(lines)
+        payload = {
+            "group_by": result["group_by"],
+            "metrics": result["metrics"],
+            "agg_funcs": result["agg_funcs"],
+            "groups": result["groups"][:40],
+            "overall": result["overall"],
+            "group_sizes": result["group_sizes"],
+            "total_rows": result["total_rows"],
+            "n_groups": result["n_groups"],
+        }
+        summary_line = (
+            f"{result['n_groups']} groups × {len(result['metrics'])} metrics"
+        )
+        return attach_analysis_sidecar(
+            md,
+            kind="group_summary",
+            tool="group_summary_tool",
+            summary=summary_line,
+            payload=payload,
+        )
     
     except Exception as e:
         return f"✗ Group summary failed: {type(e).__name__}: {e}"

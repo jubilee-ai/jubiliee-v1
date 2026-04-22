@@ -24,6 +24,10 @@ from langchain.chat_models import init_chat_model
 from langchain_core.tools import tool
 from pydantic import BaseModel, ConfigDict, Field
 
+from ..core.task_inference import (
+    infer_supervised_task_type_from_target_column,
+    infer_task_type,
+)
 from ..utils.graph_stream_hooks import emit_graph_stream
 from ..utils.prompts import TRAINING_SYSTEM_PROMPT
 
@@ -357,30 +361,17 @@ class TrainingResult(BaseModel):
 # =============================================================================
 
 
-def _infer_task_type(goal: str, estimator_hint: Optional[str] = None, selected_model: Optional[str] = None) -> str:
-    """Infer 'classification', 'regression', or 'unsupervised' from the goal/model."""
-    if selected_model == "unsupervised":
-        return "unsupervised"
-    text = (goal + " " + (estimator_hint or "")).lower()
-    if any(
-        kw in text
-        for kw in (
-            "unsupervised",
-            "cluster",
-            "clustering",
-            "segmentation",
-            "anomaly",
-            "outlier",
-            "dimensionality reduction",
-            "pca",
-        )
-    ):
-        return "unsupervised"
-    if "regress" in text or any(
-        kw in text for kw in ("forecast", "predict value", "continuous", "amount", "price", "cost")
-    ):
-        return "regression"
-    return "classification"
+def _infer_task_type(
+    goal: str,
+    estimator_hint: Optional[str] = None,
+    selected_model: Optional[str] = None,
+) -> str:
+    """Thin wrapper around :func:`infer_task_type` for readability at call sites."""
+    return infer_task_type(
+        goal,
+        selected_model=selected_model,
+        estimator_hint=estimator_hint,
+    )
 
 
 def _final_estimator_from_fitted(model: Any) -> Any:
@@ -1250,11 +1241,18 @@ def run_training_agent(
         raw_tt = training_plan.get("task_type")
         if isinstance(raw_tt, str) and raw_tt:
             plan_tt = raw_tt
-    task_type = (
+    data_tt: Optional[str] = None
+    if target_column and target_column in train_df.columns:
+        data_tt = infer_supervised_task_type_from_target_column(train_df, target_column)
+    base_tt = (
         explicit_task_type
         or plan_tt
         or _infer_task_type(goal, estimator_hint, selected_model=selected_model)
     )
+    task_type = base_tt
+    if data_tt and base_tt != data_tt:
+        if {data_tt, base_tt} == {"classification", "regression"}:
+            task_type = data_tt
 
     available_skills = [d.name for d in SKILLS_DIR.iterdir() if (d / "train.py").exists()]
     skill_name = selected_model if selected_model in available_skills else "supervised"
@@ -1282,6 +1280,15 @@ def run_training_agent(
     if task_type == "unsupervised":
         class_counts = {}
         imbalance_note = "Unsupervised task — no target variable."
+    elif task_type == "regression":
+        ys = train_df[target_column].dropna()
+        class_counts = {
+            "target_mean": float(ys.mean()) if len(ys) else None,
+            "target_std": float(ys.std()) if len(ys) else None,
+            "target_min": float(ys.min()) if len(ys) else None,
+            "target_max": float(ys.max()) if len(ys) else None,
+        }
+        imbalance_note = "Regression target — distribution summary above (not class balance)."
     else:
         class_counts = train_df[target_column].value_counts().to_dict()
         total = sum(class_counts.values())
@@ -1373,7 +1380,10 @@ def run_training_agent(
         )
     else:
         target_line = f"- Target column: `{target_column}`"
-        class_section = f"\n**Class distribution:** {class_counts}\n{imbalance_note}\n"
+        if task_type == "regression":
+            class_section = f"\n**Target summary:** {class_counts}\n{imbalance_note}\n"
+        else:
+            class_section = f"\n**Class distribution:** {class_counts}\n{imbalance_note}\n"
         next_step = ""
 
     context = f"""## Goal

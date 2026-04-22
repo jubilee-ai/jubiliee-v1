@@ -1,15 +1,23 @@
 """
 Main Orchestrator Agent — Jubilee AI Chatbot
 
-Uses langchain's create_agent to run a conversational loop that can spin up
-specialised sub-agents on demand:
+Uses langchain's ``create_agent`` to run a conversational loop that decides on
+every turn what the user needs and picks the right tool:
 
-  1. Analysis sub-agent  (agents/analysis_agent_v2)
-     → statistical analysis, pretrained-model inference, data exploration
+  1. ``search_datasets`` — workspace dataset registry.
+  2. Analysis tools (EDA, correlations, grouping, distributions, charts, validation, …)
+     + optional pretrained inference tools — see ``TOOLS``.
+  3. ``propose_training_plan`` — show the user a plan card with Run/Background buttons.
+  4. ``run_training_pipeline`` — spin up the training sub-agent (data_collection →
+     select_model → cleaning → label/split → features → evaluate → training_approval →
+     training → generate_report) with HITL. Jubilee sees the sub-agent's inputs and
+     final output and can answer follow-ups (predict, evaluate, explain, retrain).
+  5. ``predict_with_model`` / ``evaluate_model`` / ``list_trained_models`` /
+     ``get_model_info`` — inference & registry operations on already-trained models.
 
-  2. Dataset search — queries the backend dataset registry (Postgres).
-
-Training is handled by the intent router + training graph (not the orchestrator).
+The chat service pivots the current SSE stream into the training sub-agent's
+stream when ``run_training_pipeline`` is called, so the UI gets live step
+updates without any additional routing.
 """
 
 import json
@@ -20,12 +28,13 @@ from typing import Optional
 
 from dotenv import load_dotenv
 from langchain.agents import create_agent
-from langchain.agents.factory import (AgentMiddleware, ModelRequest,
-                                      ModelResponse)
+from langchain.agents.factory import AgentMiddleware, ModelRequest
 from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.memory import MemorySaver
 from pydantic import BaseModel, Field
+
+from orchestrator_context import attached_datasets_active
 
 # ---------------------------------------------------------------------------
 # Path / env bootstrap
@@ -60,6 +69,38 @@ if str(_MODEL_TOOLS_DIR) not in sys.path:
 from model_storage import (evaluate_model_tool, get_model_info_tool,
                            list_trained_models_tool, predict_with_model_tool)
 
+# Analysis + data access (tools/data-tools on sys.path)
+_DT_ROOT = _ROOT / "tools" / "data-tools"
+if str(_DT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_DT_ROOT))
+
+from analysis import (  # noqa: E402
+    chart_tool,
+    concentration_analysis_tool,
+    correlation_matrix_tool,
+    data_validation_tool,
+    distribution_analysis_tool,
+    eda_report_tool,
+    feature_diagnostics_tool,
+    group_summary_tool,
+    trend_analysis_tool,
+)
+from data_loader import dataset_get_tool  # noqa: E402
+from sql_query import sql_query_tool  # noqa: E402
+
+# Pretrained scoring / NLP / forecast tools (direct — no nested selector agent)
+_PRETRAINED_DIR = _ROOT / "tools" / "models-tools" / "pretrained"
+if str(_PRETRAINED_DIR) not in sys.path:
+    sys.path.insert(0, str(_PRETRAINED_DIR))
+
+from bert_finetuned_claim_detection import claim_detection_tool  # noqa: E402
+from chronos_2 import chronos2_forecast_tool  # noqa: E402
+from credit_risk import credit_card_risk_prediction_tool  # noqa: E402
+from finbert_tone import finbert_tone_tool  # noqa: E402
+from google_timesfm import timesfm_forecast_tool  # noqa: E402
+from loan_default_prediction import loan_default_prediction_tool  # noqa: E402
+from prosus_finbert import finbert_sentiment_tool  # noqa: E402
+
 # ---------------------------------------------------------------------------
 # LLM
 # ---------------------------------------------------------------------------
@@ -67,41 +108,7 @@ llm = ChatOpenAI(model="gpt-5.4", temperature=0)
 
 
 # ============================================================================
-# Tool 1 — Data Analysis (delegates to analysis_agent_v2)
-# ============================================================================
-
-class AnalyzeDataInput(BaseModel):
-    question: str = Field(
-        description="The analytical question to answer (e.g. 'What is the distribution of income in the loan dataset?')"
-    )
-
-
-@tool(args_schema=AnalyzeDataInput)
-def analyze_data(question: str) -> str:
-    """Run the data-analysis sub-agent to answer a question that requires
-    data exploration, statistical analysis, or pretrained-model inference.
-
-    USE FOR:
-    - Statistical profiling, correlations, trends
-    - Pretrained model inference (sentiment, credit-risk scoring, forecasting …)
-    - Dataset exploration and lookup
-
-    DO NOT USE FOR:
-    - Training custom models (handled by the training pipeline)
-    """
-    from agents.analysis_agent_v2 import agent as analysis_agent
-
-    result = analysis_agent.invoke(
-        {"messages": [{"role": "user", "content": question}]}
-    )
-    messages = result.get("messages", [])
-    if messages:
-        return messages[-1].content
-    return "Analysis completed but no response was generated."
-
-
-# ============================================================================
-# Tool 2 — Dataset Search (queries the backend dataset registry)
+# Tool — Dataset Search (queries the backend dataset registry)
 # ============================================================================
 
 class SearchDatasetsInput(BaseModel):
@@ -191,6 +198,12 @@ def search_datasets(query: str) -> str:
     After the user picks a dataset, it's ready to use immediately for
     training or analysis via its name.
     """
+    if attached_datasets_active():
+        return (
+            "Dataset search is disabled here — the user already attached workspace dataset(s). "
+            "Use those refs with analysis tools (`correlation_matrix_tool`, `group_summary_tool`, "
+            "`chart_tool`, `eda_report_tool`, …); do **not** call `search_datasets`."
+        )
     all_datasets = _get_backend_datasets()
     matched = _match_datasets(all_datasets, query)
 
@@ -205,12 +218,9 @@ def search_datasets(query: str) -> str:
 # Tool — Training plan proposal (conversational intake → structured plan for UI)
 # ============================================================================
 
-_DEFAULT_TRAINING_RECAP = [
-    "Load and validate the dataset",
-    "Choose model family, clean and standardize columns",
-    "Define target, splits, and features",
-    "Train, evaluate, and generate the audit report",
-]
+from agents.training.core.pipeline import DEFAULT_TRAINING_RECAP as _DEFAULT_TRAINING_RECAP_TUPLE
+
+_DEFAULT_TRAINING_RECAP = list(_DEFAULT_TRAINING_RECAP_TUPLE)
 
 
 class ProposeTrainingPlanInput(BaseModel):
@@ -282,108 +292,203 @@ def propose_training_plan(
 
 
 # ============================================================================
+# Tool — Run Training Pipeline (pivots SSE stream into the training sub-agent)
+# ============================================================================
+
+
+class RunTrainingPipelineInput(BaseModel):
+    goal: str = Field(
+        description=(
+            "What the model is for in plain language — the user's real decision or "
+            "outcome (e.g. 'rank default risk for underwriting'). One or two sentences."
+        )
+    )
+    dataset_refs: list[str] = Field(
+        description=(
+            "Exact workspace dataset name(s) to train on. Must come from "
+            "search_datasets results or a workspace ref the user attached."
+        )
+    )
+    model_preference: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional model family hint: 'supervised', 'unsupervised', or "
+            "'neural_networks'. Omit when unsure and let the pipeline choose."
+        ),
+    )
+    preferences: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional free-form preferences: metric to optimize, class imbalance, "
+            "time budget, etc. Omit if the user gave none."
+        ),
+    )
+
+
+#: Sentinel returned by ``run_training_pipeline``.
+#:
+#: The tool itself does no work — :mod:`backend.chat.service` watches for this
+#: tool call inside the agent stream and then hands off to the training
+#: sub-agent (``generate_graph_sse_events``) on the same SSE response. The
+#: tool's return value is recorded in the chat checkpoint so Jubilee can
+#: reason about the subsequent training run in follow-up turns.
+_TRAINING_HANDOFF_MARKER = "__jubilee_training_handoff__"
+
+
+@tool(args_schema=RunTrainingPipelineInput)
+def run_training_pipeline(
+    goal: str,
+    dataset_refs: list[str],
+    model_preference: Optional[str] = None,
+    preferences: Optional[str] = None,
+) -> str:
+    """Kick off the full training sub-agent (HITL, streamed to the UI).
+
+    Use ONLY when:
+    - The user explicitly wants to train / build a predictive model, AND
+    - You have at least one real workspace dataset ref (use ``search_datasets``
+      first if you don't), AND
+    - You can state their goal in one clear sentence (if unclear, ask first —
+      do NOT call this tool).
+
+    What happens after you call this:
+    - The UI transitions to the training pipeline view with live progress.
+    - The sub-agent runs ``data_collection → select_model → cleaning →
+      label/split → features → evaluate → training_approval → training →
+      generate_report`` with Human-in-the-Loop checkpoints.
+    - When training completes, the summary (model, metrics, target, report
+      path) is fed back to you on the next user turn so you can answer
+      follow-ups (predict, evaluate, compare, retrain, explain) without
+      re-asking for basics.
+
+    Do NOT call this tool just for analysis — use the analysis tools directly
+    (correlations, grouping, ``chart_tool``, ``eda_report_tool``, …).
+
+    After calling, do NOT write any other reply text in that turn. The app
+    shows live pipeline progress from the sub-agent stream.
+    """
+    refs = [str(r).strip() for r in (dataset_refs or []) if str(r).strip()]
+    payload = {
+        "marker": _TRAINING_HANDOFF_MARKER,
+        "goal": (goal or "").strip(),
+        "dataset_refs": refs,
+        "model_preference": (model_preference or "").strip() or None,
+        "preferences": (preferences or "").strip() or None,
+    }
+    return json.dumps(payload, ensure_ascii=False)
+
+
+def parse_training_handoff(tool_result: object) -> Optional[dict]:
+    """Return the training handoff payload if the tool result is our sentinel.
+
+    The chat service calls this on every ``run_training_pipeline`` tool result
+    captured from the agent stream. A non-``None`` return value means the
+    chat generator should pivot into ``generate_graph_sse_events`` with those
+    args.
+    """
+    raw = tool_result if isinstance(tool_result, str) else str(tool_result or "")
+    raw = raw.strip()
+    if not raw.startswith("{"):
+        return None
+    try:
+        data = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(data, dict) or data.get("marker") != _TRAINING_HANDOFF_MARKER:
+        return None
+    refs = data.get("dataset_refs") or []
+    if not isinstance(refs, list) or not refs:
+        return None
+    return {
+        "goal": str(data.get("goal") or "").strip(),
+        "dataset_refs": [str(r).strip() for r in refs if str(r).strip()],
+        "model_preference": data.get("model_preference") or None,
+        "preferences": data.get("preferences") or None,
+    }
+
+
+# ============================================================================
 # System Prompt
 # ============================================================================
 
 ORCHESTRATOR_SYSTEM_PROMPT = """\
 You are **Jubilee**, an AI assistant for data analysis and machine learning.
 
-## Available Tools
+Pick **one** tool per turn unless the user clearly needs chained steps in one reply; prefer **minimal**
+tool calls (usually **2–4** tools for a full analytical answer — see analysis workflow below).
 
-| Tool | When to use |
-|---|---|
-| `search_datasets` | User wants to find, browse, or discover datasets in the workspace |
-| `analyze_data` | Analytical questions: statistics, trends, pretrained-model inference, data exploration |
-| `predict_with_model` | Run predictions on a dataset using a trained model |
-| `evaluate_model` | Evaluate a trained model's performance on a labeled dataset |
-| `list_trained_models` | List all trained models with their metrics |
-| `get_model_info` | Get detailed info about a specific trained model |
-| `propose_training_plan` | User wants to **train** and you are **sure** what the goal is (see Decision Flow §4). If the goal is unclear, **ask questions in chat first** — do not call this tool until you understand it. |
+## Tools (summary)
 
-## Prediction & Model Tools
-- **predict_with_model**: Run predictions on a dataset using a trained model. Use when the user wants to make predictions, score new data, or test a model on a dataset. Requires a model name and a registered dataset ref.
-- **evaluate_model**: Evaluate a trained model's performance on a labeled dataset. Use when the user asks about model accuracy, performance metrics, or wants to compare how a model performs. Supports threshold optimization for imbalanced classification.
-- **list_trained_models**: List all trained models with their metrics. Use when the user asks what models are available, wants to see trained models, or needs to pick a model for prediction.
-- **get_model_info**: Get detailed info about a specific trained model. Use when the user asks about a specific model's features, hyperparameters, or training details.
+**Discovery**
+- `search_datasets` — Browse the workspace catalog (disabled when the user already attached datasets — see below).
 
-## Decision Flow
+**Analysis — use refs from `search_datasets` results or `[ATTACHED DATASETS …]` in the message**
+- `eda_report_tool` — One-shot profile + target associations + correlations + alerts (good first pass).
+- `correlation_matrix_tool` — Numeric correlations / multicollinearity.
+- `group_summary_tool` — Slice metrics by categories (means by region, smoker, etc.).
+- `distribution_analysis_tool` — Histograms, skew, percentiles.
+- `feature_diagnostics_tool` — Feature quality vs a target before training.
+- `data_validation_tool` — Rule-based validation when the user cares about DQ rules.
+- `concentration_analysis_tool` — Gini / Lorenz / Pareto concentration.
+- `trend_analysis_tool` — Time trends (needs a date column).
+- `chart_tool` — Build **one** primary chart JSON for the UI — **always** include this when answering an analytical question with quantitative evidence (pick chart_type: bar, grouped_bar, histogram, scatter, line, or box).
 
-**Training — ask when unsure:** If you are not confident you understand the user's **goal** (what problem
-the model solves or what decision it supports), **stop and ask** in your normal reply. Do **not** call
-`propose_training_plan` until you could state their goal in one clear sentence you believe they would agree with.
+**Data access**
+- `dataset_get_tool` — Peek rows/schema slice.
+- `sql_query_tool` — SQL when the workspace exposes SQL tables.
 
-1. **General / conversational question** → answer directly, no tool needed.
-2. **User mentions finding, searching, looking for, or wanting datasets** →
-   **ALWAYS call `search_datasets`**. NEVER answer dataset questions from your own
-   knowledge — you MUST use the tool because it searches the workspace's dataset
-   registry for real, usable results. This includes ANY of these patterns:
-   - "find me data for …", "search for datasets …", "look for … data"
-   - "what datasets are good for …", "recommend a dataset for …"
-   - "I need data for …", "get me some … data", "what data do I have?"
-   Present the results as a numbered list and ask which dataset the user wants to use.
-3. **Analytical question** (e.g. "what trends …", "analyze …", "what is the distribution …")
-   → `analyze_data`
-4. **User wants to train / build a predictive model** → Follow this **order**: (1) understand the **goal**
-   in plain language, (2) lock a **dataset name** from the workspace, (3) call `propose_training_plan`.
-   The **goal** is what real-world decision or outcome the model supports (e.g. rank default risk for
-   underwriting). Technical details (splits, metrics, model family) are for the pipeline unless the user
-   cares—**do not** quiz them on recall vs precision vs AUC unless they ask about tradeoffs or metrics.
-   - **If the goal is unclear:** ask one short clarifying question. **Do not** call `propose_training_plan`
-     until you could write an honest one-sentence `goal` they would agree with.
-   - **If you only have a vague verb** ('underwrite', 'score'): ask what outcome they need until the goal
-     is concrete enough.
-   - **Datasets:** If you do not have a workspace dataset name, call `search_datasets`. After it returns:
-     - **Do not** paste or reformat the entire tool output again, and **do not** add redundant sections
-       (e.g. "## Dataset found" repeating the same table). Say briefly what you found in **one** short
-       paragraph or a tiny list.
-     - If **exactly one** dataset clearly matches and the user **already** stated a concrete goal, either
-       call `propose_training_plan` with that name and goal, **or** ask one yes/no ("Use **name** for this
-       run?")—do **not** ask them to reply with both `1` **and** the dataset name.
-     - If multiple datasets apply, ask which one in **one** line (number **or** name is enough).
-   - **System context** from a prior trained run: terse follow-ups like `train` or `again` are ambiguous—ask
-     what they want to change or train next; do not assume the old run answers the new message.
-   - **Clarifying questions:** one at a time when possible; skip long option menus unless the user asked.
-   - If the user message starts with `[Background task` or **Run on my behalf**, same flow: clarify if
-     needed, then `propose_training_plan`.
-   - When goal + dataset are settled, call `propose_training_plan` with exact `dataset_refs` and optional
-     `preferences` only if the user gave preferences; keep `recap_steps` short.
-   - **After** `propose_training_plan`, **no** further assistant text in that turn (the app shows the plan).
-   - Do **not** paste tool JSON in chat.
-5. **User wants predictions / scoring** → `list_trained_models` to find the right
-   model, then `predict_with_model` with the model name and dataset ref.
-6. **User asks about model performance / accuracy** → `evaluate_model` on the
-   relevant model and dataset. If they don't specify which model, use
-   `list_trained_models` first.
-7. **User asks "what models do I have?"** → `list_trained_models`.
-8. **User asks about a specific model's details** → `get_model_info`.
-9. **Other requests** that do not fit 1–8 → If the request is underspecified, ask a concise follow-up
-   instead of pretending to know what the user meant. Prefer collaborative back-and-forth over premature
-   decisions, but keep questions focused and lightweight.
+**Pretrained inference** (only when the user's goal matches — credit risk, loan default, sentiment, claims, forecasts)
+- `credit_card_risk_prediction_tool`, `loan_default_prediction_tool`, `finbert_tone_tool`, `finbert_sentiment_tool`, `claim_detection_tool`, `chronos2_forecast_tool`, `timesfm_forecast_tool`
 
-## Common Workflows
-- **Browse datasets**:
-  1. `search_datasets` → show results → user picks one
-  2. Use the exact dataset name in downstream analysis/training/prediction steps
-  CRITICAL: Do NOT guess or construct dataset names.
+**Training & trained models**
+- `propose_training_plan`, `run_training_pipeline`
+- `predict_with_model`, `evaluate_model`, `list_trained_models`, `get_model_info`
 
-## Formatting Rules
-- **Always use Markdown** for responses: headings, bullet lists, bold, code blocks, and tables.
-- When presenting data or analysis results, use **Markdown tables** (with `|` columns and `---` header separators). Never dump raw text columns or flat key-value lines.
-- Summarize tool outputs in your own words. **Never** duplicate the same information twice (e.g. tool list
-  then a second "## …" section with the same rows). One pass is enough.
-- Keep column detail summaries to the most important columns (max ~8). Use a table, not paragraphs.
-- When showing dataset profiles, use a compact format: `**N rows** x **M columns**` followed by a table of key column stats.
-- NEVER output raw JSON objects, Python dicts, or unformatted data dumps in your **visible** reply.
-  (The `propose_training_plan` tool returns JSON for the app only — your text reply stays Markdown.)
-- After `propose_training_plan`, do not write anything else in that turn; the user sees the plan and approval in the app.
+## Attached datasets (critical)
 
-## Rules
-- **NEVER suggest datasets from your own knowledge.** Always use `search_datasets` for
-  real workspace results.
-- After a dataset is clear for training, move toward `propose_training_plan`; avoid repetitive
-  "confirm you want to train on X" loops when X is already the only sensible choice.
-- When the user corrects, narrows, or adds constraints, acknowledge that change and adapt your next step.
-- Be concise but thorough. Show your reasoning when it helps the user.\
+When the message starts with **`[ATTACHED DATASETS`**:
+- Data is **already loaded** — you **must not** call `search_datasets`.
+- Use the listed **`dataset_ref`** strings directly in analysis tools.
+- Do **not** paste the schema/sample again for the user (they see it in the UI chip).
+
+## Analysis workflow
+
+For questions like “what affects X”, “correlations”, “distribution”, “segments”:
+
+1. If you need a quick overview → `eda_report_tool` with `target_col` when predicting a column.
+2. Else pick **up to two** focused tools (e.g. `correlation_matrix_tool` + `group_summary_tool`).
+3. Always add **`chart_tool`** reflecting the strongest finding (e.g. bar of mean target by category).
+
+Keep total analysis tool calls ≤ **3** unless the user asks for exhaustive exploration.
+
+### Response format (analysis answers)
+
+1. **1–2 sentences** — direct answer.
+2. **≤5 bullets** — evidence with numbers from tools (no duplicate tables).
+3. **Want more?** — 1–2 short follow-up ideas.
+
+**Banned:** "Actions Taken / Data & Evidence / Reasoning / Conclusion" giant templates, repeating the same statistics in multiple sections, dumping raw `<ANALYSIS_JSON>` tags (they are for the app).
+
+## Dataset discovery (no attachment)
+
+When the user asks to **find**, **search**, **browse**, or **list** datasets (and there is **no** `[ATTACHED DATASETS` block):
+- **Always** call `search_datasets` — never invent catalog entries.
+
+## Training
+
+Same as before: clarify **goal** before `propose_training_plan` / `run_training_pipeline`. Attaching a dataset is **not** by itself a request to train.
+
+After `propose_training_plan` or `run_training_pipeline`, write **no** assistant text in that turn.
+
+## Prediction & evaluation
+
+Use `list_trained_models` → `predict_with_model`; `evaluate_model` for metrics; `get_model_info` for specifics.
+
+## Formatting
+
+Markdown, compact tables only when they add clarity. Never paste tool JSON intended for the app (`propose_training_plan`, `run_training_pipeline`, structured sidecars).
+
+Be concise by default.
 """
 
 
@@ -399,17 +504,6 @@ _DATASET_KEYWORDS = [
     "look for dataset", "suggest a dataset", "suggest data",
 ]
 
-_DATASET_INVENTORY_CUES = (
-    "what datasets do i have",
-    "what data do i have",
-    "list datasets",
-    "list all datasets",
-    "show datasets",
-    "show all datasets",
-    "browse datasets",
-    "browse local datasets",
-)
-
 _DATASET_DISCOVERY_VERBS = (
     "find",
     "search",
@@ -422,6 +516,8 @@ _DATASET_DISCOVERY_VERBS = (
     "list",
 )
 
+_ATTACHED_DATASETS_MARKER = "[ATTACHED DATASETS"
+
 
 def is_dataset_search_request(message: str) -> bool:
     lower = (message or "").strip().lower()
@@ -432,24 +528,32 @@ def is_dataset_search_request(message: str) -> bool:
     return "dataset" in lower and any(verb in lower for verb in _DATASET_DISCOVERY_VERBS)
 
 
-def build_dataset_search_args(message: str) -> dict[str, str]:
-    lower = (message or "").strip().lower()
-    query = "" if any(cue in lower for cue in _DATASET_INVENTORY_CUES) else (message or "").strip()
-    return {"query": query}
-
-
 class DatasetSearchEnforcer(AgentMiddleware):
     """Force ``search_datasets`` when the user asks about finding datasets.
 
-    GPT-5.1 sometimes answers dataset questions from its own knowledge even
-    when the system prompt says not to.  This middleware intercepts the model
-    call and sets ``tool_choice`` to the specific function, making it
-    structurally impossible for the LLM to skip the tool.
+    When ``[ATTACHED DATASETS …]`` is present, ``search_datasets`` is removed from
+    the tool list so the model cannot call search on an already-loaded dataset.
     """
 
     tools: list = []
 
     def wrap_model_call(self, request: ModelRequest, handler):
+        last_human = None
+        for msg in reversed(request.messages):
+            if hasattr(msg, "type") and msg.type == "human":
+                last_human = msg.content if isinstance(msg.content, str) else str(msg.content)
+                break
+
+        tools = getattr(request, "tools", None)
+        if tools and last_human and _ATTACHED_DATASETS_MARKER in last_human:
+            filtered = [
+                t for t in tools
+                if getattr(t, "name", None) != "search_datasets"
+            ]
+            if filtered:
+                request = request.override(tools=filtered)
+            return handler(request)
+
         already_called = any(
             (hasattr(msg, "name") and msg.name == "search_datasets")
             or (hasattr(msg, "tool_calls") and any(
@@ -459,12 +563,6 @@ class DatasetSearchEnforcer(AgentMiddleware):
         )
         if already_called:
             return handler(request)
-
-        last_human = None
-        for msg in reversed(request.messages):
-            if hasattr(msg, "type") and msg.type == "human":
-                last_human = msg.content if isinstance(msg.content, str) else str(msg.content)
-                break
 
         if is_dataset_search_request(last_human):
             request = request.override(
@@ -480,13 +578,47 @@ class DatasetSearchEnforcer(AgentMiddleware):
 
 TOOLS = [
     search_datasets,
-    analyze_data,
+    eda_report_tool,
+    correlation_matrix_tool,
+    group_summary_tool,
+    distribution_analysis_tool,
+    feature_diagnostics_tool,
+    data_validation_tool,
+    concentration_analysis_tool,
+    trend_analysis_tool,
+    chart_tool,
+    dataset_get_tool,
+    sql_query_tool,
+    credit_card_risk_prediction_tool,
+    loan_default_prediction_tool,
+    finbert_tone_tool,
+    finbert_sentiment_tool,
+    claim_detection_tool,
+    chronos2_forecast_tool,
+    timesfm_forecast_tool,
     predict_with_model_tool,
     evaluate_model_tool,
     list_trained_models_tool,
     get_model_info_tool,
     propose_training_plan,
+    run_training_pipeline,
 ]
+
+# Tools whose results emit `<ANALYSIS_JSON>` sidecars for the chat UI (suppress duplicate tool_end text).
+SIDECHANNEL_TOOL_NAMES = frozenset(
+    name
+    for name in (
+        "eda_report_tool",
+        "correlation_matrix_tool",
+        "group_summary_tool",
+        "distribution_analysis_tool",
+        "feature_diagnostics_tool",
+        "data_validation_tool",
+        "concentration_analysis_tool",
+        "trend_analysis_tool",
+        "chart_tool",
+    )
+)
 
 _checkpointer = MemorySaver()
 
@@ -502,6 +634,8 @@ __all__ = [
     "agent",
     "TOOLS",
     "ORCHESTRATOR_SYSTEM_PROMPT",
+    "SIDECHANNEL_TOOL_NAMES",
     "is_dataset_search_request",
-    "build_dataset_search_args",
+    "run_training_pipeline",
+    "parse_training_handoff",
 ]

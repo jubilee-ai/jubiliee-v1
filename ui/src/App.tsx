@@ -706,6 +706,7 @@ function AuthenticatedApp() {
                     onSendMessage={agent.sendMessage}
                     onConfirmation={agent.handleConfirmation as (action: ConfirmationAction, comment?: string) => void}
                     linkedDatasets={realAgent.linkedDatasets}
+                    attachedDatasets={realAgent.attachedDatasetSnapshots}
                     onLinkedDatasetsChange={realAgent.updateLinkedDatasets}
                     datasets={realAgent.datasets}
                     highlightedMessageId={highlightedMessageId}

@@ -10,7 +10,7 @@ import pandas as pd
 from fastapi import HTTPException
 from utils import get_registered_dataset, register_dataset
 
-from agents.training.core.graph import ALL_STEP_NAMES
+from agents.training.agent_simple import UNIFIED_PIPELINE_STEP_NAMES
 from agents.training.utils.streaming import (build_node_update,
                                              is_unsupervised_passthrough)
 from backend.chat.events import (dataset_error, dataset_resolved, error_event,
@@ -266,6 +266,8 @@ def _should_skip_tool_message(content: str) -> bool:
     )
 
 
+ALL_STEP_NAMES = sorted(UNIFIED_PIPELINE_STEP_NAMES)
+
 GRAPH_PIPELINE_STEP_NAMES = frozenset(ALL_STEP_NAMES)
 
 
@@ -279,19 +281,6 @@ def _coerce_str_set(val: object) -> set[str]:
     return set()
 
 
-def _planner_skipped_info(node_output: dict[str, object]) -> tuple[list[str], str]:
-    skipped = node_output.get("skipped_steps")
-    if isinstance(skipped, list) and skipped:
-        r = node_output.get("skip_rationale", "") or ""
-        return [str(s) for s in skipped], str(r)
-    for t in reversed(node_output.get("audit_trace") or []):
-        if t.get("step") == "planner":
-            sk = t.get("skipped")
-            if isinstance(sk, list) and sk:
-                return [str(s) for s in sk], str(node_output.get("skip_rationale", "") or "")
-    return [], ""
-
-
 def _graph_state_snapshot_values(agent, config: dict) -> dict[str, object]:
     try:
         snap = agent.get_state(config)
@@ -303,70 +292,77 @@ def _graph_state_snapshot_values(agent, config: dict) -> dict[str, object]:
     return {}
 
 
-def _pipeline_emit_key(node_name: str, raw: dict[str, object]) -> str:
-    """Unique key per pipeline step *execution* (replan / amend / repeat same step name)."""
-    hist = raw.get("plan_history")
-    h = len(hist) if isinstance(hist, list) else 0
-    pi = raw.get("plan_index")
-    try:
-        pi_i = int(pi) if pi is not None else 0
-    except (TypeError, ValueError):
-        pi_i = 0
-    return f"{h}:{pi_i}:{node_name}"
+def _merge_pipeline_state_with_snapshot(
+    shared_state: dict[str, object],
+    graph_snap: dict[str, object] | None,
+) -> dict[str, object]:
+    """Merge LangGraph checkpoint values with the mutable training dict tools update in place.
+
+    The unified executor's checkpoint is often just ``messages``; pipeline fields live on
+    ``shared_state``. Prefer the latter, fill gaps from the snapshot.
+    """
+    out: dict[str, object] = dict(shared_state)
+    if not graph_snap:
+        return out
+    for k, v in graph_snap.items():
+        if k == "messages":
+            continue
+        if k not in out or out[k] is None:
+            out[k] = v
+    return out
 
 
-def _iter_graph_sse_lines(agent, config: dict, thread_id: str, stream_input: object, experiment_id: str | None = None):
-    """Yield `data: ...\\n\\n` lines for graph agent.stream(updates + custom)."""
+def _final_training_state_for_persist(
+    repository,
+    thread_id: str,
+    agent,
+    config: dict,
+    shared_state_fallback: dict[str, object] | None,
+) -> dict[str, object]:
+    st = repository.get_simple_agent_store(thread_id)
+    shared = (st or {}).get("state")
+    if not isinstance(shared, dict):
+        shared = shared_state_fallback or {}
+    return _merge_pipeline_state_with_snapshot(dict(shared), _graph_state_snapshot_values(agent, config))
+
+
+def _iter_unified_training_sse_lines(
+    agent,
+    config: dict,
+    thread_id: str,
+    stream_input: object,
+    experiment_id: str | None,
+    shared_state: dict,
+):
+    """Yield SSE lines for the unified LLM tool-calling training agent."""
     _boot = repository.get_simple_agent_store(thread_id)
     if _boot is not None:
         _boot.pop("_graph_sse_interrupted", None)
 
-    for chunk in agent.stream(
-        stream_input, config=config, stream_mode=["updates", "custom"]
+    store = repository.get_simple_agent_store(thread_id)
+    if store is None:
+        return
+
+    emitted_completion_keys = _coerce_str_set(store.get("emitted_steps"))
+    emitted_skipped_steps = _coerce_str_set(store.get("emitted_skipped_steps"))
+    tool_seq = 0
+
+    for _ns, event in agent.stream(
+        stream_input,
+        config=config,
+        stream_mode="updates",
+        subgraphs=True,
     ):
-        if isinstance(chunk, tuple) and len(chunk) == 2:
-            mode, event = chunk
-        else:
-            mode, event = "updates", chunk
-
-        if mode == "custom" and isinstance(event, dict):
-            store = repository.get_simple_agent_store(thread_id)
-            if store is None:
-                continue
-
-            if event.get("type") == "token":
-                content = event.get("content", "")
-                phase = event.get("phase")
-                if content:
-                    yield format_sse(
-                        token_event(content, experiment_id, phase=phase),
-                        experiment_id,
-                    )
-                continue
-
-            msg = event.get("message")
-            if not msg:
-                continue
-            yield format_sse(step_progress(
-                phase=event.get("phase", "graph"),
-                message=str(msg),
-            ), experiment_id)
+        if not isinstance(event, dict):
             continue
-
-        store = repository.get_simple_agent_store(thread_id)
-        if store is None:
-            continue
-
-        emitted_steps = _coerce_str_set(store.get("emitted_steps"))
-        emitted_skipped_steps = _coerce_str_set(store.get("emitted_skipped_steps"))
 
         if "__interrupt__" in event:
             info = _extract_simple_interrupt(event["__interrupt__"], thread_id)
             snap_vals = _graph_state_snapshot_values(agent, config)
             intr_snap = info.get("state_snapshot")
-            merged_snap: dict[str, object] = dict(snap_vals) if snap_vals else {}
+            merged_snap = _merge_pipeline_state_with_snapshot(shared_state, snap_vals)
             if isinstance(intr_snap, dict) and intr_snap:
-                merged_snap.update(intr_snap)
+                merged_snap.update({k: v for k, v in intr_snap.items() if k != "messages"})
             serialized_snap = serialize_state(merged_snap) if merged_snap else {}
             evt = review_required(
                 node=info.get("node", "unknown"),
@@ -378,7 +374,7 @@ def _iter_graph_sse_lines(agent, config: dict, thread_id: str, stream_input: obj
             for k in ("plan", "plan_strategy", "plan_index"):
                 if k in info:
                     evt[k] = info[k]
-            store["emitted_steps"] = emitted_steps
+            store["emitted_steps"] = emitted_completion_keys
             store["emitted_skipped_steps"] = emitted_skipped_steps
             store["_graph_sse_interrupted"] = True
 
@@ -400,63 +396,47 @@ def _iter_graph_sse_lines(agent, config: dict, thread_id: str, stream_input: obj
             yield format_sse(serialize_state(evt), experiment_id)
             return
 
-        for node_name, node_output in event.items():
-            if node_name.startswith("__"):
-                continue
-            raw: dict[str, object] = node_output if isinstance(node_output, dict) else {}
+        if "tools" not in event:
+            continue
+        tool_msgs = event.get("tools", {}).get("messages", [])
+        if not tool_msgs:
+            continue
+        tm0 = tool_msgs[0]
+        content = getattr(tm0, "content", "")
+        if _should_skip_tool_message(content):
+            continue
+        tool_name = getattr(tm0, "name", "unknown")
+        step_name = TOOL_TO_STEP.get(tool_name, tool_name)
+        if step_name not in GRAPH_PIPELINE_STEP_NAMES:
+            continue
+        tool_seq += 1
+        step_key = f"{tool_seq}:{step_name}"
+        if step_key in emitted_completion_keys:
+            continue
+        emitted_completion_keys.add(step_key)
+        store["emitted_steps"] = emitted_completion_keys
 
-            if node_name in GRAPH_PIPELINE_STEP_NAMES:
-                # Node updates can be partial; merge with checkpoint so audit_trace / refs exist for headlines.
-                full_vals = _graph_state_snapshot_values(agent, config)
-                if full_vals:
-                    merged: dict[str, object] = dict(full_vals)
-                    merged.update(raw)
-                    raw = merged
-                step_key = _pipeline_emit_key(node_name, raw)
-                if step_key in emitted_steps:
-                    continue
-                emitted_steps.add(step_key)
-                store["emitted_steps"] = emitted_steps
+        snap_vals = _graph_state_snapshot_values(agent, config)
+        raw = _merge_pipeline_state_with_snapshot(shared_state, snap_vals)
 
-                if is_unsupervised_passthrough(node_name, raw):
-                    emitted_skipped_steps.add(node_name)
-                    store["emitted_skipped_steps"] = emitted_skipped_steps
-                    yield format_sse(step_skipped(
-                        node=node_name,
-                        headline="Skipped — unsupervised models use cleaned data directly",
-                    ), experiment_id)
-                else:
-                    update = build_node_update(node_name, raw)
-                    update["type"] = "step.complete"
-                    update["thread_id"] = thread_id
-                    update["stream_step_key"] = step_key
-                    yield format_sse(serialize_state(update), experiment_id)
-            else:
-                update = build_node_update(node_name, raw)
-                if is_unsupervised_passthrough(node_name, raw):
-                    emitted_skipped_steps.add(node_name)
-                    store["emitted_skipped_steps"] = emitted_skipped_steps
-                    yield format_sse(step_skipped(
-                        node=node_name,
-                        headline="Skipped — unsupervised models use cleaned data directly",
-                    ), experiment_id)
-                else:
-                    update["type"] = "step.complete"
-                    update["thread_id"] = thread_id
-                    yield format_sse(serialize_state(update), experiment_id)
-                if node_name == "planner":
-                    skipped_list, skip_reason = _planner_skipped_info(raw)
-                    for sid in skipped_list:
-                        if sid in emitted_skipped_steps:
-                            continue
-                        emitted_skipped_steps.add(sid)
-                        store["emitted_skipped_steps"] = emitted_skipped_steps
-                        yield format_sse(step_skipped(
-                            node=sid,
-                            headline=f"Skipped {sid}: {skip_reason}",
-                        ), experiment_id)
+        if is_unsupervised_passthrough(step_name, raw):
+            emitted_skipped_steps.add(step_name)
+            store["emitted_skipped_steps"] = emitted_skipped_steps
+            yield format_sse(
+                step_skipped(
+                    node=step_name,
+                    headline="Skipped — unsupervised models use cleaned data directly",
+                ),
+                experiment_id,
+            )
+        else:
+            update = build_node_update(step_name, raw)
+            update["type"] = "step.complete"
+            update["thread_id"] = thread_id
+            update["stream_step_key"] = step_key
+            yield format_sse(serialize_state(update), experiment_id)
 
-        store["emitted_steps"] = emitted_steps
+        store["emitted_steps"] = emitted_completion_keys
         store["emitted_skipped_steps"] = emitted_skipped_steps
 
 
@@ -674,13 +654,14 @@ def generate_graph_sse_events(
     experiment_id: Optional[str] = None,
     conversation: Optional[list[dict]] = None,
 ):
-    """SSE generator using the agentic graph (planner + executor + evaluator)."""
+    """SSE generator using the unified LLM tool-calling training executor."""
     from langgraph.checkpoint.memory import MemorySaver
 
-    from agents.training.core.conversation_context import \
-        normalize_conversation_turns
-    from agents.training.core.graph import create_training_agent
-    from agents.training.core.state import create_initial_state
+    from agents.training.agent_simple import create_simple_training_agent
+    from agents.training.core.conversation_context import (
+        format_training_user_message,
+        normalize_conversation_turns,
+    )
 
     thread_id = thread_id or f"graph-{uuid.uuid4().hex[:8]}"
     goal = (goal or "").strip() or "Training run"
@@ -743,20 +724,26 @@ def generate_graph_sse_events(
 
     final_linked = registered_refs or None
     resolved_ds = registered_refs[0] if len(registered_refs) == 1 else None
-    checkpointer = MemorySaver()
-    agent = create_training_agent(checkpointer=checkpointer)
     conversation_turns = normalize_conversation_turns(
         conversation,
         triggering_message=goal,
     )
-    initial_state = create_initial_state(
+    user_message = format_training_user_message(goal, conversation_turns)
+
+    checkpointer = MemorySaver()
+    agent, shared_state = create_simple_training_agent(
         goal=goal,
         linked_datasets=final_linked,
         user_model_preference=model_pref,
-        resolved_dataset_ref=resolved_ds,
-        resolved_model_type=model_pref,
-        conversation_history=conversation_turns,
+        hitl=True,
+        checkpointer=checkpointer,
+        use_external_sources=False,
     )
+    if resolved_ds:
+        shared_state["resolved_dataset_ref"] = resolved_ds
+    if model_pref:
+        shared_state["resolved_model_type"] = model_pref
+    shared_state["conversation_history"] = list(conversation_turns)
 
     emitted_steps: set[str] = set()
     emitted_skipped_steps: set[str] = set()
@@ -764,8 +751,9 @@ def generate_graph_sse_events(
         thread_id,
         {
             "agent": agent,
+            "state": shared_state,
             "checkpointer": checkpointer,
-            "mode": "graph",
+            "mode": "unified",
             "emitted_steps": emitted_steps,
             "emitted_skipped_steps": emitted_skipped_steps,
             "experiment_id": experiment_id,
@@ -773,11 +761,14 @@ def generate_graph_sse_events(
     )
 
     config = {"configurable": {"thread_id": thread_id}}
+    stream_input = {"messages": [{"role": "user", "content": user_message}]}
     yield format_sse(stream_start(experiment_id, training_graph=True), experiment_id)
 
     try:
         step_events: list[dict[str, object]] = []
-        for line in _iter_graph_sse_lines(agent, config, thread_id, initial_state, experiment_id):
+        for line in _iter_unified_training_sse_lines(
+            agent, config, thread_id, stream_input, experiment_id, shared_state
+        ):
             if experiment_id:
                 evt = _parse_sse_data_line(line)
                 if evt:
@@ -807,7 +798,9 @@ def generate_graph_sse_events(
             st.pop("_graph_sse_interrupted", None)
             return
 
-        final_values = _graph_state_snapshot_values(agent, config)
+        final_values = _final_training_state_for_persist(
+            repository, thread_id, agent, config, shared_state
+        )
         if final_values:
             try:
                 repository.save_training_context(final_values, experiment_id=experiment_id)
@@ -882,6 +875,7 @@ def generate_graph_resume_sse_events(
         experiment_id = store.get("experiment_id")
 
     agent = store["agent"]
+    shared_state = store.get("state") or {}
     config = {"configurable": {"thread_id": thread_id}}
 
     resume_value = {"approved": approved}
@@ -920,7 +914,14 @@ def generate_graph_resume_sse_events(
                 existing_events = exp.get("training_state", {}).get("task_step_events")
                 if isinstance(existing_events, list):
                     step_events = [e for e in existing_events if isinstance(e, dict)]
-        for line in _iter_graph_sse_lines(agent, config, thread_id, Command(resume=resume_value), experiment_id):
+        for line in _iter_unified_training_sse_lines(
+            agent,
+            config,
+            thread_id,
+            Command(resume=resume_value),
+            experiment_id,
+            shared_state,
+        ):
             if experiment_id:
                 evt = _parse_sse_data_line(line)
                 if evt:
@@ -950,7 +951,9 @@ def generate_graph_resume_sse_events(
             st.pop("_graph_sse_interrupted", None)
             return
 
-        final_values = _graph_state_snapshot_values(agent, config)
+        final_values = _final_training_state_for_persist(
+            repository, thread_id, agent, config, shared_state
+        )
         if final_values:
             try:
                 repository.save_training_context(final_values, experiment_id=experiment_id)
@@ -1215,10 +1218,11 @@ def _run_experiment_graph_task_worker_body(
 ) -> None:
     from langgraph.checkpoint.memory import MemorySaver
 
-    from agents.training.core.conversation_context import \
-        normalize_conversation_turns
-    from agents.training.core.graph import create_training_agent
-    from agents.training.core.state import create_initial_state
+    from agents.training.agent_simple import create_simple_training_agent
+    from agents.training.core.conversation_context import (
+        format_training_user_message,
+        normalize_conversation_turns,
+    )
 
     try:
         registered_refs: list[str] = []
@@ -1241,21 +1245,27 @@ def _run_experiment_graph_task_worker_body(
         final_linked = registered_refs or None
         resolved_ds = registered_refs[0] if len(registered_refs) == 1 else None
         checkpointer = MemorySaver()
-        agent = create_training_agent(checkpointer=checkpointer)
         g = (goal or "").strip() or "Training run"
         conversation_turns = normalize_conversation_turns(
             conversation,
             triggering_message=g,
         )
-        initial_state = create_initial_state(
+        user_message = format_training_user_message(g, conversation_turns)
+
+        agent, shared_state = create_simple_training_agent(
             goal=g,
             linked_datasets=final_linked,
             user_model_preference=model_pref,
-            resolved_dataset_ref=resolved_ds,
-            resolved_model_type=model_pref,
-            conversation_history=conversation_turns,
-            hitl_auto_approve=True,
+            hitl=True,
+            checkpointer=checkpointer,
+            use_external_sources=False,
         )
+        shared_state["hitl_auto_approve"] = True
+        if resolved_ds:
+            shared_state["resolved_dataset_ref"] = resolved_ds
+        if model_pref:
+            shared_state["resolved_model_type"] = model_pref
+        shared_state["conversation_history"] = list(conversation_turns)
 
         emitted_steps: set[str] = set()
         emitted_skipped_steps: set[str] = set()
@@ -1263,18 +1273,20 @@ def _run_experiment_graph_task_worker_body(
             thread_id,
             {
                 "agent": agent,
+                "state": shared_state,
                 "checkpointer": checkpointer,
-                "mode": "graph",
+                "mode": "unified",
                 "emitted_steps": emitted_steps,
                 "emitted_skipped_steps": emitted_skipped_steps,
                 "experiment_id": experiment_id,
             },
         )
         config = {"configurable": {"thread_id": thread_id}}
+        stream_input = {"messages": [{"role": "user", "content": user_message}]}
 
         step_events: list[dict[str, object]] = []
-        for line in _iter_graph_sse_lines(
-            agent, config, thread_id, initial_state, experiment_id
+        for line in _iter_unified_training_sse_lines(
+            agent, config, thread_id, stream_input, experiment_id, shared_state
         ):
             evt = _parse_sse_data_line(line)
             if not evt:
@@ -1306,7 +1318,9 @@ def _run_experiment_graph_task_worker_body(
                 "Pipeline paused for review; async mode requires uninterrupted completion"
             )
 
-        final_values = _graph_state_snapshot_values(agent, config)
+        final_values = _final_training_state_for_persist(
+            repository, thread_id, agent, config, shared_state
+        )
         if final_values:
             try:
                 repository.save_training_context(final_values, experiment_id=experiment_id)

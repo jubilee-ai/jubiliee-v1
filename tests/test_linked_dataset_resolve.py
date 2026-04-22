@@ -115,17 +115,7 @@ def in_memory_repo():
 def test_graph_sse_emits_dataset_error_when_resolve_fails(in_memory_repo):
     thread = "graph-err-thread"
 
-    def fake_stream(_input, config=None, stream_mode=None):
-        yield ("updates", {"__interrupt__": []})
-
-    mock_agent = MagicMock()
-    mock_agent.stream = fake_stream
-    mock_agent.get_state.return_value = SimpleNamespace(values={"goal": "test"})
-
     with (
-        patch("agents.training.core.graph.create_training_agent", return_value=mock_agent),
-        patch("langgraph.checkpoint.memory.MemorySaver", return_value=MagicMock()),
-        patch("agents.training.core.state.create_initial_state", return_value={"goal": "test"}),
         patch.object(service, "resolve_linked_dataset", return_value=None),
     ):
         payloads = _collect_sse_payloads(
@@ -154,9 +144,11 @@ def test_graph_sse_emits_dataset_loaded_when_resolve_succeeds(in_memory_repo):
     mock_agent.get_state.return_value = SimpleNamespace(values={"goal": "test"})
 
     with (
-        patch("agents.training.core.graph.create_training_agent", return_value=mock_agent),
+        patch(
+            "agents.training.agent_simple.create_simple_training_agent",
+            return_value=(mock_agent, {"goal": "test"}),
+        ),
         patch("langgraph.checkpoint.memory.MemorySaver", return_value=MagicMock()),
-        patch("agents.training.core.state.create_initial_state", return_value={"goal": "test"}),
         patch.object(service, "resolve_linked_dataset", return_value="csv_insurance"),
     ):
         payloads = _collect_sse_payloads(

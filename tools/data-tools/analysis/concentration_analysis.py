@@ -17,6 +17,8 @@ from pydantic import BaseModel, Field
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from transformations.tool_utils import resolve_dataset
 
+from .analysis_sidecar import attach_analysis_sidecar
+
 
 def _r(value: float, decimals: int = 2) -> Optional[float]:
     """Round to native float, handle NaN."""
@@ -225,7 +227,23 @@ def concentration_analysis_tool(
         indicator = " ⚠️" if gap > 30 else ""
         lines.append(f"| {point['pct_of_entities']}% | {point['pct_of_value']}%{indicator} |")
     
-    return "\n".join(lines)
+    md = "\n".join(lines)
+    payload = {
+        "value_col": result["value_col"],
+        "entity_col": result["entity_col"],
+        "gini_coefficient": result["gini_coefficient"],
+        "pareto": result["pareto"],
+        "lorenz_curve": result["lorenz_curve"],
+        "top_n_contribution": result["top_n_contribution"],
+    }
+    summary = f"Gini={result['gini_coefficient']} on `{result['value_col']}`"
+    return attach_analysis_sidecar(
+        md,
+        kind="concentration",
+        tool="concentration_analysis_tool",
+        summary=summary,
+        payload=payload,
+    )
 
 
 __all__ = ["concentration_analysis_tool", "analyze_concentration"]

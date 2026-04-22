@@ -1,9 +1,19 @@
 import json
+import sys
 import uuid
+from pathlib import Path
 from typing import Any, Optional
+
+from orchestrator_context import (
+    reset_attached_datasets_active,
+    set_attached_datasets_active,
+)
 
 from backend.chat import repository
 from backend.chat.events import (
+    analysis_chart as analysis_chart_event,
+    analysis_result as analysis_result_event,
+    dataset_resolved,
     format_sse,
     stream_start,
     stream_end,
@@ -15,12 +25,22 @@ from backend.chat.events import (
     predict_complete,
     task_plan_proposed as task_plan_proposed_event,
 )
-from backend.chat.intent_router import should_route_to_training_graph
 from backend.chat.schemas import ChatRequest
 from backend.shared.serialization import serialize_state
 from backend.training import repository as training_repo
 
+_ROOT = Path(__file__).resolve().parents[2]
+_DT_TOOLS = _ROOT / "tools" / "data-tools"
+if str(_DT_TOOLS) not in sys.path:
+    sys.path.insert(0, str(_DT_TOOLS))
+from analysis.analysis_sidecar import extract_analysis_json_sidecars  # noqa: E402
+
 _PREDICT_TOOLS = frozenset({"predict_with_model"})
+
+#: Name of the Jubilee tool that hands off to the training sub-agent.
+#: The chat generator captures this tool call's args and then pivots the SSE
+#: stream into ``generate_graph_sse_events`` on the same HTTP response.
+_TRAINING_HANDOFF_TOOL = "run_training_pipeline"
 
 
 def _build_training_context_message(ctx: dict) -> str:
@@ -68,6 +88,64 @@ def _build_training_context_message(ctx: dict) -> str:
 
 def _sse(payload: dict) -> str:
     return f"data: {json.dumps(payload)}\n\n"
+
+
+def _prepare_attached_datasets_block(
+    linked: Optional[list[str]],
+) -> tuple[str, list[tuple[str, dict[str, Any]]]]:
+    """Resolve linked dataset entries, register data, build context for the LLM.
+
+    Returns ``(markdown_block, [(ref, dataset_info), ...])`` for SSE ``dataset.resolved``.
+    """
+    if not linked:
+        return "", []
+    from backend.training.service import resolve_linked_dataset
+    from utils import get_registered_dataset
+
+    chunks: list[str] = []
+    events: list[tuple[str, dict[str, Any]]] = []
+
+    for entry in linked:
+        raw = str(entry).strip()
+        if not raw:
+            continue
+        ref = resolve_linked_dataset(raw)
+        if not ref:
+            chunks.append(f"  - ✗ Could not resolve attached entry `{raw}` — try a catalog name.")
+            continue
+        df = get_registered_dataset(ref)
+        if df is None:
+            chunks.append(f"  - ✗ `{ref}` resolved but not loaded into memory.")
+            continue
+
+        cols = list(df.columns)
+        col_line = ", ".join(f"{c}:{str(df[c].dtype)}" for c in cols[:30])
+        if len(cols) > 30:
+            col_line += ", …"
+        sample = df.head(5)
+        sample_md = sample.to_csv(index=False)
+
+        chunks.append(
+            f"  - **ref**: `{ref}` ({len(df):,} rows × {len(df.columns)} cols)\n"
+            f"    columns: {col_line}\n"
+            f"    sample (5 rows):\n{sample_md}"
+        )
+        info = {
+            "rows": len(df),
+            "n_columns": len(df.columns),
+            "columns": [{"name": c, "dtype": str(df[c].dtype)} for c in cols],
+            "sample": sample.to_dict(orient="records"),
+        }
+        events.append((ref, info))
+
+    if not chunks:
+        return "", []
+
+    header = (
+        "[ATTACHED DATASETS — already loaded in context; do NOT call search_datasets. "
+        "Pass these `dataset_ref` strings to analysis tools.]\n\n"
+    )
+    return header + "\n\n".join(chunks), events
 
 
 def _stable_tool_call_id(tc) -> str:
@@ -147,36 +225,6 @@ def _persist_chat_exchange(
         pass
 
 
-def generate_direct_dataset_search_sse(
-    message: str,
-    experiment_id: Optional[str] = None,
-    org_id: Optional[str] = None,
-):
-    orchestrator_mod = repository.get_orchestrator_module()
-    tool_args = orchestrator_mod.build_dataset_search_args(message)
-    yield format_sse(stream_start(experiment_id), experiment_id)
-    yield format_sse(
-        tool_start(
-            "search_datasets",
-            tool_args,
-            headline="Running search_datasets...",
-            experiment_id=experiment_id,
-        ),
-        experiment_id,
-    )
-    try:
-        result = orchestrator_mod.search_datasets.invoke(tool_args)
-        yield format_sse(tool_end("search_datasets", result, experiment_id), experiment_id)
-        visible_reply = result
-        if result and not result.startswith("No datasets found"):
-            visible_reply += "\n\nReply with the dataset name or its number to continue (or **go** if that single match is what you want)."
-        yield format_sse(token_event(visible_reply, experiment_id), experiment_id)
-        _persist_chat_exchange(experiment_id, message, visible_reply, org_id=org_id)
-        yield format_sse(stream_end(experiment_id), experiment_id)
-    except Exception as exc:
-        yield format_sse(error_event(str(exc), experiment_id), experiment_id)
-
-
 def generate_chat_sse(
     thread_id: str,
     message: str,
@@ -184,10 +232,26 @@ def generate_chat_sse(
     experiment_id: Optional[str] = None,
     conversation: Optional[list[dict[str, Any]]] = None,
     org_id: Optional[str] = None,
+    model_preference: Optional[str] = None,
+    attached_dataset_events: Optional[list[tuple[str, dict[str, Any]]]] = None,
 ):
+    """Stream one Jubilee turn, pivoting into the training sub-agent if the
+    ``run_training_pipeline`` tool is called.
+
+    The pivot reuses the same HTTP SSE response:
+
+    1. Jubilee runs normally — tokens, tool calls, tool results flow to the UI.
+    2. If Jubilee calls ``run_training_pipeline`` we capture its args.
+    3. Right after Jubilee's turn finishes, we call
+       :func:`backend.training.service.generate_graph_sse_events` and yield
+       its events on the same stream (it emits its own ``stream.start`` with
+       ``training_graph=True`` so the UI knows to switch to the pipeline view).
+    4. The training sub-agent's summary is persisted via ``save_training_context``
+       and prepended to Jubilee's next turn — that's how the main agent "sees"
+       the sub-agent's output for follow-ups.
+    """
     orchestrator_agent = repository.get_orchestrator_agent()
-    # Snapshot thread when sending full transcript so checkpoint state does not hide prior turns
-    # (e.g. fast-path dataset search never wrote to the agent graph).
+    # Snapshot thread when sending full transcript so checkpoint state does not hide prior turns.
     _conv_len = len(conversation) if conversation else 0
     effective_thread = (
         f"{thread_id}-orch-{_conv_len}" if _conv_len > 1 else thread_id
@@ -206,10 +270,17 @@ def generate_chat_sse(
 
     agent_input = {"messages": [{"role": "user", "content": augmented_message}]}
     yield format_sse(stream_start(experiment_id), experiment_id)
+    for ref, ds_info in attached_dataset_events or []:
+        yield format_sse(
+            dataset_resolved(ref, dataset_info=ds_info, experiment_id=experiment_id),
+            experiment_id,
+        )
 
+    set_attached_datasets_active(bool(attached_dataset_events))
     seen_tool_call_ids: set[str] = set()
     pending_predict_args: dict[str, dict] = {}
-    accumulated_response = []
+    accumulated_response: list[str] = []
+    training_handoff: Optional[dict[str, Any]] = None
 
     try:
         for event in orchestrator_agent.stream(
@@ -217,15 +288,17 @@ def generate_chat_sse(
             config=config,
             stream_mode=["messages", "updates"],
         ):
-            # Dual stream mode yields tuples: (stream_type, payload)
             if isinstance(event, tuple) and len(event) == 2:
                 stream_type, payload = event
             else:
                 stream_type, payload = "updates", event
 
-            # --- Token-level streaming from "messages" mode ---
             if stream_type == "messages":
                 msg_chunk, _metadata = payload if isinstance(payload, tuple) else (payload, {})
+                # Tool-result messages are handled via the "updates" pathway
+                # (sidecars → analysis.result events); don't echo them as tokens.
+                if getattr(msg_chunk, "type", "") == "tool":
+                    continue
                 content = getattr(msg_chunk, "content", "")
                 if content:
                     accumulated_response.append(content)
@@ -258,7 +331,6 @@ def generate_chat_sse(
                             experiment_id=experiment_id,
                         ), experiment_id)
 
-            # --- Node-level updates from "updates" mode ---
             elif stream_type == "updates" and isinstance(payload, dict):
                 if "model" in payload:
                     msgs = payload["model"].get("messages", [])
@@ -295,9 +367,18 @@ def generate_chat_sse(
                     tool_msgs = payload["tools"].get("messages", [])
                     for tm in tool_msgs:
                         name = getattr(tm, "name", "unknown")
-                        snippet = getattr(tm, "content", "")
+                        raw_content = getattr(tm, "content", "")
+                        snippet = raw_content
                         if len(snippet) > 2000:
                             snippet = snippet[:2000] + "…"
+                        if name == _TRAINING_HANDOFF_TOOL:
+                            # Don't surface the sentinel payload to the UI; just
+                            # capture the handoff args and let the pivot happen
+                            # after the agent turn.
+                            handoff = _parse_training_handoff(raw_content)
+                            if handoff is not None:
+                                training_handoff = handoff
+                            continue
                         if name in _PREDICT_TOOLS:
                             stored = pending_predict_args.pop(name, {})
                             try:
@@ -313,15 +394,86 @@ def generate_chat_sse(
                                 experiment_id=experiment_id,
                             ), experiment_id)
                         else:
+                            orch = repository.get_orchestrator_module()
+                            sidechannel = getattr(
+                                orch, "SIDECHANNEL_TOOL_NAMES", frozenset(),
+                            )
+                            cleaned, envelopes = extract_analysis_json_sidecars(
+                                raw_content if isinstance(raw_content, str) else str(raw_content or ""),
+                            )
+                            for env in envelopes:
+                                if not isinstance(env, dict):
+                                    continue
+                                tool_nm = str(env.get("tool") or name)
+                                kind = str(env.get("kind") or "unknown")
+                                yield format_sse(
+                                    analysis_result_event(
+                                        tool=tool_nm,
+                                        kind=kind,
+                                        summary=env.get("summary"),
+                                        payload=env.get("payload"),
+                                        experiment_id=experiment_id,
+                                    ),
+                                    experiment_id,
+                                )
+                                if kind == "chart":
+                                    spec = (env.get("payload") or {}).get("spec")
+                                    if isinstance(spec, dict):
+                                        yield format_sse(
+                                            analysis_chart_event(
+                                                tool_nm,
+                                                spec,
+                                                experiment_id=experiment_id,
+                                            ),
+                                            experiment_id,
+                                        )
+                            if name in sidechannel and envelopes:
+                                continue
+                            body = cleaned if envelopes else (
+                                raw_content if isinstance(raw_content, str) else str(raw_content or "")
+                            )
+                            snippet = body
+                            if len(snippet) > 2000:
+                                snippet = snippet[:2000] + "…"
                             yield format_sse(tool_end(name, snippet, experiment_id), experiment_id)
 
         _persist_chat_exchange(
             experiment_id, message, "".join(accumulated_response), org_id=org_id,
         )
 
+        if training_handoff is not None:
+            # Pivot: hand off the rest of this SSE stream to the training
+            # sub-agent. ``generate_graph_sse_events`` emits its own
+            # ``stream.start(training_graph=True)`` and ``stream.end``.
+            from backend.training import service as training_service
+
+            yield from training_service.generate_graph_sse_events(
+                training_handoff.get("goal") or (message or "Training run"),
+                training_handoff.get("dataset_refs") or None,
+                training_handoff.get("model_preference") or model_preference,
+                experiment_id=experiment_id,
+                conversation=conversation,
+            )
+            return
+
         yield format_sse(stream_end(experiment_id), experiment_id)
     except Exception as exc:
         yield format_sse(error_event(str(exc), experiment_id), experiment_id)
+    finally:
+        reset_attached_datasets_active()
+
+
+def _parse_training_handoff(raw: object) -> Optional[dict[str, Any]]:
+    """Decode the ``run_training_pipeline`` sentinel tool result.
+
+    Imports lazily so ``backend/chat/service.py`` stays testable without
+    pulling in the heavy LangChain chain at module import time.
+    """
+    try:
+        from agent import parse_training_handoff as _parse
+    except Exception:
+        return None
+    return _parse(raw)
 
 
 def generate_background_intake_sse(
@@ -388,18 +540,72 @@ def generate_background_intake_sse(
         yield format_sse(error_event(str(exc), experiment_id), experiment_id)
 
 
+def _message_with_training_hint(
+    message: str,
+    linked: Optional[list[str]],
+    model_preference: Optional[str],
+) -> str:
+    """Inject a directive to run the training pipeline into the user message.
+
+    Used when the UI sets ``mode="train"`` (plan approval / guided run). Jubilee
+    sees this and should immediately call ``run_training_pipeline`` with the
+    supplied refs. Everything still flows through the same agent path so the
+    main agent can observe the sub-agent's output for follow-ups.
+    """
+    refs = [s.strip() for s in (linked or []) if s and str(s).strip()]
+    goal = (message or "").strip() or "Training run"
+    parts = [
+        "[USER APPROVED TRAINING RUN — please call the run_training_pipeline "
+        "tool immediately to kick off the pipeline.]",
+        f"  Goal: {goal}",
+    ]
+    if refs:
+        parts.append(f"  Dataset ref(s): {', '.join(refs)}")
+    if model_preference:
+        parts.append(f"  Model preference: {model_preference}")
+    parts.append(
+        "Do not ask the user any more questions — pass the refs above as "
+        "dataset_refs and write no other reply text in this turn."
+    )
+    hint = "\n".join(parts) + "\n\n"
+    return hint + goal
+
+
 def chat(
     request: ChatRequest,
     org_id: Optional[str] = None,
 ) -> tuple[str, object]:
-    """Route unified /api/chat body to graph training or orchestrator SSE."""
+    """Single SSE entry point for ``/api/chat``.
+
+    Routing collapses to two cases:
+
+    - **Resume** (``resume_training`` or legacy ``resume``) — resumes the
+      paused training sub-agent after a HITL interrupt.
+    - **Everything else** — one Jubilee turn via :func:`generate_chat_sse`.
+      Training is launched by Jubilee calling the ``run_training_pipeline``
+      tool; the generator pivots the SSE stream into the training sub-agent
+      at that point. ``mode="train"`` is an optional hint that injects a
+      directive into the user message telling Jubilee to call the training
+      tool immediately — useful for the plan-approval UI where the user has
+      already confirmed.
+    """
     from backend.training import service as training_service
 
     if request.experiment_id and org_id:
         if not training_repo.get_experiment(request.experiment_id, org_id=org_id):
             raise ValueError("Experiment not found or access denied")
 
-    if request.resume:
+    # ---- Training sub-agent: resume after HITL interrupt --------------------
+
+    if request.resume_training is not None:
+        gen = training_service.generate_graph_resume_sse_events(
+            request.resume_training.thread_id,
+            request.resume_training.approved,
+            request.resume_training.feedback,
+        )
+        return request.resume_training.thread_id, gen
+
+    if request.resume is not None:
         if not request.experiment_id:
             raise ValueError("experiment_id required for resume")
         exp = training_repo.get_experiment(request.experiment_id, org_id=org_id)
@@ -411,19 +617,7 @@ def chat(
         )
         return graph_thread, gen
 
-    train_branch = should_route_to_training_graph(request)
-    if train_branch:
-        goal = (request.message or "").strip()
-        if not goal:
-            goal = "Training run"
-        gen = training_service.generate_graph_sse_events(
-            goal,
-            request.linked_datasets,
-            request.model_preference,
-            experiment_id=request.experiment_id,
-            conversation=request.conversation,
-        )
-        return "", gen
+    # ---- Unified Jubilee stream (chat + optional training pivot) ------------
 
     if request.experiment_id:
         exp = training_repo.get_experiment(request.experiment_id, org_id=org_id)
@@ -431,32 +625,64 @@ def chat(
     else:
         resolved_thread_id = f"chat-{uuid.uuid4().hex[:8]}"
 
-    if getattr(request, "background_intake", False):
+    attached_block, attach_events = _prepare_attached_datasets_block(
+        request.linked_datasets,
+    )
+
+    if request.background_intake:
+        bg_msg = request.message or ""
+        if attached_block:
+            bg_msg = attached_block + "\n\n" + bg_msg
         return resolved_thread_id, generate_background_intake_sse(
-            request.message,
+            bg_msg,
             experiment_id=request.experiment_id,
             conversation=request.conversation,
             org_id=org_id,
         )
 
-    orchestrator_mod = repository.get_orchestrator_module()
-    if orchestrator_mod.is_dataset_search_request(request.message):
-        return resolved_thread_id, generate_direct_dataset_search_sse(
-            request.message,
+    # ---- Plan-approval fast path: bypass Jubilee, go straight to training ---
+    # When the UI confirms the plan card it sends ``mode="train"`` plus the
+    # already-resolved dataset refs. Routing through the orchestrator here is
+    # both unnecessary and unreliable (the LLM sometimes calls
+    # ``propose_training_plan`` again, which re-renders the plan card and the
+    # user appears stuck in a loop). Hand off to the training sub-agent
+    # immediately when we have everything we need.
+    if request.mode == "train" and request.linked_datasets:
+        refs = [str(r).strip() for r in request.linked_datasets if str(r).strip()]
+        goal = (request.message or "").strip() or "Training run"
+        gen = training_service.generate_graph_sse_events(
+            goal,
+            refs,
+            request.model_preference,
             experiment_id=request.experiment_id,
-            org_id=org_id,
+            conversation=request.conversation,
         )
+        return resolved_thread_id, gen
 
     training_context = None
     ctx = training_repo.get_latest_training_context(experiment_id=request.experiment_id)
     if ctx:
         training_context = _build_training_context_message(ctx)
 
+    if request.mode == "train":
+        # No refs attached but caller still asked for training: keep the legacy
+        # behaviour of nudging Jubilee to call ``run_training_pipeline`` itself.
+        user_message = _message_with_training_hint(
+            request.message, request.linked_datasets, request.model_preference,
+        )
+    else:
+        user_message = request.message or ""
+
+    if attached_block:
+        user_message = attached_block + "\n\n" + user_message
+
     return resolved_thread_id, generate_chat_sse(
         resolved_thread_id,
-        request.message,
+        user_message,
         training_context,
         experiment_id=request.experiment_id,
         conversation=request.conversation,
         org_id=org_id,
+        model_preference=request.model_preference,
+        attached_dataset_events=attach_events or None,
     )

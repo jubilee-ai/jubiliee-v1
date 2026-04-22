@@ -1,16 +1,20 @@
 """
-Core graph infrastructure for the ML Training Agent.
+Core infrastructure for the ML Training Agent.
 
 This module contains:
 - state.py: State definitions and constants
-- graph.py: Graph construction and compilation (planner + executor + evaluator)
-- edges.py: Conditional routing functions
+- graph.py: invoke_training_agent entrypoint (unified LLM executor in agent_simple)
+- edges.py: Legacy conditional routing helpers
 - hitl.py: Human-in-the-loop utilities
-- planner.py: LLM-based plan generation
-- evaluator.py: LLM-based step evaluation and plan amendment
-- dispatcher.py: Pure routing from plan to step nodes
+- planner.py: Legacy plan generation (not used by unified chat training)
+- evaluator.py: Legacy step evaluation (not used by unified chat training)
+- dispatcher.py: Legacy plan-index routing (not used by unified chat training)
 """
 
+from .pipeline import (
+    DEFAULT_TRAINING_RECAP,
+    UNIFIED_PIPELINE_STEP_NAMES,
+)
 from .state import (
     STEP_ORDER,
     STATE_SNAPSHOT_KEYS,
@@ -18,6 +22,10 @@ from .state import (
     LabelDefinition,
     TrainingAgentState,
     create_initial_state,
+)
+from .task_inference import (
+    infer_supervised_task_type_from_target_column,
+    infer_task_type,
 )
 
 from .hitl import (
@@ -40,6 +48,12 @@ __all__ = [
     "STEP_ORDER",
     "STATE_SNAPSHOT_KEYS",
     "create_initial_state",
+    # Pipeline
+    "UNIFIED_PIPELINE_STEP_NAMES",
+    "DEFAULT_TRAINING_RECAP",
+    # Task inference
+    "infer_task_type",
+    "infer_supervised_task_type_from_target_column",
     # HITL
     "run_with_hitl",
     "make_serializable",

@@ -121,6 +121,12 @@ export interface AgentStreamEvent {
   // Dataset
   ref?: string
   dataset?: string
+  dataset_info?: Record<string, unknown>
+
+  // Orchestrator analysis sidecars (`analysis.result`, `analysis.chart`)
+  kind?: string
+  payload?: unknown
+  spec?: Record<string, unknown>
 
   // Dedup
   stream_step_key?: string
@@ -154,14 +160,25 @@ export interface AgentStreamRequest {
   model_preference?: string | null
   /** Prior lab chat turns so the training planner can synthesize from the full dialogue */
   conversation?: Array<{ role: string; content: string }>
+  /** `"chat"` forces orchestrator; `"train"` forces the training graph. */
+  mode?: "chat" | "train"
+  /** Resume a specific training thread after a HITL interrupt. */
+  resume_training?: {
+    thread_id: string
+    approved: boolean
+    feedback?: string
+  }
+  /** Tool-free planning agent; server emits task_plan.proposed instead of propose_training_plan. */
+  background_intake?: boolean
+
+  // ---- Legacy fields (deprecated) -----------------------------------------
+  /** @deprecated prefer `mode: "chat"`. */
+  force_orchestrator?: boolean
+  /** @deprecated prefer `resume_training` with the explicit thread id. */
   resume?: {
     approved: boolean
     feedback?: string
   }
-  /** Keep orchestrator/tools (e.g. propose_training_plan); do not start the training graph. */
-  force_orchestrator?: boolean
-  /** Tool-free planning agent; server emits task_plan.proposed instead of propose_training_plan. */
-  background_intake?: boolean
 }
 
 

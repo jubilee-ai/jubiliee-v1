@@ -207,6 +207,40 @@ def dataset_resolved(
     }
 
 
+def analysis_result(
+    tool: str,
+    kind: str,
+    summary: str | None,
+    payload: Any,
+    experiment_id: str | None = None,
+) -> dict[str, Any]:
+    """Structured analysis payload parsed from tool output sidecars."""
+    out: dict[str, Any] = {
+        "type": "analysis.result",
+        "tool": tool,
+        "kind": kind,
+        "payload": payload,
+        "experiment_id": experiment_id,
+    }
+    if summary is not None:
+        out["summary"] = summary
+    return out
+
+
+def analysis_chart(
+    tool: str,
+    spec: dict[str, Any],
+    experiment_id: str | None = None,
+) -> dict[str, Any]:
+    """Chart spec for Recharts (from chart_tool or derived)."""
+    return {
+        "type": "analysis.chart",
+        "tool": tool,
+        "spec": spec,
+        "experiment_id": experiment_id,
+    }
+
+
 def dataset_error(
     ref: str,
     error: str,
@@ -257,6 +291,8 @@ ALL_EVENT_TYPES: list[str] = [
     "token",
     "tool.start",
     "tool.end",
+    "analysis.result",
+    "analysis.chart",
     "step.complete",
     "step.skipped",
     "step.progress",

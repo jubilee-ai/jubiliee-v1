@@ -7,6 +7,7 @@ import { Box, FileText, ChevronRight, Check, RotateCcw, Database } from "lucide-
 import type { Dataset as ApiDataset } from "@/lib/api"
 import type { ChatMessage, ChatTaskPlanPayload, TaskPlanSummary, TrainingAgentState } from "@/types/agent"
 import { FeatureAnalysisChatCard } from "@/components/chat/FeatureAnalysisChatCard"
+import { AnalysisCard } from "@/components/chat/AnalysisCard"
 import { looksLikeLeakedPlanJson, stripLeakedPlanJson } from "@/lib/planDisplay"
 import { TaskPlanCard } from "@/components/TaskPlanCard"
 
@@ -17,8 +18,10 @@ const FEATURE_ANALYSIS_STEP_IDS = new Set([
   "feature_selection_specification",
 ])
 
+const ANALYSIS_JSON_RE = /<ANALYSIS_JSON>[\s\S]*?<\/ANALYSIS_JSON>/g
+
 function sanitizeAgentContent(content: string): string {
-  const trimmed = stripLeakedPlanJson(content).trim()
+  const trimmed = stripLeakedPlanJson(content).replace(ANALYSIS_JSON_RE, "").trim()
 
   if (trimmed.startsWith("{") && trimmed.length > 10) {
     try {
@@ -131,6 +134,12 @@ export const MessageBubble = forwardRef<HTMLDivElement, MessageBubbleProps>(
     const sanitizedAgent = sanitizeAgentContent(message.content)
     const agentBodyForMarkdown = hasTaskPlan ? "" : sanitizedAgent.trim()
 
+    const analyses = message.analyses ?? []
+    const proseAnalysisClass =
+      analyses.length > 0
+        ? "text-sm leading-snug prose prose-sm dark:prose-invert max-w-none prose-p:my-0.5 prose-headings:my-1.5 prose-headings:font-medium prose-ul:my-1 prose-li:my-0 prose-code:text-[11px] prose-code:leading-snug prose-strong:font-semibold"
+        : "text-sm leading-relaxed prose prose-sm dark:prose-invert max-w-none prose-p:my-1 prose-p:leading-relaxed prose-headings:my-2 prose-headings:font-medium prose-ul:my-1 prose-ol:my-1 prose-li:my-0 prose-a:text-primary prose-a:no-underline hover:prose-a:underline prose-code:bg-primary/10 prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded-md prose-code:text-ui prose-code:font-normal prose-code:before:content-none prose-code:after:content-none prose-strong:font-semibold"
+
     const userLinkedKeys = message.linkedDatasetKeys?.filter(Boolean) ?? []
     const datasetChipLabel = useMemo(() => {
       const lookup = new Map<string, string>()
@@ -241,8 +250,15 @@ export const MessageBubble = forwardRef<HTMLDivElement, MessageBubbleProps>(
           ) : (
             <>
               {hasTaskPlan ? null : agentBodyForMarkdown ? (
-                <div className="text-sm leading-relaxed prose prose-sm dark:prose-invert max-w-none prose-p:my-1 prose-p:leading-relaxed prose-headings:my-2 prose-headings:font-medium prose-ul:my-1 prose-ol:my-1 prose-li:my-0 prose-a:text-primary prose-a:no-underline hover:prose-a:underline prose-code:bg-primary/10 prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded-md prose-code:text-ui prose-code:font-normal prose-code:before:content-none prose-code:after:content-none prose-strong:font-semibold">
+                <div className={cn(proseAnalysisClass)}>
                   <ReactMarkdown remarkPlugins={[remarkGfm]}>{agentBodyForMarkdown}</ReactMarkdown>
+                </div>
+              ) : null}
+              {analyses.length > 0 ? (
+                <div className="mt-3 flex flex-col gap-3">
+                  {analyses.map((insight, idx) => (
+                    <AnalysisCard key={`${message.id}-a-${idx}-${insight.tool}-${insight.kind}`} insight={insight} />
+                  ))}
                 </div>
               ) : null}
               {showFeatureAnalysisCard && agentState ? <FeatureAnalysisChatCard agentState={agentState} /> : null}

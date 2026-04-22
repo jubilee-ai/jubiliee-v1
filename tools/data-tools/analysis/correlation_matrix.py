@@ -16,6 +16,8 @@ from pydantic import BaseModel, Field
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from transformations.tool_utils import resolve_dataset
 
+from .analysis_sidecar import attach_analysis_sidecar
+
 # =============================================================================
 # HELPERS
 # =============================================================================
@@ -259,7 +261,26 @@ def correlation_matrix_tool(
                 lines.append(f"| `{row_col[:6]}` | " + " | ".join(row_vals) + " |")
             lines.append(f"\n*Full matrix has {len(cols)} features. Use `columns` parameter to focus on specific features.*")
         
-        return "\n".join(lines)
+        md = "\n".join(lines)
+        payload = {
+            "method": result["method"],
+            "columns": result["columns"],
+            "matrix": result["matrix"],
+            "top_pairs": result["top_pairs"],
+            "threshold": result["threshold"],
+        }
+        tp0 = result["top_pairs"][0]["correlation"] if result["top_pairs"] else None
+        summary = (
+            f"{result['n_features']} numeric columns; "
+            f"top |r|={tp0 if tp0 is not None else 'n/a'}"
+        )
+        return attach_analysis_sidecar(
+            md,
+            kind="correlation",
+            tool="correlation_matrix_tool",
+            summary=summary,
+            payload=payload,
+        )
     
     except Exception as e:
         return f"✗ Correlation matrix failed: {type(e).__name__}: {e}"

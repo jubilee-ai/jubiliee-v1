@@ -309,6 +309,8 @@ export interface TrainingAgentState {
   experiment_grid_summary?: ExperimentScoutRow[] | null
   /** Cross-scout weighted mean feature importances (higher = more signal) */
   feature_rankings?: Record<string, number> | null
+  /** Parallel sklearn scout runs from `evaluate_models` */
+  model_comparison?: Array<Record<string, unknown>> | null
   model_weights_path: string | null
   training_metrics: TrainingMetrics | null
   training_iteration: number
@@ -383,6 +385,23 @@ export interface PredictionResult {
   result_ref?: string
 }
 
+/** One structured insight from Jubilee analysis tools (+ optional chart spec). */
+export interface AnalysisInsight {
+  tool: string
+  kind: string
+  summary?: string
+  payload?: unknown
+  chartSpec?: Record<string, unknown>
+}
+
+export interface AttachedDatasetSnapshot {
+  ref: string
+  rows?: number
+  n_columns?: number
+  columns?: Array<{ name: string; dtype: string }>
+  sample?: Record<string, unknown>[]
+}
+
 export interface ChatMessage {
   id: string
   role: "user" | "agent" | "system"
@@ -390,6 +409,8 @@ export interface ChatMessage {
   timestamp: number
   /** True while the message is still receiving streamed tokens */
   _streaming?: boolean
+  /** Structured analysis cards (correlation, charts, EDA payloads, …) */
+  analyses?: AnalysisInsight[]
   /** Populated for prediction-complete events rendered as a card */
   prediction?: PredictionResult
   /** Stable pipeline step id for “View step details” (avoids regex mismatches) */

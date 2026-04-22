@@ -17,6 +17,8 @@ from pydantic import BaseModel, Field
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from transformations.tool_utils import resolve_dataset
 
+from .analysis_sidecar import attach_analysis_sidecar
+
 # =============================================================================
 # HELPERS
 # =============================================================================
@@ -259,7 +261,32 @@ def distribution_analysis_tool(
                 lines.append(f"| {h['range']} | {h['count']:,} | {h['pct']}% | {cum:.1f}% |")
             lines.append("")
         
-        return "\n".join(lines)
+        md = "\n".join(lines)
+        slim = {}
+        for col, d in result["distributions"].items():
+            if "error" in d:
+                slim[col] = {"error": d["error"]}
+            else:
+                slim[col] = {
+                    "histogram": d.get("histogram", [])[:30],
+                    "mean": d.get("mean"),
+                    "std": d.get("std"),
+                    "skewness": d.get("skewness"),
+                    "percentiles": d.get("percentiles"),
+                }
+        payload = {
+            "columns_analyzed": result["columns_analyzed"],
+            "total_rows": result["total_rows"],
+            "distributions": slim,
+        }
+        summary = f"{len(result['columns_analyzed'])} column(s), {result['total_rows']:,} rows"
+        return attach_analysis_sidecar(
+            md,
+            kind="distribution",
+            tool="distribution_analysis_tool",
+            summary=summary,
+            payload=payload,
+        )
     
     except Exception as e:
         return f"✗ Distribution analysis failed: {type(e).__name__}: {e}"

@@ -1,5 +1,5 @@
 """
-Simple ML Training Agent using LangChain's create_agent.
+Simple ML Training Agent using Deep Agents (create_deep_agent).
 
 Prep and training are separate tool-calling agents on a shared state graph.
 The training agent merges feature specification and feature execution into one tool.
@@ -13,15 +13,18 @@ from datetime import datetime
 from pathlib import Path
 from typing import Literal, Optional
 
-from langchain.agents import create_agent
+from deepagents import create_deep_agent
 from langchain.chat_models import init_chat_model
-from langchain_core.messages import HumanMessage
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, MessagesState, StateGraph
 from langgraph.types import interrupt
 from pydantic import BaseModel, Field
 
 from .core.state import TrainingAgentState, create_initial_state
+from .core.task_inference import (
+    infer_supervised_task_type_from_target_column,
+    infer_task_type,
+)
 
 _DATA_TOOLS_DIR = Path(__file__).parent.parent.parent / "tools" / "data-tools"
 if str(_DATA_TOOLS_DIR) not in sys.path:
@@ -39,6 +42,7 @@ from .steps.orchestrator import _infer_target_column
 from .steps.select_model import MODEL_FAMILIES
 from .steps.select_model import select_model as _select_model_impl
 from .steps.training import run_training_agent as _run_training
+from .tool_guards import cleaning_blocked_without_data, missing_prerequisite_for_step
 
 # =============================================================================
 # STRUCTURED OUTPUT SCHEMAS
@@ -136,22 +140,41 @@ When you are satisfied (or after 3 feature iterations):
 # Alias for tests and callers that expect a single combined training-phase prompt.
 SYSTEM_PROMPT = FEATURE_TRAINING_SYSTEM_PROMPT
 
+UNIFIED_SYSTEM_PROMPT = """\
+You are an ML training agent. You choose **one tool at a time** based on the current \
+goal, prior chat, and what has already been produced in state (dataset refs, model family, \
+splits, features, metrics).
+
+## Tools (prep and training)
+- data_collection — Load or register dataset(s)
+- select_model — Choose model family: supervised, unsupervised, or neural_networks
+- cleaning — Clean and standardize the collected data
+- label_split_definition — Define target and train/val/test splits (skip target work only for unsupervised when appropriate)
+- feature_specification_and_engineering — Specify features, execute them, and run the feature experiment grid when applicable
+- evaluate_models — Compare up to 3 sklearn models on the current feature set (comma-separated names)
+- training_approval — Propose a training configuration for human review
+- training — Full hyperparameter-tuned training
+- generate_report — Save the final JSON report (call after successful training when ready to finalize)
+
+## How to choose the next step
+- Pick the **single best next tool** that advances the pipeline. Do **not** assume a fixed order: \
+choose from **prerequisites** (e.g. need data before cleaning; need splits before feature work).
+- Do **not** repeat a tool that already succeeded unless the user rejected it or asked to redo.
+- After training succeeds and you are satisfied, call **generate_report** to finish.
+- Call **exactly one** tool per turn; wait for the tool result before the next call.
+
+## Strategy
+- Iterate like a data scientist: baseline features → optional model comparison → approve plan → train → report.
+- Max 3 feature engineering iterations before moving toward training_approval unless blocked.
+- For evaluate_models, pass 2–3 model names as a comma-separated string.
+"""
+
+from .core.pipeline import UNIFIED_PIPELINE_STEP_NAMES  # re-exported for callers
+
 
 def _infer_task_type(goal: str, selected_model: str) -> str:
-    goal = goal or ""
-    selected_model = selected_model or ""
-    if selected_model == "unsupervised":
-        return "unsupervised"
-    goal_lower = goal.lower()
-    model_lower = selected_model.lower()
-    if "logistic" not in model_lower:
-        if any(w in model_lower for w in ["regress", "continuous", "numeric"]):
-            return "regression"
-    if any(w in goal_lower for w in ["regress", "predict value", "forecast", "amount", "price", "cost", "salary", "revenue", "income"]):
-        return "regression"
-    if any(w in model_lower for w in ["glm", "regression"]) and "logistic" not in model_lower:
-        return "regression"
-    return "classification"
+    """Thin wrapper around :func:`infer_task_type` kept for readable call sites."""
+    return infer_task_type(goal, selected_model=selected_model)
 
 
 def create_simple_training_agent(
@@ -185,9 +208,7 @@ def create_simple_training_agent(
         """Interrupt for human review after a step completes. Returns the decision."""
         if not hitl:
             return {"approved": True}
-        if _phase == "training" and node_name in (
-            "feature_specification_and_engineering",
-        ):
+        if node_name == "feature_specification_and_engineering":
             return {"approved": True}
         decision = interrupt({
             "node": node_name,
@@ -204,7 +225,6 @@ def create_simple_training_agent(
 
     # Track which steps have successfully completed to prevent redundant calls
     _completed_steps: set[str] = set()
-    _phase = "prep"
 
     # Keys produced by each step, used to invalidate downstream state on re-runs
     _STEP_OUTPUTS = {
@@ -341,6 +361,7 @@ def create_simple_training_agent(
             return f"REJECTED by user: {fb}"
 
         _completed_steps.add("data_collection")
+        state["current_step"] = "data_collection"
         return (
             f"Dataset: {state.get('collected_dataset_ref', 'unknown')}\n"
             f"Rows: {audit.get('rows', '?')}, Columns: {cols}"
@@ -351,6 +372,10 @@ def create_simple_training_agent(
         nonlocal state
         if "cleaning" in _completed_steps and not state.get("_redo_feedback_cleaning"):
             return f"SKIP: Data already cleaned: {state.get('cleaned_dataset_ref')}. Proceed to the next step."
+
+        blocked = cleaning_blocked_without_data(state)
+        if blocked:
+            return blocked
 
         dataset_ref = state.get("collected_dataset_ref")
         if not dataset_ref:
@@ -495,6 +520,11 @@ def create_simple_training_agent(
             "test_dataset_ref": test_ref,
             "current_step": "feature_specification_and_engineering",
         })
+        tgt_col = label_def.get("target_column")
+        if tgt_col:
+            sub_tt = infer_supervised_task_type_from_target_column(train_df, tgt_col)
+            if sub_tt:
+                state["task_type"] = sub_tt
 
         transform_note = f" (target transformed: {target_transform})" if target_transform else ""
         summary = (
@@ -527,8 +557,7 @@ def create_simple_training_agent(
         """Specify features from data analysis, then execute the spec to build transformed datasets."""
         nonlocal state
         if (
-            _phase != "training"
-            and "feature_selection_specification" in _completed_steps
+            "feature_selection_specification" in _completed_steps
             and "feature_engineering_executor" in _completed_steps
             and state.get("feature_validation_passed")
             and not state.get("feature_redo_requested")
@@ -541,6 +570,10 @@ def create_simple_training_agent(
             )
 
         label_def = state.get("label_definition") or {}
+
+        pre = missing_prerequisite_for_step("feature_selection_specification", state)
+        if pre and state.get("selected_model") != "unsupervised":
+            return pre
 
         # ----- Selection -----
         if state.get("selected_model") == "unsupervised":
@@ -570,6 +603,13 @@ def create_simple_training_agent(
 
             recommendation = state.get("feature_redo_recommendation") if state.get("feature_redo_requested") else None
 
+            tr_df_fe = get_registered_dataset(train_ref)
+            fe_tt = None
+            if tr_df_fe is not None and target_column:
+                fe_tt = infer_supervised_task_type_from_target_column(tr_df_fe, target_column)
+            fe_task_type = fe_tt or state.get("task_type") or _infer_task_type(
+                state.get("goal", ""), state.get("selected_model", "")
+            )
             result = run_feature_engineering_simple(
                 train_ref=train_ref,
                 goal=state.get("goal", ""),
@@ -578,7 +618,7 @@ def create_simple_training_agent(
                 recomendation=recommendation,
                 val_ref=state.get("val_dataset_ref"),
                 test_ref=state.get("test_dataset_ref"),
-                task_type=_infer_task_type(state.get("goal", ""), state.get("selected_model", "")),
+                task_type=fe_task_type,
                 forbidden_columns=label_def.get("forbidden_columns", []),
                 as_of_cutoff=label_def.get("as_of_cutoff"),
                 prediction_horizon=label_def.get("prediction_horizon"),
@@ -712,7 +752,13 @@ def create_simple_training_agent(
         # --- Feature Experiment Grid (auto-runs for supervised with ≥5 features) ---
         experiment_summary = ""
         spec_features = (state.get("feature_spec") or {}).get("features", [])
-        task_type_fe = _infer_task_type(state.get("goal", ""), state.get("selected_model", ""))
+        train_df_grid = get_registered_dataset(state.get("train_dataset_ref"))
+        tfe = None
+        if train_df_grid is not None and target_column_e:
+            tfe = infer_supervised_task_type_from_target_column(train_df_grid, target_column_e)
+        task_type_fe = tfe or state.get("task_type") or _infer_task_type(
+            state.get("goal", ""), state.get("selected_model", "")
+        )
         if (
             task_type_fe != "unsupervised"
             and len(spec_features) >= 5
@@ -804,14 +850,18 @@ def create_simple_training_agent(
 
         label_def = state.get("label_definition") or {}
         target_col = label_def.get("target_column", "")
-        task_type = _infer_task_type(
-            state.get("goal", ""), state.get("selected_model", "")
-        )
 
         train_df = get_registered_dataset(train_ref)
         val_df = get_registered_dataset(val_ref)
         if train_df is None or val_df is None:
             return "ERROR: Could not load training or validation data."
+
+        inferred_eval_tt = None
+        if target_col and target_col in train_df.columns:
+            inferred_eval_tt = infer_supervised_task_type_from_target_column(train_df, target_col)
+        task_type = inferred_eval_tt or state.get("task_type") or _infer_task_type(
+            state.get("goal", ""), state.get("selected_model", "")
+        )
 
         feature_cols = [c for c in train_df.columns if c != target_col]
         X_train, y_train = train_df[feature_cols], train_df[target_col]
@@ -964,6 +1014,7 @@ def create_simple_training_agent(
             lines.append(f"\n**Best: {results[0]['name']}**")
 
         _completed_steps.add("evaluate_models")
+        state["current_step"] = "evaluate_models"
         return "\n".join(lines)
 
     def tool_training_approval() -> str:
@@ -979,20 +1030,36 @@ def create_simple_training_agent(
         target_column = label_def.get("target_column", "")
         selected_model = state.get("selected_model", "supervised")
         unsupervised = selected_model == "unsupervised"
-        task_type = "unsupervised" if unsupervised else _infer_task_type(state.get("goal", ""), selected_model)
 
         train_df = get_registered_dataset(train_ref)
         val_df = get_registered_dataset(val_ref) if val_ref else None
         if train_df is None:
             return "SKIP: Cannot run — feature_engineering_executor must run first."
 
+        if unsupervised:
+            task_type = "unsupervised"
+        else:
+            col_tt = None
+            if target_column and target_column in train_df.columns:
+                col_tt = infer_supervised_task_type_from_target_column(train_df, target_column)
+            task_type = (
+                state.get("task_type")
+                or col_tt
+                or _infer_task_type(state.get("goal", ""), selected_model)
+            )
+
         n_rows = len(train_df)
         if target_column:
             n_features = len([c for c in train_df.columns if c != target_column])
-            class_counts = train_df[target_column].value_counts().to_dict()
-            total = sum(class_counts.values())
-            minority_ratio = min(class_counts.values()) / total if total > 0 else 0
-            is_imbalanced = minority_ratio < 0.3
+            if task_type == "regression":
+                class_counts = {}
+                minority_ratio = 0.0
+                is_imbalanced = False
+            else:
+                class_counts = train_df[target_column].value_counts().to_dict()
+                total = sum(class_counts.values())
+                minority_ratio = min(class_counts.values()) / total if total > 0 else 0
+                is_imbalanced = minority_ratio < 0.3
         else:
             n_features = len(train_df.columns)
             class_counts = {}
@@ -1053,6 +1120,8 @@ def create_simple_training_agent(
             TrainingPlan, method="function_calling"
         )
         training_plan = structured_llm.invoke(prompt).model_dump()
+        if task_type in ("classification", "regression"):
+            training_plan["task_type"] = task_type
         training_plan["data_summary"] = {
             "train_rows": n_rows,
             "val_rows": len(val_df) if val_df is not None else None,
@@ -1094,10 +1163,14 @@ def create_simple_training_agent(
         label_def = state.get("label_definition") or {}
         target_column = label_def.get("target_column", "")
         selected_model = state.get("selected_model") or "supervised"
-        task_type = _infer_task_type(state.get("goal", ""), selected_model)
         train_ref = state.get("transformed_train_ref")
         if not train_ref:
             return "SKIP: Cannot run — feature_specification_and_engineering must complete first."
+        tr_gate = get_registered_dataset(train_ref)
+        gate_tt = state.get("task_type")
+        if not gate_tt and tr_gate is not None and target_column and target_column in tr_gate.columns:
+            gate_tt = infer_supervised_task_type_from_target_column(tr_gate, target_column)
+        task_type = gate_tt or _infer_task_type(state.get("goal", ""), selected_model)
         if not target_column and task_type != "unsupervised":
             return "SKIP: Cannot run — label_split_definition must define a target column first."
 
@@ -1125,7 +1198,6 @@ def create_simple_training_agent(
 
         feature_redo_requested = result.get("feature_redo_requested", False)
         best_model_type = result.get("model_type", selected_model)
-        task_type = _infer_task_type(state.get("goal", ""), selected_model)
 
         # --- Programmatic quality gates ---
         iteration_num = state.get("training_iteration", 0) + 1
@@ -1162,6 +1234,7 @@ def create_simple_training_agent(
         state.update({
             "model_weights_path": result.get("model_name"),
             "selected_model": best_model_type,
+            "current_step": "training",
             "training_metrics": {
                 "success": result.get("success"),
                 "model_name": result.get("model_name"),
@@ -1326,6 +1399,7 @@ def create_simple_training_agent(
             print(f"[generate_report] Object storage upload skipped: {ex}")
 
         state["report_path"] = str(report_path)
+        state["current_step"] = "generate_report"
         if report_storage_key:
             state["report_storage_key"] = report_storage_key
         state["audit_trace"] = state.get("audit_trace", []) + [
@@ -1340,14 +1414,11 @@ def create_simple_training_agent(
 
     # -- build the two-agent graph -------------------------------------------
 
-    prep_tools = [
+    all_tools = [
         tool_data_collection,
         tool_select_model,
         tool_cleaning,
         tool_label_split_definition,
-    ]
-
-    training_tools = [
         tool_feature_specification_and_engineering,
         tool_evaluate_models,
         tool_training_approval,
@@ -1360,37 +1431,15 @@ def create_simple_training_agent(
 
     llm = init_chat_model(model) if isinstance(model, str) else model
 
-    prep_agent = create_agent(
-        model=llm, tools=prep_tools, system_prompt=PREP_SYSTEM_PROMPT,
+    executor_runnable = create_deep_agent(
+        model=llm,
+        tools=all_tools,
+        system_prompt=UNIFIED_SYSTEM_PROMPT,
     )
-    training_agent = create_agent(
-        model=llm, tools=training_tools, system_prompt=FEATURE_TRAINING_SYSTEM_PROMPT,
-    )
-
-    def _handoff_to_training(msg_state: MessagesState) -> dict:
-        nonlocal _phase
-        _phase = "training"
-        label_def = state.get("label_definition") or {}
-        context = (
-            "Data preparation is complete. Begin feature engineering and model training.\n\n"
-            f"Goal: {state.get('goal', '')}\n"
-            f"Dataset: {state.get('collected_dataset_ref')}\n"
-            f"Target column: {label_def.get('target_column', 'N/A')}\n"
-            f"Model family: {state.get('selected_model')}\n"
-            f"Train ref: {state.get('train_dataset_ref')}\n"
-            f"Val ref: {state.get('val_dataset_ref')}\n"
-            f"Test ref: {state.get('test_dataset_ref')}\n"
-        )
-        return {"messages": [HumanMessage(content=context)]}
-
     workflow = StateGraph(MessagesState)
-    workflow.add_node("prep", prep_agent)
-    workflow.add_node("handoff", _handoff_to_training)
-    workflow.add_node("training", training_agent)
-    workflow.set_entry_point("prep")
-    workflow.add_edge("prep", "handoff")
-    workflow.add_edge("handoff", "training")
-    workflow.add_edge("training", END)
+    workflow.add_node("executor", executor_runnable)
+    workflow.set_entry_point("executor")
+    workflow.add_edge("executor", END)
 
     agent = workflow.compile(checkpointer=checkpointer)
     return agent, state

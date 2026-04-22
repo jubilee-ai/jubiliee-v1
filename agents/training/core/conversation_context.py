@@ -58,3 +58,22 @@ def transcript_for_planner_prompt(
     if room < 48:
         return text[-max_chars:]
     return ellipsis + text[-room:]
+
+
+def format_training_user_message(
+    goal: str,
+    turns: list[dict[str, str]],
+) -> str:
+    """Build the initial user message for the unified training executor.
+
+    Includes prior chat when present so the LLM can choose steps using full context.
+    """
+    g = (goal or "").strip() or "Training run"
+    if len(turns) <= 1:
+        return g
+    transcript = transcript_for_planner_prompt(turns)
+    return (
+        f"{transcript}\n\n## Latest instruction\n{g}\n\n"
+        "Execute the ML training workflow using tools. Choose the single best next tool "
+        "based on current progress and prerequisites."
+    )

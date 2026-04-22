@@ -90,25 +90,19 @@ User Query
 
 | File | Description |
 |------|-------------|
-| `analysis_agent_v2.py` | Main orchestrator agent with 3 tools |
-| `statistical_analysis_agent.py` | Sub-agent for data retrieval + statistical analysis |
-| `data-retrieval/agent.py` | Data retrieval agent (used by data_lookup_tool) |
-| `model_index.py` | Registry of available pretrained models |
-| `prompts.py` | System prompts for all agents |
+| Project root `agent.py` | Jubilee chat orchestrator (`search_datasets`, analysis tools, pretrained tools, training handoff, …) |
+| `data-retrieval/agent.py` | Data retrieval utilities (training / catalog flows) |
+| `model_index.py` | Registry metadata for pretrained models |
+| `prompts.py` | Prompts for planning / intake agents (not the orchestrator prompt, which lives in `agent.py`) |
 
-## Tools Summary
+## Historical note
 
-### 1. `statistical_analysis_tool`
-- **Purpose**: Find data and run statistical analysis
-- **Use for**: Profiling, correlations, trends, group comparisons, pattern discovery
-- **Behavior**: Can find and load data automatically, then analyze it
+Nested `analysis_agent_v2` / `statistical_analysis_agent` wrappers were removed; statistical tools live under `tools/data-tools/analysis/` and are registered directly on the orchestrator.
 
-### 2. `model_execution_tool`
-- **Purpose**: Run pretrained models on specific inputs
-- **Use for**: Credit risk, loan default, sentiment analysis, forecasts
-- **Requires**: Specific input data (e.g., applicant details, text to analyze)
+### 1. Analysis tools (`tools/data-tools/analysis/`)
 
-### 3. `data_lookup_tool`
-- **Purpose**: Simple data retrieval without analysis
-- **Use for**: Showing available datasets, displaying sample records, finding data for model inputs
-- **NOT for**: Statistical analysis or pattern discovery
+EDA, correlations, grouping, distributions, charts, validation, concentration, trends — see package ``__init__.py``.
+
+### 2. Pretrained tools (`tools/models-tools/pretrained/`)
+
+Credit risk, loan default, sentiment, claims, forecasts — invoked directly by name from the orchestrator when appropriate.

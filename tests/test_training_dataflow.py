@@ -5,7 +5,7 @@ Verifies dataset lineage through every step:
   raw → collected → cleaned → split → feature-engineered → training
 
 Strategy:
-  We patch `create_agent` to intercept the tool closure references that
+  We patch `create_deep_agent` to intercept the tool closure references that
   `create_simple_training_agent` builds, then call those closures directly
   in pipeline order.  Each step implementation is mocked to be fast and
   trackable — we verify that every mock receives the CORRECT dataset ref
@@ -61,7 +61,7 @@ def _make_cleaned_df(raw: pd.DataFrame) -> pd.DataFrame:
 
 
 def _capturing_create_agent(**kwargs):
-    """Intercept create_agent to grab tool closures."""
+    """Intercept create_deep_agent to grab tool closures."""
     for fn in kwargs.get("tools", []):
         _captured_tools[fn.__name__] = fn
     return MagicMock(name="compiled_agent")
@@ -215,7 +215,7 @@ class _PipelineHarness:
         register_dataset(RAW_REF, raw_df, persist=False, register_sql=False)
 
         self._patches = [
-            patch("agents.training.agent_simple.create_agent", side_effect=_capturing_create_agent),
+            patch("agents.training.agent_simple.create_deep_agent", side_effect=_capturing_create_agent),
             patch("agents.training.agent_simple._select_model_impl", side_effect=_mock_select_model),
             patch("agents.training.agent_simple._data_collection_impl", side_effect=_mock_data_collection),
             patch("agents.training.agent_simple._infer_target_column", return_value="target"),

@@ -21,6 +21,8 @@ from scipy import stats
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from transformations.tool_utils import resolve_dataset
 
+from .analysis_sidecar import attach_analysis_sidecar
+
 # =============================================================================
 # HELPERS
 # =============================================================================
@@ -657,7 +659,25 @@ def feature_diagnostics_tool(
             for action in summary["top_actions"]:
                 lines.append(f"- {action}")
         
-        return "\n".join(lines)
+        md = "\n".join(lines)
+        payload = {
+            "feature_health": result["feature_health"],
+            "drop_list": result["drop_list"],
+            "transform_suggestions": result["transform_suggestions"],
+            "redundancy_groups": result["redundancy_groups"][:30],
+            "summary": result["summary"],
+        }
+        summary_line = (
+            f"drop {result['summary']['drop']}, "
+            f"transform {result['summary']['transform']}"
+        )
+        return attach_analysis_sidecar(
+            md,
+            kind="feature_diagnostics",
+            tool="feature_diagnostics_tool",
+            summary=summary_line,
+            payload=payload,
+        )
     
     except Exception as e:
         return f"✗ Feature diagnostics failed: {type(e).__name__}: {e}"

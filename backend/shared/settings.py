@@ -24,12 +24,6 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("OPENAI_API_KEY"),
     )
 
-    # POST /api/chat — LLM classifies training graph vs orchestrator when mode is unset
-    CHAT_INTENT_ROUTER_MODEL: str = Field(
-        default="openai:gpt-5.4",
-        description="LangChain init_chat_model id for HTTP-layer chat intent (override if unavailable)",
-    )
-
     # Database
     DATABASE_URL: str = Field(
         default="sqlite:///jubilee.db",

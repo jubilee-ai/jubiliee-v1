@@ -1,5 +1,6 @@
 """Analysis tools for AI agents - validation, EDA, diagnostics, correlation, grouping, distribution, trends, concentration."""
 
+from .chart import chart_tool
 from .concentration_analysis import (analyze_concentration,
                                      concentration_analysis_tool)
 from .correlation_matrix import (compute_correlation_matrix,
@@ -22,6 +23,7 @@ analysis_tools = [
     distribution_analysis_tool,
     trend_analysis_tool,
     concentration_analysis_tool,
+    chart_tool,
 ]
 
 __all__ = [
@@ -42,5 +44,6 @@ __all__ = [
     "analyze_trend",
     "concentration_analysis_tool",
     "analyze_concentration",
+    "chart_tool",
 ]
 

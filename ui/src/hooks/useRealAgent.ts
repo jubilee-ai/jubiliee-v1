@@ -14,6 +14,8 @@ import type {
   TrainingAgentState,
   StepInfo,
   ChatMessage,
+  AnalysisInsight,
+  AttachedDatasetSnapshot,
   ConfirmationRequest,
   ConfirmationAction,
   TaskPlanSummary,
@@ -68,6 +70,7 @@ const STEP_DEFINITIONS = [
   { id: "feature_selection_specification", name: "Feature Selection", description: "Analyze data and specify features" },
   { id: "feature_engineering_executor", name: "Feature Engineering", description: "Execute feature transformations" },
   { id: "feature_experiment_runner", name: "Feature experiments", description: "Compare feature-set variants with scout models" },
+  { id: "evaluate_models", name: "Model comparison", description: "Compare candidate estimators on validation data" },
   { id: "training_approval", name: "Training plan", description: "Estimator, hyperparameters, and validation setup" },
   { id: "training", name: "Training", description: "Train model and evaluate metrics" },
   { id: "generate_report", name: "Report", description: "Save the final training report" },
@@ -107,6 +110,7 @@ const STEP_LOADING_HINTS: Record<string, string> = {
   feature_selection_specification: "Analyzing columns, correlations, and leakage…",
   feature_engineering_executor: "Encoding features and checking matrix shapes…",
   feature_experiment_runner: "Running feature experiments and picking the best variant…",
+  evaluate_models: "Comparing candidate models on validation data…",
   training_approval: "Preparing training configuration…",
   training: "Training models and comparing validation metrics…",
   generate_report: "Finishing up…",
@@ -182,7 +186,15 @@ function getToolRunningHint(
       return "Checking dataset files"
     case "propose_training_plan":
       return "Planning your run"
-    case "analyze_data":
+    case "chart_tool":
+    case "correlation_matrix_tool":
+    case "group_summary_tool":
+    case "eda_report_tool":
+    case "distribution_analysis_tool":
+    case "feature_diagnostics_tool":
+    case "data_validation_tool":
+    case "trend_analysis_tool":
+    case "concentration_analysis_tool":
       if (datasetLabel) return `Analyzing ${datasetLabel}`
       return "Analyzing your data"
     case "train_model":
@@ -491,6 +503,8 @@ export interface UseRealAgentReturn {
   /** True after Approve on the plan card until the experiment is in task lab mode (API + reload). */
   startingHandsOffTask: boolean
   linkedDatasets: string[]
+  /** Resolved dataset snapshots from the latest SSE turn (shown above chat). */
+  attachedDatasetSnapshots: AttachedDatasetSnapshot[]
   updateLinkedDatasets: (ids: string[]) => void
   handleConfirmation: (action: ConfirmationAction, comment?: string) => void
   reset: () => void
@@ -541,6 +555,7 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
   const [acceptAllMode, setAcceptAllMode] = useState(false)
   const [experimentId, setExperimentId] = useState<string | null>(null)
   const [linkedDatasets, setLinkedDatasets] = useState<string[]>([])
+  const [attachedDatasetSnapshots, setAttachedDatasetSnapshots] = useState<AttachedDatasetSnapshot[]>([])
   const [backgroundIntakeActive, setBackgroundIntakeActive] = useState(false)
   const [startingHandsOffTask, setStartingHandsOffTask] = useState(false)
   const backgroundIntakeActiveRef = useRef(false)
@@ -876,6 +891,14 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
         if (tv != null) parts.push(`${tv} setups`)
         return parts.join(" · ")
       }
+      case "evaluate_models": {
+        const nm = summary.best_model
+        const n = summary.num_models
+        if (typeof n === "number" && n > 0) {
+          return nm ? `${n} models · best: ${nm}` : `${n} models compared`
+        }
+        return ""
+      }
       case "training_approval": {
         const model = summary.model_type || ""
         const hp = summary.hyperparameters
@@ -902,6 +925,9 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
 
     if (event.type === "start" || (event.type === "stream.start" && event.pipeline_completed == null)) {
       setIsRunning(true)
+      if (event.type === "stream.start" && !event.training_graph) {
+        setAttachedDatasetSnapshots([])
+      }
       if (event.type === "stream.start" && event.training_graph) {
         setProgressPhaseHint(null)
         emittedStepsRef.current = new Set()
@@ -913,6 +939,85 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
           )
         })
       }
+      return
+    }
+    if (event.type === "dataset.resolved") {
+      const raw = event.dataset_info as Record<string, unknown> | undefined
+      const cols = raw?.columns as AttachedDatasetSnapshot["columns"]
+      const snap: AttachedDatasetSnapshot = {
+        ref: String(event.ref || ""),
+        rows: typeof raw?.rows === "number" ? raw.rows : undefined,
+        n_columns:
+          typeof raw?.n_columns === "number"
+            ? raw.n_columns
+            : Array.isArray(cols)
+              ? cols.length
+              : undefined,
+        columns: Array.isArray(cols) ? cols : undefined,
+        sample: Array.isArray(raw?.sample) ? (raw.sample as Record<string, unknown>[]) : undefined,
+      }
+      setAttachedDatasetSnapshots((prev) => [...prev.filter((x) => x.ref !== snap.ref), snap])
+      return
+    }
+    if (event.type === "analysis.result") {
+      const insight: AnalysisInsight = {
+        tool: event.tool || "unknown",
+        kind: event.kind || "unknown",
+        summary: typeof event.summary === "string" ? event.summary : undefined,
+        payload: event.payload,
+      }
+      setMessages((prev) => {
+        const next = [...prev]
+        const last = next[next.length - 1]
+        if (last && last.role === "agent") {
+          next[next.length - 1] = {
+            ...last,
+            analyses: [...(last.analyses || []), insight],
+          }
+          return next
+        }
+        return [
+          ...next,
+          {
+            id: uid("msg"),
+            role: "agent",
+            content: "",
+            timestamp: Date.now(),
+            _streaming: true,
+            analyses: [insight],
+          },
+        ]
+      })
+      return
+    }
+    if (event.type === "analysis.chart") {
+      const spec = event.spec
+      if (!spec || typeof spec !== "object") return
+      const toolNm = event.tool || "chart_tool"
+      setMessages((prev) => {
+        const next = [...prev]
+        const last = next[next.length - 1]
+        if (!last || last.role !== "agent") return prev
+        const analyses = [...(last.analyses || [])]
+        let merged = false
+        for (let i = analyses.length - 1; i >= 0; i--) {
+          const a = analyses[i]
+          if (a.kind === "chart" && (a.tool === toolNm || toolNm === "chart_tool")) {
+            analyses[i] = { ...a, chartSpec: spec as Record<string, unknown> }
+            merged = true
+            break
+          }
+        }
+        if (!merged) {
+          analyses.push({
+            tool: toolNm,
+            kind: "chart",
+            chartSpec: spec as Record<string, unknown>,
+          })
+        }
+        next[next.length - 1] = { ...last, analyses }
+        return next
+      })
       return
     }
     if (event.type === "token") {
@@ -1526,6 +1631,7 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
     streamControllerRef.current = streamChat(
       {
         message: goal,
+        mode: "train",
         linked_datasets: linkedDatasets ?? null,
         model_preference: modelPreference ?? null,
         experiment_id: runEid,
@@ -1621,6 +1727,8 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
         force_orchestrator?: boolean
         persist_linked_datasets?: string[]
         displayTopic?: string
+        /** Use `"train"` only when starting the interactive training graph (guided plan, explicit run). */
+        mode?: "chat" | "train"
       },
     ) => {
       suppressPostPlanTokensRef.current = false
@@ -1705,7 +1813,12 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
           void updateExperiment(eid, { linked_datasets: ids })
         }
 
-        if (!forceOrch && linkedForApi && linkedForApi.length > 0) {
+        if (
+          !forceOrch &&
+          opts?.mode === "train" &&
+          linkedForApi &&
+          linkedForApi.length > 0
+        ) {
           void updateExperiment(eid, { linked_datasets: [] })
           setSteps(createInitialSteps())
           emittedStepsRef.current = new Set()
@@ -1725,6 +1838,7 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
             force_orchestrator: forceOrch,
             background_intake:
               backgroundIntakeActiveRef.current || opts?.begin_background_intake === true,
+            mode: opts?.mode,
           },
           applyAgentStreamEvent,
           (error: Error) => {
@@ -1905,6 +2019,7 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
       sendMessage(content, {
         user_model_preference: plan.preferences ?? undefined,
         linked_datasets_override: refs,
+        mode: "train",
       })
     },
     [sendMessage, setBackgroundIntake],
@@ -1982,6 +2097,7 @@ export function useRealAgent(options?: UseRealAgentOptions): UseRealAgentReturn 
     backgroundIntakeActive,
     startingHandsOffTask,
     linkedDatasets,
+    attachedDatasetSnapshots,
     updateLinkedDatasets,
     datasets,
     modelTypes,

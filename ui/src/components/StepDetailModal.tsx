@@ -42,6 +42,7 @@ export function StepDetailModal({ stepId, agentState, steps, onClose }: StepDeta
     "feature_specification_and_engineering": "feature_engineering_executor",
     "feature_engineering_executor": "feature_engineering_executor",
     "feature_experiment_runner": "feature_experiment_runner",
+    "evaluate_models": "evaluate_models",
     "training_approval": "training_approval",
     "training": "training",
     "generate_report": "generate_report",
@@ -63,6 +64,7 @@ export function StepDetailModal({ stepId, agentState, steps, onClose }: StepDeta
       case "feature_specification_and_engineering": return "Features (spec + build)"
       case "feature_engineering_executor": return "Feature Engineering"
       case "feature_experiment_runner": return "Feature experiments"
+      case "evaluate_models": return "Model comparison"
       case "training_approval": return "Training plan"
       case "training": return "Model Training"
       case "generate_report": return "Report Generation"
@@ -106,6 +108,8 @@ export function StepDetailModal({ stepId, agentState, steps, onClose }: StepDeta
         return <FeatureEngineeringDetail agentState={agentState} audit={audit} />
       case "feature_experiment_runner":
         return <FeatureExperimentDetail agentState={agentState} audit={audit} />
+      case "evaluate_models":
+        return <EvaluateModelsDetail agentState={agentState} />
       case "training_approval":
         return <TrainingConfigDetail agentState={agentState} audit={audit} />
       case "training":
@@ -813,6 +817,59 @@ function NestedHyperparameterSection({ name, value }: { name: string; value: unk
             {renderValue(value)}
           </pre>
         )}
+      </div>
+    </div>
+  )
+}
+
+function EvaluateModelsDetail({ agentState }: { agentState: TrainingAgentState }) {
+  const rows = agentState.model_comparison
+  if (!Array.isArray(rows) || rows.length === 0) {
+    return (
+      <p className="text-sm text-muted-foreground">
+        No parallel model comparison is recorded yet, or results were not merged into session state.
+      </p>
+    )
+  }
+  return (
+    <div className="space-y-4">
+      <p className="text-sm text-muted-foreground">
+        Quick validation runs comparing candidate sklearn estimators on the engineered feature matrix.
+      </p>
+      <div className="space-y-2">
+        {rows.map((r, i) => {
+          const rec = r as Record<string, unknown>
+          const name = String(rec.name ?? rec.model ?? "?")
+          const ok = rec.success === true
+          const err = typeof rec.error === "string" ? rec.error : null
+          const bits: string[] = []
+          for (const k of ["accuracy", "roc_auc", "r2", "rmse"] as const) {
+            if (rec[k] != null) bits.push(`${k}: ${String(rec[k])}`)
+          }
+          return (
+            <div
+              key={`${name}-${i}`}
+              className="rounded-lg border border-border/50 bg-muted/20 px-3 py-2 text-sm"
+            >
+              <div className="font-medium flex items-center gap-2">
+                {name}
+                {ok ? (
+                  <Badge variant="secondary" className="text-xs">
+                    ok
+                  </Badge>
+                ) : (
+                  <Badge variant="destructive" className="text-xs">
+                    failed
+                  </Badge>
+                )}
+              </div>
+              {bits.length > 0 ? (
+                <div className="text-xs text-muted-foreground mt-1 font-mono">{bits.join(" · ")}</div>
+              ) : null}
+              {err ? <div className="text-xs text-destructive mt-1">{err}</div> : null}
+            </div>
+          )
+        })}
       </div>
     </div>
   )

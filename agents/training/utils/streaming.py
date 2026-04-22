@@ -482,8 +482,13 @@ def build_node_update(node_name: str, node_output: dict[str, Any]) -> dict[str, 
                 if best.get(k) is not None:
                     metric_parts.append(f"{k}={best[k]}")
             update["headline"] = f"Best: {best['name']} — {', '.join(metric_parts)}"
+        elif comparison:
+            failed = sum(1 for r in comparison if not r.get("success"))
+            update["headline"] = (
+                f"Compared {len(comparison)} models — none passed validation ({failed} failed)"
+            )
         else:
-            update["headline"] = "Model comparison complete (no successful models)"
+            update["headline"] = "Model comparison — no runs recorded"
 
     elif node_name == "feature_experiment_runner":
         exp = node_output.get("experiment_result")
@@ -577,7 +582,22 @@ def build_node_update(node_name: str, node_output: dict[str, Any]) -> dict[str, 
             ],
             "summary": m.get("summary"),
         }
-        _mname = m.get("model_name") or "unknown"
+        _mname = m.get("model_name")
+        if not _mname and iters:
+            for it in iters:
+                mn = (it or {}).get("model_name") if isinstance(it, dict) else None
+                if mn:
+                    _mname = mn
+                    break
+        if not _mname:
+            tp = _get_or_empty(node_output, "training_plan")
+            _mname = (
+                tp.get("model_type")
+                or node_output.get("selected_model")
+                or node_output.get("model_weights_path")
+            )
+        if not _mname:
+            _mname = "model"
         _t_acc = m.get("test_accuracy")
         _t_auc = m.get("test_roc_auc")
         _t_r2 = m.get("test_r2")
@@ -614,7 +634,10 @@ def build_node_update(node_name: str, node_output: dict[str, Any]) -> dict[str, 
                 f"Trained **{_mname}** — {', '.join(_parts)}" if _parts else f"Trained **{_mname}** successfully"
             )
         else:
-            update["headline"] = f"Trained **{_mname}** successfully"
+            if m.get("success") is False:
+                update["headline"] = f"Training finished with issues — **{_mname}**"
+            else:
+                update["headline"] = f"Trained **{_mname}** successfully"
 
     elif node_name == "generate_report":
         update["summary"] = {"report_path": node_output.get("report_path"), "model_path": node_output.get("model_weights_path")}

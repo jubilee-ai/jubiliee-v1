@@ -23,7 +23,7 @@ export function FinalReport({ agentState, steps, onClose, datasets }: FinalRepor
   const metrics = agentState.training_metrics
 
   const hasResults =
-    metrics?.success ||
+    metrics != null ||
     agentState.model_weights_path ||
     agentState.report_path ||
     (agentState.audit_trace && agentState.audit_trace.length > 0)

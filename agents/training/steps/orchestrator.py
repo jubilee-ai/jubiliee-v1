@@ -57,22 +57,10 @@ def _is_unsupervised(state: TrainingAgentState) -> bool:
 
 
 def _infer_task_type(goal: str, selected_model: str) -> str:
-    """Infer task type from goal and model selection."""
-    goal = goal or ""
-    selected_model = selected_model or ""
-    if selected_model == "unsupervised":
-        return "unsupervised"
-    goal_lower = goal.lower()
-    model_lower = selected_model.lower()
-    
-    if "logistic" not in model_lower:
-        if any(w in model_lower for w in ["regress", "continuous", "numeric"]):
-            return "regression"
-    if any(w in goal_lower for w in ["regress", "predict value", "forecast", "amount", "price", "cost"]):
-        return "regression"
-    if any(w in model_lower for w in ["glm", "regression"]) and "logistic" not in model_lower:
-        return "regression"
-    return "classification"
+    """Infer task type from goal and model selection — thin wrapper around the shared helper."""
+    from ..core.task_inference import infer_task_type
+
+    return infer_task_type(goal, selected_model=selected_model)
 
 
 def _compact_experiment_feedback(state: TrainingAgentState) -> Optional[str]:
