@@ -511,6 +511,12 @@ def generate_simple_sse_events(
     }
     yield f"data: {json.dumps(started_payload)}\n\n"
 
+    print(
+        f"[simple_sse] stream_start thread_id={thread_id!r} goal={goal!r} "
+        f"linked_datasets={final_linked!r}",
+        flush=True,
+    )
+    event_count = 0
     try:
         for ns, event in agent.stream(
             {"messages": [{"role": "user", "content": goal}]},
@@ -518,8 +524,16 @@ def generate_simple_sse_events(
             stream_mode="updates",
             subgraphs=True,
         ):
+            event_count += 1
+            try:
+                keys = list(event.keys()) if isinstance(event, dict) else type(event).__name__
+            except Exception:
+                keys = "<unprintable>"
+            print(f"[simple_sse] event#{event_count} ns={ns!r} keys={keys}", flush=True)
+
             if "__interrupt__" in event:
                 info = _extract_simple_interrupt(event["__interrupt__"], thread_id)
+                print(f"[simple_sse] interrupt node={info.get('node')!r} summary={(info.get('summary') or '')[:120]!r}", flush=True)
                 interrupt_event = {
                     "type": "interrupt",
                     "thread_id": thread_id,
@@ -533,16 +547,31 @@ def generate_simple_sse_events(
                 tool_msgs = event["tools"].get("messages", [])
                 if tool_msgs:
                     content = getattr(tool_msgs[0], "content", "")
-                    if _should_skip_tool_message(content):
-                        continue
                     tool_name = getattr(tool_msgs[0], "name", "unknown")
+                    preview = content if isinstance(content, str) else str(content)
+                    preview = preview.replace("\n", " ⏎ ")
+                    if len(preview) > 180:
+                        preview = preview[:177] + "..."
+                    print(f"[simple_sse] tool_result name={tool_name!r} preview={preview!r}", flush=True)
+                    if _should_skip_tool_message(content):
+                        print(f"[simple_sse] tool_result_skipped name={tool_name!r}", flush=True)
+                        continue
                     step_name = TOOL_TO_STEP.get(tool_name, tool_name)
                     if step_name in emitted_steps:
+                        print(f"[simple_sse] step_already_emitted step={step_name!r}", flush=True)
                         continue
                     emitted_steps.add(step_name)
                     update = build_node_update(step_name, dict(shared_state))
                     update["thread_id"] = thread_id
                     yield f"data: {json.dumps(serialize_state(update))}\n\n"
+
+        print(
+            f"[simple_sse] stream_end thread_id={thread_id!r} total_events={event_count} "
+            f"emitted_steps={sorted(emitted_steps)!r} "
+            f"has_training_metrics={bool(shared_state.get('training_metrics'))} "
+            f"has_report_path={bool(shared_state.get('report_path'))}",
+            flush=True,
+        )
 
         repository.save_training_context(shared_state)
         repository.save_run_dataset_links(thread_id, shared_state)
@@ -555,6 +584,7 @@ def generate_simple_sse_events(
         }
         yield f"data: {json.dumps(completed_payload)}\n\n"
     except Exception as e:
+        print(f"[simple_sse] stream_exception type={type(e).__name__} error={str(e)[:300]!r}", flush=True)
         traceback.print_exc()
         yield f"data: {json.dumps({'type': 'error', 'error': str(e), 'thread_id': thread_id})}\n\n"
 
@@ -597,6 +627,12 @@ def generate_simple_resume_sse_events(
         else single_decision
     )
 
+    print(
+        f"[simple_sse_resume] stream_start thread_id={thread_id!r} approved={approved} "
+        f"feedback={feedback!r} interrupt_ids={interrupt_ids!r}",
+        flush=True,
+    )
+    event_count = 0
     try:
         for ns, event in agent.stream(
             Command(resume=resume_value),
@@ -604,8 +640,16 @@ def generate_simple_resume_sse_events(
             stream_mode="updates",
             subgraphs=True,
         ):
+            event_count += 1
+            try:
+                keys = list(event.keys()) if isinstance(event, dict) else type(event).__name__
+            except Exception:
+                keys = "<unprintable>"
+            print(f"[simple_sse_resume] event#{event_count} ns={ns!r} keys={keys}", flush=True)
+
             if "__interrupt__" in event:
                 info = _extract_simple_interrupt(event["__interrupt__"], thread_id)
+                print(f"[simple_sse_resume] interrupt node={info.get('node')!r} summary={(info.get('summary') or '')[:120]!r}", flush=True)
                 interrupt_event = {
                     "type": "interrupt",
                     "thread_id": thread_id,
@@ -619,17 +663,32 @@ def generate_simple_resume_sse_events(
                 tool_msgs = event["tools"].get("messages", [])
                 if tool_msgs:
                     content = getattr(tool_msgs[0], "content", "")
-                    if _should_skip_tool_message(content):
-                        continue
                     tool_name = getattr(tool_msgs[0], "name", "unknown")
+                    preview = content if isinstance(content, str) else str(content)
+                    preview = preview.replace("\n", " ⏎ ")
+                    if len(preview) > 180:
+                        preview = preview[:177] + "..."
+                    print(f"[simple_sse_resume] tool_result name={tool_name!r} preview={preview!r}", flush=True)
+                    if _should_skip_tool_message(content):
+                        print(f"[simple_sse_resume] tool_result_skipped name={tool_name!r}", flush=True)
+                        continue
                     step_name = TOOL_TO_STEP.get(tool_name, tool_name)
                     if step_name in emitted_steps:
+                        print(f"[simple_sse_resume] step_already_emitted step={step_name!r}", flush=True)
                         continue
                     emitted_steps.add(step_name)
                     store["emitted_steps"] = emitted_steps
                     update = build_node_update(step_name, dict(shared_state))
                     update["thread_id"] = thread_id
                     yield f"data: {json.dumps(serialize_state(update))}\n\n"
+
+        print(
+            f"[simple_sse_resume] stream_end thread_id={thread_id!r} total_events={event_count} "
+            f"emitted_steps={sorted(emitted_steps)!r} "
+            f"has_training_metrics={bool(shared_state.get('training_metrics'))} "
+            f"has_report_path={bool(shared_state.get('report_path'))}",
+            flush=True,
+        )
 
         repository.save_training_context(shared_state)
         repository.save_run_dataset_links(thread_id, shared_state)
@@ -642,6 +701,7 @@ def generate_simple_resume_sse_events(
         }
         yield f"data: {json.dumps(completed_payload)}\n\n"
     except Exception as e:
+        print(f"[simple_sse_resume] stream_exception type={type(e).__name__} error={str(e)[:300]!r}", flush=True)
         traceback.print_exc()
         yield f"data: {json.dumps({'type': 'error', 'error': str(e), 'thread_id': thread_id})}\n\n"
 

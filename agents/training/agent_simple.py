@@ -41,6 +41,7 @@ from .steps.label_and_split import (apply_split, compute_split_indices,
 from .steps.orchestrator import _infer_target_column
 from .steps.select_model import MODEL_FAMILIES
 from .steps.select_model import select_model as _select_model_impl
+from .steps.h2o_training import run_h2o_training
 from .steps.training import run_training_agent as _run_training
 from .tool_guards import cleaning_blocked_without_data, missing_prerequisite_for_step
 
@@ -204,17 +205,59 @@ def create_simple_training_agent(
     """
     state: dict = create_initial_state(goal, linked_datasets, user_model_preference, use_external_sources)
 
+    def _log(event: str, **kw) -> None:
+        """Single-line structured trace for the simple agent. Prefix: [simple_agent]."""
+        try:
+            bits = " ".join(f"{k}={v!r}" for k, v in kw.items())
+            print(f"[simple_agent] {event} {bits}".rstrip(), flush=True)
+        except Exception:
+            pass
+
+    def _preview(text: str, n: int = 180) -> str:
+        s = text if isinstance(text, str) else str(text)
+        s = s.replace("\n", " ⏎ ")
+        return s if len(s) <= n else s[: n - 3] + "..."
+
+    def _trace_tool(name: str):
+        """Wrap a @tool function so entry, exit, exceptions, and early-return reasons are logged."""
+        def deco(fn):
+            from functools import wraps
+
+            @wraps(fn)
+            def wrapper(*args, **kwargs):
+                _log("tool_start", tool=name)
+                try:
+                    out = fn(*args, **kwargs)
+                except Exception as e:
+                    _log("tool_exception", tool=name, type=type(e).__name__, error=str(e)[:300])
+                    raise
+                tag = "ok"
+                if isinstance(out, str):
+                    up = out.lstrip()
+                    if up.startswith("SKIP"):
+                        tag = "skip"
+                    elif up.startswith("FAILED") or up.startswith("REJECTED"):
+                        tag = "fail"
+                _log("tool_end", tool=name, tag=tag, preview=_preview(out))
+                return out
+            return wrapper
+        return deco
+
     def _hitl_gate(node_name: str, summary: str) -> dict:
         """Interrupt for human review after a step completes. Returns the decision."""
         if not hitl:
+            _log("hitl_skip_no_hitl", node=node_name)
             return {"approved": True}
         if node_name == "feature_specification_and_engineering":
+            _log("hitl_skip_auto_approved", node=node_name)
             return {"approved": True}
+        _log("hitl_interrupt", node=node_name, summary=_preview(summary, 120))
         decision = interrupt({
             "node": node_name,
             "summary": summary,
             "message": "Approve to continue, or provide feedback to redo.",
         })
+        _log("hitl_decision", node=node_name, decision=decision)
         if isinstance(decision, dict):
             return decision
         return {"approved": True}
@@ -1179,22 +1222,42 @@ def create_simple_training_agent(
         plan_max_iters = training_plan.get("max_iterations", 4)
         plan_for_agent = training_plan if isinstance(training_plan, dict) and training_plan else None
         tt = state.get("task_type")
-        result = _run_training(
-            train_ref=train_ref,
-            val_ref=state.get("transformed_val_ref"),
-            test_ref=state.get("transformed_test_ref"),
-            target_column=target_column,
-            selected_model=selected_model,
-            goal=state.get("goal", ""),
-            model_name=model_name,
-            max_iterations=plan_max_iters,
-            experiment_result=state.get("experiment_result"),
-            feature_rankings=state.get("feature_rankings"),
-            training_plan=plan_for_agent,
-            prior_training_metrics=state.get("training_metrics"),
-            explicit_task_type=tt if isinstance(tt, str) else None,
-            llm_model=model,
-        )
+        from backend.shared.settings import get_settings as _gs_simple_train
+
+        if _gs_simple_train().TRAINING_USE_H2O_ONLY:
+            result = run_h2o_training(
+                train_ref=train_ref,
+                val_ref=state.get("transformed_val_ref"),
+                test_ref=state.get("transformed_test_ref"),
+                target_column=target_column,
+                selected_model=selected_model,
+                goal=state.get("goal", ""),
+                model_name=model_name,
+                max_iterations=plan_max_iters,
+                experiment_result=state.get("experiment_result"),
+                feature_rankings=state.get("feature_rankings"),
+                training_plan=plan_for_agent,
+                prior_training_metrics=state.get("training_metrics"),
+                explicit_task_type=tt if isinstance(tt, str) else None,
+                llm_model=model,
+            )
+        else:
+            result = _run_training(
+                train_ref=train_ref,
+                val_ref=state.get("transformed_val_ref"),
+                test_ref=state.get("transformed_test_ref"),
+                target_column=target_column,
+                selected_model=selected_model,
+                goal=state.get("goal", ""),
+                model_name=model_name,
+                max_iterations=plan_max_iters,
+                experiment_result=state.get("experiment_result"),
+                feature_rankings=state.get("feature_rankings"),
+                training_plan=plan_for_agent,
+                prior_training_metrics=state.get("training_metrics"),
+                explicit_task_type=tt if isinstance(tt, str) else None,
+                llm_model=model,
+            )
 
         feature_redo_requested = result.get("feature_redo_requested", False)
         best_model_type = result.get("model_type", selected_model)
@@ -1415,16 +1478,22 @@ def create_simple_training_agent(
     # -- build the two-agent graph -------------------------------------------
 
     all_tools = [
-        tool_data_collection,
-        tool_select_model,
-        tool_cleaning,
-        tool_label_split_definition,
-        tool_feature_specification_and_engineering,
-        tool_evaluate_models,
-        tool_training_approval,
-        tool_training,
-        tool_generate_report,
+        _trace_tool("data_collection")(tool_data_collection),
+        _trace_tool("select_model")(tool_select_model),
+        _trace_tool("cleaning")(tool_cleaning),
+        _trace_tool("label_split_definition")(tool_label_split_definition),
+        _trace_tool("feature_specification_and_engineering")(tool_feature_specification_and_engineering),
+        _trace_tool("evaluate_models")(tool_evaluate_models),
+        _trace_tool("training_approval")(tool_training_approval),
+        _trace_tool("training")(tool_training),
+        _trace_tool("generate_report")(tool_generate_report),
     ]
+    _log(
+        "agent_built",
+        hitl=hitl,
+        tools=[t.__name__ if hasattr(t, "__name__") else str(t) for t in all_tools],
+        h2o_only=(lambda: bool(__import__("backend.shared.settings", fromlist=["get_settings"]).get_settings().TRAINING_USE_H2O_ONLY))(),
+    )
 
     if checkpointer is None and hitl:
         checkpointer = MemorySaver()

@@ -35,6 +35,7 @@ from .label_and_split import (apply_split, compute_split_indices,
                               normalize_label_definition_for_df,
                               run_label_split_definition)
 from .select_model import select_model as _select_model_impl
+from .h2o_training import run_h2o_training
 from .training import run_training_agent as _run_training
 
 # =============================================================================
@@ -937,16 +938,35 @@ def training(state: TrainingAgentState) -> TrainingAgentState:
         explicit_tt = s.get("task_type")
         if not explicit_tt and isinstance(training_plan, dict):
             explicit_tt = training_plan.get("task_type")
-        result = _run_training(
-            train_ref=train_ref, val_ref=val_ref, test_ref=test_ref,
-            target_column=target_column, selected_model=selected_model,
-            goal=goal, model_name=model_name, max_iterations=plan_max_iters,
-            experiment_result=s.get("experiment_result"),
-            feature_rankings=s.get("feature_rankings"),
-            training_plan=plan_for_agent,
-            prior_training_metrics=s.get("training_metrics"),
-            explicit_task_type=explicit_tt if isinstance(explicit_tt, str) else None,
-        )
+        from backend.shared.settings import get_settings as _gs_train_node
+
+        if _gs_train_node().TRAINING_USE_H2O_ONLY:
+            result = run_h2o_training(
+                train_ref=train_ref,
+                val_ref=val_ref,
+                test_ref=test_ref,
+                target_column=target_column,
+                selected_model=selected_model,
+                goal=goal,
+                model_name=model_name,
+                max_iterations=plan_max_iters,
+                experiment_result=s.get("experiment_result"),
+                feature_rankings=s.get("feature_rankings"),
+                training_plan=plan_for_agent,
+                prior_training_metrics=s.get("training_metrics"),
+                explicit_task_type=explicit_tt if isinstance(explicit_tt, str) else None,
+            )
+        else:
+            result = _run_training(
+                train_ref=train_ref, val_ref=val_ref, test_ref=test_ref,
+                target_column=target_column, selected_model=selected_model,
+                goal=goal, model_name=model_name, max_iterations=plan_max_iters,
+                experiment_result=s.get("experiment_result"),
+                feature_rankings=s.get("feature_rankings"),
+                training_plan=plan_for_agent,
+                prior_training_metrics=s.get("training_metrics"),
+                explicit_task_type=explicit_tt if isinstance(explicit_tt, str) else None,
+            )
 
         if result.get("success"):
             print(f"[training] Model trained successfully: {result.get('model_name')}")

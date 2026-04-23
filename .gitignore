@@ -10,6 +10,8 @@ __pycache__/
 # Sql files
 *.sql
 
+*mlartifacts*
+
 *.joblib
 *report.json
 */trained_models/*

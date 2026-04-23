@@ -29,7 +29,7 @@ from ..core.task_inference import (
     infer_task_type,
 )
 from ..utils.graph_stream_hooks import emit_graph_stream
-from ..utils.prompts import TRAINING_SYSTEM_PROMPT
+from ..utils.prompts import TRAINING_SYSTEM_PROMPT, TRAINING_SYSTEM_PROMPT_H2O_ONLY
 
 load_dotenv(Path(__file__).parent.parent.parent.parent / ".env")
 
@@ -482,9 +482,7 @@ def batch_train_with_skill_tool(
 from agents.training.mcp.h2o_server import build_h2o_tools
 from agents.training.mcp.mlflow_server import build_mlflow_tools
 
-TRAINING_TOOLS = [
-    train_with_skill_tool,
-    batch_train_with_skill_tool,
+_EVAL_AND_AGENTIC_TOOLS = (
     evaluate_model_tool,
     list_trained_models_tool,
     get_model_info_tool,
@@ -494,9 +492,37 @@ TRAINING_TOOLS = [
     get_best_iteration_by_metric_tool,
     cleanup_intermediate_models_tool,
     evaluate_champion_on_test_tool,
+)
+_SKLEARN_TRAIN_AND_STACK_TOOLS = (
+    train_with_skill_tool,
+    batch_train_with_skill_tool,
     run_tree_baseline_tool,
     stack_registered_models_tool,
-] + list(build_h2o_tools()) + list(build_mlflow_tools())
+)
+
+
+def get_training_tools():
+    """Tools bound for ``create_agent`` — H2O-only vs full sklearn + MLflow per settings."""
+    from backend.shared.settings import get_settings
+
+    h2o = list(build_h2o_tools())
+    if get_settings().TRAINING_USE_H2O_ONLY:
+        return list(_EVAL_AND_AGENTIC_TOOLS) + h2o
+    return (
+        list(_SKLEARN_TRAIN_AND_STACK_TOOLS)
+        + list(_EVAL_AND_AGENTIC_TOOLS)
+        + h2o
+        + list(build_mlflow_tools())
+    )
+
+
+# Default export: full toolkit (used by tests / introspection expecting the union).
+TRAINING_TOOLS = (
+    list(_SKLEARN_TRAIN_AND_STACK_TOOLS)
+    + list(_EVAL_AND_AGENTIC_TOOLS)
+    + list(build_h2o_tools())
+    + list(build_mlflow_tools())
+)
 
 
 # =============================================================================
@@ -1462,6 +1488,11 @@ def run_training_agent(
     available_skills = [d.name for d in SKILLS_DIR.iterdir() if (d / "train.py").exists()]
     skill_name = selected_model if selected_model in available_skills else "supervised"
 
+    from backend.shared.settings import get_settings as _get_training_settings
+
+    _ts = _get_training_settings()
+    h2o_only = bool(_ts.TRAINING_USE_H2O_ONLY)
+
     if not model_name:
         model_name = f"{estimator_hint or skill_name}_{int(time.time())}"
 
@@ -1475,7 +1506,9 @@ def run_training_agent(
             feature_columns = no_dt
 
     print(f"[training_agent] Starting training...")
-    print(f"  Skill: {skill_name} | Target: {target_column or '(none)'} | Task: {task_type}")
+    print(
+        f"  Skill: {skill_name} | H2O-only: {h2o_only} | Target: {target_column or '(none)'} | Task: {task_type}"
+    )
     print(f"  Train: {len(train_df)} | Val: {len(val_df) if val_df is not None else 0} | Test: {len(test_df) if test_df is not None else 0} | Features: {len(feature_columns)}")
     if estimator_hint:
         print(f"  Estimator hint: {estimator_hint}")
@@ -1504,10 +1537,32 @@ def run_training_agent(
             if minority_ratio < 0.3 else "Balanced classes"
         )
 
-    try:
-        skill_docs = _load_skill_prompt(skill_name)
-    except ValueError:
-        skill_docs = f"(No SKILL.md found for '{skill_name}')"
+    if h2o_only:
+        display_skill = "h2o_automl"
+        try:
+            h2o_docs = _load_skill_prompt("h2o_automl")
+        except ValueError:
+            h2o_docs = "(No SKILL.md found for 'h2o_automl')"
+        if task_type == "unsupervised":
+            try:
+                unsup_docs = _load_skill_prompt("unsupervised")
+                skill_docs = (
+                    h2o_docs
+                    + "\n\n---\n\n## Reference (implement with H2O tools only)\n"
+                    "The following frames routing and objectives. Use `h2o_train_estimator` or AutoML — "
+                    "not `train_with_skill`.\n\n"
+                    + unsup_docs
+                )
+            except ValueError:
+                skill_docs = h2o_docs
+        else:
+            skill_docs = h2o_docs
+    else:
+        display_skill = skill_name
+        try:
+            skill_docs = _load_skill_prompt(skill_name)
+        except ValueError:
+            skill_docs = f"(No SKILL.md found for '{skill_name}')"
 
     estimator_section = ""
     if estimator_hint:
@@ -1522,7 +1577,7 @@ def run_training_agent(
 
     baseline_section = ""
     baseline_metrics = None
-    if skill_name == "neural_networks" and task_type != "unsupervised":
+    if skill_name == "neural_networks" and task_type != "unsupervised" and not h2o_only:
         baseline_section = (
             "\n## Tree baseline (optional)\n"
             "Call `run_tree_baseline` with the train ref, val ref, target, and task_type if you want "
@@ -1585,7 +1640,7 @@ def run_training_agent(
     context = f"""## Goal
 {goal}
 
-## Skill: `{skill_name}`
+## Skill: `{display_skill}`
 
 Follow the skill documentation below — it covers model selection and training.
 
@@ -1612,12 +1667,30 @@ Follow the skill documentation below — it covers model selection and training.
     llm = init_chat_model(llm_model)
     agent = create_agent(
         model=llm,
-        tools=TRAINING_TOOLS,
-        system_prompt=TRAINING_SYSTEM_PROMPT,
+        tools=get_training_tools(),
+        system_prompt=TRAINING_SYSTEM_PROMPT_H2O_ONLY if h2o_only else TRAINING_SYSTEM_PROMPT,
         response_format=ToolStrategy(schema=TrainingResult),
     )
 
-    if task_type == "unsupervised":
+    if h2o_only:
+        if task_type == "unsupervised":
+            start_instruction = (
+                "Begin training now. Use **only** the `h2o_*` tools. Typical flow: `h2o_init` → "
+                "`h2o_import_frame` with the training ref → `h2o_train_estimator` (or AutoML if appropriate) "
+                "→ interpret metrics from tool output → `h2o_shutdown` when done. "
+                "Do **not** call `train_with_skill`, `batch_train_with_skill`, or `evaluate_model` "
+                "(no target labels). Report unsupervised metrics in your TrainingResult from H2O output."
+            )
+        else:
+            start_instruction = (
+                "Begin training now. **H2O-3 only:** `h2o_init` → `h2o_import_frame` for train (and val if needed) "
+                "→ `h2o_automl_run` and/or `h2o_train_estimator` → `h2o_leaderboard` to compare → "
+                "`h2o_to_registered_model` for your champion so `evaluate_model` works on the validation ref "
+                "→ optional `evaluate_champion_on_test` → `h2o_shutdown`. "
+                "Do **not** use `train_with_skill` or `batch_train_with_skill` — they are not available. "
+                "Maximize validation metrics; run test evaluation on your best registered model before finishing."
+            )
+    elif task_type == "unsupervised":
         start_instruction = (
             "Begin training now. Maximize unsupervised objective quality by exploring "
             "estimators and hyperparameters. Use the dataset refs above. "
@@ -1878,6 +1951,7 @@ __all__ = [
     "TrainingResult",
     "TrainingIteration",
     "TRAINING_TOOLS",
+    "get_training_tools",
     "FeatureRedoRequest",
     "request_feature_engineering_redo_tool",
     "batch_train_with_skill_tool",

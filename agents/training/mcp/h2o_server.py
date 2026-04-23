@@ -7,6 +7,8 @@ Each tool is a small operation the agent composes — no fixed AutoML-only flow.
 from __future__ import annotations
 
 import json
+import shutil
+import subprocess
 import sys
 import tempfile
 import uuid
@@ -18,6 +20,44 @@ from langchain_core.tools import tool
 # In-process handles (same Python worker as training)
 _h2o_frames: dict[str, Any] = {}
 _automl_handles: dict[str, Any] = {}
+
+_H2O_JAVA_SETUP_HINT = (
+    "H2O-3 needs a working JDK (8+) on the **same PATH** as the process running this server "
+    "(e.g. uvicorn). macOS: `brew install openjdk@17` (or `temurin`), then export PATH so "
+    "`which java` is the brew JDK, not `/usr/bin/java` (Apple’s stub often fails). "
+    "Set `JAVA_HOME` to the JDK if your shell has Java but the IDE/server does not. "
+    "Linux: install `openjdk-17-jdk` (or similar) via your package manager."
+)
+
+
+def _java_runtime_check() -> tuple[bool, Optional[str], str]:
+    """Return (ok, java_executable_path_if_any, failure_or_empty_message)."""
+    java = shutil.which("java")
+    if not java:
+        return False, None, "No `java` executable found on PATH."
+    try:
+        proc = subprocess.run(
+            [java, "-version"],
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+        combined = ((proc.stderr or "") + (proc.stdout or "")).strip()
+        if proc.returncode != 0:
+            return (
+                False,
+                java,
+                f"`{java} -version` exited with status {proc.returncode}. Output: {combined[:500]}",
+            )
+        return True, java, ""
+    except FileNotFoundError:
+        return False, java, f"Could not execute `{java}`."
+    except subprocess.TimeoutExpired:
+        return False, java, "`java -version` timed out."
+    except OSError as e:
+        return False, java, f"Could not run Java: {e}"
+    except Exception as e:
+        return False, java, str(e)
 
 
 def _data_tools_path() -> Path:
@@ -47,13 +87,27 @@ def h2o_init(max_mem_size: str = "4G", nthreads: int = -1) -> str:
     ok, err = _h2o_available()
     if not ok:
         return json.dumps({"ok": False, "error": err})
+    j_ok, java_path, j_err = _java_runtime_check()
+    if not j_ok:
+        return json.dumps(
+            {
+                "ok": False,
+                "error": j_err,
+                "java_path": java_path,
+                "fix": _H2O_JAVA_SETUP_HINT,
+            }
+        )
     try:
         import h2o
 
         h2o.init(max_mem_size=max_mem_size, nthreads=nthreads, strict_version_check=False)
-        return json.dumps({"ok": True, "cluster": str(h2o.cluster().get_status())})
+        return json.dumps({"ok": True, "java": java_path, "cluster": str(h2o.cluster().get_status())})
     except Exception as e:
-        return json.dumps({"ok": False, "error": str(e)})
+        msg = str(e)
+        payload: dict[str, Any] = {"ok": False, "error": msg}
+        if any(s in msg.lower() for s in ("java", "jvm", "jdk")):
+            payload["fix"] = _H2O_JAVA_SETUP_HINT
+        return json.dumps(payload)
 
 
 @tool
@@ -209,12 +263,44 @@ def h2o_download_mojo(model_id: str) -> str:
         return json.dumps({"ok": False, "error": str(e)})
 
 
-@tool
-def h2o_to_registered_model(model_id: str, model_name: str, target_column: str, feature_columns: list[str]) -> str:
-    """Save MOJO + a small sklearn-compatible wrapper, then register via model_storage.register_model."""
+class _H2OMojoSklearnAdapter:
+    """Minimal predict API for sklearn-like tooling (MOJO-backed H2O model)."""
+
+    def __init__(self, mojo_zip: str, target_column: str, feature_columns: list[str]):
+        self._mojo = mojo_zip
+        self._target = target_column
+        self._features = list(feature_columns)
+
+    def predict(self, X):  # noqa: ANN001
+        import h2o
+        import pandas as pd
+
+        h2o.init(strict_version_check=False)
+        mdl = h2o.import_mojo(self._mojo)
+        if isinstance(X, pd.DataFrame):
+            hf = h2o.H2OFrame(X[self._features] if all(c in X.columns for c in self._features) else X)
+        else:
+            hf = h2o.H2OFrame(X)
+        pred = mdl.predict(hf)
+        pdf = pred.as_data_frame()
+        return pdf.iloc[:, 0].values
+
+
+def register_h2o_mojo_model(
+    model_id: str,
+    model_name: str,
+    target_column: str,
+    feature_columns: list[str],
+    metrics: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    """Save MOJO + sklearn-compatible wrapper and register via ``model_storage.register_model``.
+
+    Returns ``{"ok": True, "registered": ...}`` or ``{"ok": False, "error": "..."}``.
+    """
     ok, err = _h2o_available()
     if not ok:
-        return json.dumps({"ok": False, "error": err})
+        return {"ok": False, "error": err}
+    _ensure_dt_path()
     try:
         import h2o
         import joblib
@@ -224,29 +310,6 @@ def h2o_to_registered_model(model_id: str, model_name: str, target_column: str, 
         m = h2o.get_model(model_id)
         d = tempfile.mkdtemp(prefix="h2o_reg_")
         mojo_path = m.download_mojo(d)
-
-        class _H2OMojoSklearnAdapter:
-            """Minimal predict API for sklearn-like tooling."""
-
-            def __init__(self, mojo_zip: str, target_column: str, feature_columns: list[str]):
-                self._mojo = mojo_zip
-                self._target = target_column
-                self._features = list(feature_columns)
-
-            def predict(self, X):  # noqa: ANN001
-                import h2o
-                import pandas as pd
-
-                h2o.init(strict_version_check=False)
-                mdl = h2o.import_mojo(self._mojo)
-                if isinstance(X, pd.DataFrame):
-                    hf = h2o.H2OFrame(X[self._features] if all(c in X.columns for c in self._features) else X)
-                else:
-                    hf = h2o.H2OFrame(X)
-                pred = mdl.predict(hf)
-                pdf = pred.as_data_frame()
-                return pdf.iloc[:, 0].values
-
         adapter = _H2OMojoSklearnAdapter(mojo_path, target_column, feature_columns)
         out_path = generate_model_path(model_name)
         joblib.dump(adapter, out_path)
@@ -255,16 +318,25 @@ def h2o_to_registered_model(model_id: str, model_name: str, target_column: str, 
             model_path=out_path,
             model_type=f"h2o_mojo:{model_id}",
             description=f"H2O MOJO wrapper for {model_id}",
-            metrics={},
+            metrics=metrics or {},
             feature_names=feature_columns,
             target_column=target_column,
             hyperparameters={"h2o_model_id": model_id, "mojo_path": mojo_path},
             training_samples=0,
             classes=[],
         )
-        return json.dumps({"ok": True, "registered": reg})
+        return {"ok": True, "registered": reg}
     except Exception as e:
-        return json.dumps({"ok": False, "error": str(e)})
+        return {"ok": False, "error": str(e)}
+
+
+@tool
+def h2o_to_registered_model(model_id: str, model_name: str, target_column: str, feature_columns: list[str]) -> str:
+    """Save MOJO + a small sklearn-compatible wrapper, then register via model_storage.register_model."""
+    out = register_h2o_mojo_model(model_id, model_name, target_column, feature_columns, metrics=None)
+    if out.get("ok"):
+        return json.dumps({"ok": True, "registered": out["registered"]})
+    return json.dumps({"ok": False, "error": out.get("error", "unknown")})
 
 
 @tool

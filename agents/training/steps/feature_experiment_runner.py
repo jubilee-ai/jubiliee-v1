@@ -467,6 +467,33 @@ def run_experiment_grid(
             total_scouts=0,
             wall_time_seconds=round(time.time() - t0, 2),
         )
+
+    try:
+        from backend.shared.settings import get_settings as _gs_exp
+
+        if bool(_gs_exp().TRAINING_USE_H2O_ONLY):
+            print(
+                "[experiment_runner] TRAINING_USE_H2O_ONLY — skipping sklearn scout grid "
+                "(HGB/RF); main training uses H2O only."
+            )
+            return ExperimentResult(
+                best_variant_name="full",
+                best_metric=0.0,
+                best_feature_spec=feature_spec,
+                transformed_train_ref=f"{train_ref}_features",
+                transformed_val_ref=f"{val_ref}_features" if val_ref else None,
+                transformed_test_ref=f"{test_ref}_features" if test_ref else None,
+                experiment_grid=[{"skipped": True, "reason": "TRAINING_USE_H2O_ONLY"}],
+                feature_rankings={},
+                dropped_features=[],
+                signal_features=[],
+                total_variants=1,
+                total_scouts=0,
+                wall_time_seconds=round(time.time() - t0, 2),
+            )
+    except Exception:
+        pass
+
     if skip_above > 0 and len(train_df) > skip_above:
         print(
             f"[experiment_runner] Train rows {len(train_df)} > skip threshold {skip_above} — skipping scout grid"

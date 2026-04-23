@@ -136,6 +136,13 @@ class Settings(BaseSettings):
         default=False,
         description="When True, delete non-champion trial models automatically after training",
     )
+    TRAINING_USE_H2O_ONLY: bool = Field(
+        default=True,
+        description="When True, the training LangGraph agent only gets H2O-3 tools (no sklearn "
+        "train_with_skill / batch_train, tree baseline, voting stack, or MLflow training-time tools); "
+        "the parallel feature scout grid (sklearn HGB/RF) is skipped so no sklearn training runs "
+        "before the main H2O step. Set TRAINING_USE_H2O_ONLY=false to restore sklearn scouts and toolkit.",
+    )
 
     # Clerk authentication
     CLERK_JWKS_URL: Optional[str] = Field(

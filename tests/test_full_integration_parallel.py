@@ -10,11 +10,14 @@ Run: python3 tests/test_full_integration_parallel.py 2>&1 | tee /tmp/integration
 """
 
 import json
+import os
 import sys
 import time
 from pathlib import Path
 
 ROOT = Path(__file__).parent.parent
+# Standalone script (not pytest): keep sklearn training tools unless explicitly overridden.
+os.environ.setdefault("TRAINING_USE_H2O_ONLY", "false")
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tools" / "data-tools"))
 sys.path.insert(0, str(ROOT / "tools" / "models-tools" / "training"))
