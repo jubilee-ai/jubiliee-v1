@@ -21,7 +21,22 @@ class ChatRequest(BaseModel):
     model_preference: Optional[str] = None
     resume: Optional[ResumePayload] = None
     conversation: Optional[list[dict[str, Any]]] = None
+<<<<<<< Updated upstream
     #: When True, stream orchestrator chat only (tools / propose_training_plan), never the training graph.
+=======
+
+    #: Optional stable LangGraph thread id for the main orchestrator. When set,
+    #: ``chat()`` uses this instead of deriving ``chat_thread_id`` from
+    #: ``experiment_id`` (useful for MCP / headless clients that manage their own
+    #: session id). Does not replace ``experiment_id`` for persistence or training.
+    chat_thread_id: Optional[str] = None
+
+    # ------------------------------------------------------------------
+    # Back-compat fields (deprecated) — translated to the new schema below.
+    # ------------------------------------------------------------------
+
+    #: Legacy: set ``mode="chat"``.
+>>>>>>> Stashed changes
     force_orchestrator: bool = False
     #: Tool-free background task planning; streams ``task_plan.proposed`` instead of ``propose_training_plan``.
     background_intake: bool = False

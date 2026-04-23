@@ -394,11 +394,49 @@ def chat(request: ChatRequest) -> tuple[str, object]:
         )
         return graph_thread, gen
 
+<<<<<<< Updated upstream
     train_branch = should_route_to_training_graph(request)
     if train_branch:
         goal = (request.message or "").strip()
         if not goal:
             goal = "Training run"
+=======
+    # ---- Unified Jubilee stream (chat + optional training pivot) ------------
+
+    if request.chat_thread_id and str(request.chat_thread_id).strip():
+        resolved_thread_id = str(request.chat_thread_id).strip()
+    elif request.experiment_id:
+        exp = training_repo.get_experiment(request.experiment_id, org_id=org_id)
+        resolved_thread_id = exp["chat_thread_id"] if exp else f"chat-{uuid.uuid4().hex[:8]}"
+    else:
+        resolved_thread_id = f"chat-{uuid.uuid4().hex[:8]}"
+
+    attached_block, attach_events = _prepare_attached_datasets_block(
+        request.linked_datasets,
+    )
+
+    if request.background_intake:
+        bg_msg = request.message or ""
+        if attached_block:
+            bg_msg = attached_block + "\n\n" + bg_msg
+        return resolved_thread_id, generate_background_intake_sse(
+            bg_msg,
+            experiment_id=request.experiment_id,
+            conversation=request.conversation,
+            org_id=org_id,
+        )
+
+    # ---- Plan-approval fast path: bypass Jubilee, go straight to training ---
+    # When the UI confirms the plan card it sends ``mode="train"`` plus the
+    # already-resolved dataset refs. Routing through the orchestrator here is
+    # both unnecessary and unreliable (the LLM sometimes calls
+    # ``propose_training_plan`` again, which re-renders the plan card and the
+    # user appears stuck in a loop). Hand off to the training sub-agent
+    # immediately when we have everything we need.
+    if request.mode == "train" and request.linked_datasets:
+        refs = [str(r).strip() for r in request.linked_datasets if str(r).strip()]
+        goal = (request.message or "").strip() or "Training run"
+>>>>>>> Stashed changes
         gen = training_service.generate_graph_sse_events(
             goal,
             request.linked_datasets,

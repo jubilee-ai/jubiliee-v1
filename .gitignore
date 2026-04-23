@@ -9,6 +9,8 @@ __pycache__/
 # Sql files
 *.sql
 
+*.agents/skills/*
+
 *.joblib
 *report.json
 */trained_models/*

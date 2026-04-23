@@ -8,6 +8,8 @@ langchain-core
 langchain-openai
 # Used by agents/dataset_curator when EXTERNAL_DATASET_CATALOG_ENABLED=True in agent.py
 langchain-mcp-adapters
+# Official MCP Python SDK (stdio / streamable-http server for Jubilee MCP)
+mcp>=1.6.0
 langgraph
 pydantic
 pydantic-settings
