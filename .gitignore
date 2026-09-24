@@ -105,6 +105,9 @@ dmypy.json
 # Derived datasets (created during agent runs)
 datasets/derived/
 
+# Agent run dumps (LangGraph/LangSmith exports)
+run-*.json
+
 # OS files
 .DS_Store
 Thumbs.db
